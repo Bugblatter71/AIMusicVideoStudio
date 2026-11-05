@@ -1,0 +1,97 @@
+{
+  "$comment": "Generic Music Video Generation Project Template. Edit this file or create a new one using 'render_video.bat --new <your_song>.json'.",
+  "project": {
+    "name": "New Music Video",
+    "project_dir": ".",
+    "master_audio": "audio/master_audio.mp3",
+    "stems": {
+      "lead_vocal": "audio/lead_vocal.mp3",
+      "backing_track": "audio/backing_track.mp3"
+    },
+    "master_output": "{project_name}_Master_{resolution}_{fps}fps.mp4",
+    "master_resolution": "",
+    "fps": 24,
+    "total_duration": 60.0,
+    "trim_first_frame_seconds": 0.0,
+    "fade_out_last_scene_seconds": 2.0,
+    "directories": {
+      "anchors": "work/anchors",
+      "audio_slices": "work/audio",
+      "masks": "work/masks",
+      "jobs": "work/jobs",
+      "renders": "work/renders",
+      "trimmed": "work/trimmed",
+      "review_strips": "work/frames"
+    }
+  },
+  "profiles_file": "model_profiles.json",
+  "models": {
+    "default_anchor_renderer": 3,
+    "default_video_renderer": 1,
+    "default_video_resolution": 4,
+    "anchor_shared_settings": {
+      "image_refs": []
+    },
+    "video_shared_settings": {
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "resolution_options_quick_reference": {
+      "1": "832x480   - 480p Fast Preview (~1 min/s video, lowest VRAM, best for quick motion tests)",
+      "2": "960x544   - 540p qHD Balanced (~1.5 min/s video, good balance for full-song drafts)",
+      "3": "1280x720  - 720p HD Standard  (~2.5 min/s video, crisp standard 16:9 widescreen)",
+      "4": "1344x768  - 768p WXGA High-Res (DEFAULT) (~3.2 min/s video, recommended native DiT detail)",
+      "5": "1536x864  - 864p Near-1080p   (~4.5 min/s video, high fidelity for hero scenes)",
+      "6": "1920x1088 - 1080p Full HD     (~6-7 min/s video, cinema-grade DiT multiple-of-16 preset)"
+    }
+  },
+  "run_controls": {
+    "force_rerender_anchors": [],
+    "force_rerender_scenes": [],
+    "anchors_only": false,
+    "cascade_anchors": true,
+    "stitch_only": false
+  },
+  "variables": {
+    "LEAD_SINGER": "a charismatic performer in modern stage attire with expressive eyes and natural movement",
+    "STAGE_SETTING": "a dark cinematic soundstage with warm amber spotlights, subtle atmospheric haze, and soft bokeh in the background"
+  },
+  "anchors": [
+    {
+      "filename": "A01_Lead_Solo.jpg",
+      "renderer": null,
+      "seed": 1001,
+      "prompt": "Cinematic 16:9 medium close-up of {LEAD_SINGER} standing at a vintage brass microphone inside {STAGE_SETTING}. Natural posture, eyes open and emotive, warm directional lighting."
+    },
+    {
+      "filename": "A02_Atmosphere_Wide.jpg",
+      "renderer": null,
+      "seed": 1002,
+      "prompt": "Cinematic 16:9 wide establishing shot inside {STAGE_SETTING}. In the distance, {LEAD_SINGER} stands in a circular pool of spotlight on the polished wooden floor. Atmospheric haze and deep cinematic contrast."
+    }
+  ],
+  "scenes": [
+    {
+      "id": "S01",
+      "renderer": null,
+      "start": 0.0,
+      "end": 5.0,
+      "mode": "solo",
+      "stem": "lead_vocal",
+      "anchor": "A01_Lead_Solo.jpg",
+      "seed": 2001,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Inside {STAGE_SETTING}, {LEAD_SINGER} begins singing with natural head sway and expressive lip movements matching the audio. Slow cinematic push-in.\noverall_soundscape: Studio room tone under vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S02",
+      "renderer": null,
+      "start": 5.0,
+      "end": 10.0,
+      "mode": "solo",
+      "stem": "silent",
+      "anchor": "A02_Atmosphere_Wide.jpg",
+      "seed": 2002,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Wide cinematic view of {STAGE_SETTING} with slow camera track around {LEAD_SINGER}.\noverall_soundscape: Atmospheric sound.\nnon_diegetic_music: N/A"
+    }
+  ]
+}
+

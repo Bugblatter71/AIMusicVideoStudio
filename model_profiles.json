@@ -1,0 +1,591 @@
+{
+  "title": "Wan2GP Generic Model & Resolution Profiles",
+  "version": "1.0",
+  "environment": {
+    "wgp_root": "C:\\Users\\bugbl\\Downloads\\pinokio\\api\\wan.git\\app",
+    "ffmpeg": "tools/ffmpeg.exe",
+    "extra_path_dirs": [
+      "C:\\Users\\bugbl\\Downloads\\pinokio\\bin",
+      "C:\\Users\\bugbl\\Downloads\\pinokio\\bin\\miniconda\\Library\\bin",
+      "C:\\Users\\bugbl\\Downloads\\pinokio\\api\\wan.git\\app\\ffmpeg_bins"
+    ]
+  },
+  "anchor_shared_settings": {
+    "resolution": "1920x1080",
+    "image_mode": 1,
+    "video_prompt_type": "I",
+    "remove_background_images_ref": 0
+  },
+  "video_shared_settings": {
+    "repeat_generation": 1,
+    "multi_prompts_gen_type": "PG",
+    "image_mode": 0,
+    "image_prompt_type": "S",
+    "sliding_window_discard_last_frames": 0,
+    "sliding_window_trim_first_frames": 0,
+    "spatial_upsampling": "",
+    "config": "",
+    "force_fps": "",
+    "audio_prompt_type": "",
+    "skip_steps_cache_type": "first_block",
+    "skip_steps_multiplier": 0.08
+  },
+  "video_resolutions": {
+    "1": {
+      "name": "480p Fast Preview",
+      "resolution": "832x480",
+      "width": 832,
+      "height": 480,
+      "aspect": "16:9 widescreen",
+      "macroblocks": "52x30 (16-pixel aligned)",
+      "render_speed": "Fastest (~1 min per 1 sec video)",
+      "vram_footprint": "Lowest (~10-12 GB VRAM)",
+      "description": "Ultra-fast draft pass for testing camera motion, framing, and lip-sync timing before committing to high-res overnight renders.",
+      "best_for": "Rapid testing, staging, and draft scene verification"
+    },
+    "2": {
+      "name": "540p qHD Balanced",
+      "resolution": "960x544",
+      "width": 960,
+      "height": 544,
+      "aspect": "16:9 widescreen",
+      "macroblocks": "60x34 (16-pixel aligned)",
+      "render_speed": "Fast (~1.5 min per 1 sec video)",
+      "vram_footprint": "Low (~12-14 GB VRAM)",
+      "description": "Balanced speed/quality option. +30% more detail than 480p while remaining twice as fast as 768p.",
+      "best_for": "Full-song storyboard passes and reviewing character acting"
+    },
+    "3": {
+      "name": "720p HD Standard",
+      "resolution": "1280x720",
+      "width": 1280,
+      "height": 720,
+      "aspect": "16:9 widescreen",
+      "macroblocks": "80x45 (16-pixel aligned)",
+      "render_speed": "Moderate (~2.5 min per 1 sec video)",
+      "vram_footprint": "Moderate (~14-16 GB VRAM)",
+      "description": "Standard 720p HD widescreen resolution. Sharp, clean presentation suitable for YouTube and web sharing.",
+      "best_for": "Standard HD release and high-quality web previews"
+    },
+    "4": {
+      "name": "768p WXGA High-Res (Default)",
+      "resolution": "1344x768",
+      "width": 1344,
+      "height": 768,
+      "aspect": "16:9 widescreen",
+      "macroblocks": "84x48 (16-pixel aligned)",
+      "render_speed": "Standard overnight (~3.2 min per 1 sec video)",
+      "vram_footprint": "Standard (~16-18 GB VRAM)",
+      "description": "Recommended native DiT training sweet spot. Produces sharp facial features, micro-expressions, and fine studio lighting detail without VRAM thrashing.",
+      "best_for": "Production master rendering and detailed close-ups (Current Default)"
+    },
+    "5": {
+      "name": "864p Near-1080p High Fidelity",
+      "resolution": "1536x864",
+      "width": 1536,
+      "height": 864,
+      "aspect": "16:9 widescreen",
+      "macroblocks": "96x54 (16-pixel aligned)",
+      "render_speed": "Heavy (~4.5 min per 1 sec video)",
+      "vram_footprint": "High (~18-20 GB VRAM)",
+      "description": "Near-1080p high fidelity generation with exceptional texture definition across wide angles and complex lighting.",
+      "best_for": "Hero scenes, solo vocal closeups, and high-fidelity video mastering"
+    },
+    "6": {
+      "name": "1080p Full HD Block-Aligned",
+      "resolution": "1920x1088",
+      "width": 1920,
+      "height": 1088,
+      "aspect": "16:9 widescreen",
+      "macroblocks": "120x68 (16-pixel aligned)",
+      "render_speed": "Maximum load (~6-7 min per 1 sec video)",
+      "vram_footprint": "Highest (~22-24 GB VRAM)",
+      "description": "Wan2GP official 1080p block-aligned preset (1088 height is divisible by 16 as required by DiT/VAE; cleanly muxed/downscaled to standard 1920x1080 during final assembly).",
+      "best_for": "Final cinema-grade 1080p delivery"
+    }
+  },
+  "anchor_renderers": {
+    "1": {
+      "name": "Qwen Image 2.1 TextImage2Image Turbo 7B (Current Default)",
+      "model_type": "qwen_image_21_turbo_7B",
+      "suitability_notes": "Rank #1 (Current): Fast 8-step distilled 7B model with native 2K (1664x960) & 4-portrait <image1..4> support (~35s/image). Fast, though 8-step distillation (CFG=1.0) can occasionally simplify complex multi-person spatial prompts.",
+      "ref_tag_style": "<imageN>",
+      "num_inference_steps": 8,
+      "guidance_scale": 1.0,
+      "sample_solver": "qwen21_turbo",
+      "custom_settings": {
+        "qwen21_kv_cache": "INT8",
+        "rgba": "Disabled"
+      }
+    },
+    "2": {
+      "name": "Qwen Image 2.1 TextImage2Image 7B (Full 40-Step Base Model)",
+      "model_type": "qwen_image_21_7B",
+      "suitability_notes": "Rank #2 (Most Recommended Upgrade): Un-distilled 40-step base version of Qwen Image 2.1 with full Classifier-Free Guidance (CFG=4.0). Reuses your already-installed Qwen3-VL encoder & VAE; follows complex spatial/Venn layouts, eye/mouth rules, and facial likeness much more faithfully than #1 Turbo.",
+      "ref_tag_style": "<imageN>",
+      "num_inference_steps": 40,
+      "guidance_scale": 4.0,
+      "sample_solver": "default",
+      "custom_settings": {
+        "qwen21_kv_cache": "INT8",
+        "rgba": "Disabled"
+      }
+    },
+    "3": {
+      "name": "Flux 2 Klein 9B KV (4-Step Reference KV-Cached)",
+      "model_type": "flux2_klein_9b_kv",
+      "suitability_notes": "Rank #3: 9B Flux 2 Klein model with dedicated Reference KV-Caching across denoising steps. Specifically engineered for multi-reference character consistency at high speed (4 steps).",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 4,
+      "guidance_scale": 1.0
+    },
+    "4": {
+      "name": "Flux 2 Klein Base 9B (Full 30-Step Un-Distilled CFG=4.0)",
+      "model_type": "flux2_klein_base_9b",
+      "suitability_notes": "Rank #4: Full 30-step un-distilled 9B Flux 2 Klein with CFG=4.0. Stronger prompt adherence, anatomy, and multi-character separation than the 4-step distilled variants.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 30,
+      "guidance_scale": 4.0
+    },
+    "5": {
+      "name": "Flux 2 Klein 9B (4-Step Distilled Standard)",
+      "model_type": "flux2_klein_9b",
+      "suitability_notes": "Rank #5: Standard 4-step distilled 9B Flux 2 Klein using Qwen3-8B text encoder. Much stronger facial identity than the 4B Klein model while remaining very fast.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 4,
+      "guidance_scale": 1.0
+    },
+    "6": {
+      "name": "Flux 3 Image Klein Base 5.6B (Full 50-Step CFG=3.5)",
+      "model_type": "flux3_klein_base",
+      "suitability_notes": "Rank #6: Latest Flux 3 architecture with Qwen3-VL-4B vision-language encoder and native ordered <ref_image_0..3> reference conditioning (50 steps, CFG=3.5).",
+      "ref_tag_style": "<ref_image_N0>",
+      "num_inference_steps": 50,
+      "guidance_scale": 3.5
+    },
+    "7": {
+      "name": "Flux 3 Image Klein 5.6B (16-Step Distilled)",
+      "model_type": "flux3_klein",
+      "suitability_notes": "Rank #7: 16-step distilled Flux 3 Klein 5.6B with Qwen3-VL-4B vision-language encoder and ordered <ref_image_0..3> reference conditioning.",
+      "ref_tag_style": "<ref_image_N0>",
+      "num_inference_steps": 16,
+      "guidance_scale": 1.0
+    },
+    "8": {
+      "name": "SenseNova U1.5 8B MoT (50-Step Unified VLM + Diffusion)",
+      "model_type": "sensenova_u1_5_8b_mot",
+      "suitability_notes": "Rank #8: 8B Mixture-of-Transformers architecture combining VLM understanding and image generation. Excels at complex spatial positioning, object counts, and multi-reference scenes.",
+      "ref_tag_style": "Image N",
+      "num_inference_steps": 50,
+      "guidance_scale": 4.0,
+      "flow_shift": 3.0
+    },
+    "9": {
+      "name": "Qwen Image Edit Plus (2511) 20B (40-Step Multi-Subject)",
+      "model_type": "qwen_image_edit_plus2_20B",
+      "suitability_notes": "Rank #9: Large 20B Qwen2.5-VL model tuned in release 2511 for combining multiple person references at 1664x960 with high identity retention. Slower on 8GB VRAM due to 20B size.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 40,
+      "guidance_scale": 4.0,
+      "flow_shift": 3.0
+    },
+    "10": {
+      "name": "Fibo 2.0 Dev (50-Step Multi-Reference CFG=5.0)",
+      "model_type": "fibo2_dev",
+      "suitability_notes": "Rank #10: 50-step Fibo 2.0 Dev using Qwen3-VL-4B encoder + Flux 2 VAE; supports up to 4 ordered reference images.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 50,
+      "guidance_scale": 5.0
+    },
+    "11": {
+      "name": "Fibo 2.0 Edit Turbo (4-Step Distilled Multi-Reference)",
+      "model_type": "fibo2_edit_turbo",
+      "suitability_notes": "Rank #11: Fast 4-step distilled variant of Fibo 2.0 supporting 4 ordered reference images.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 4,
+      "guidance_scale": 1.0
+    },
+    "12": {
+      "name": "Flux 2 Klein Base 4B (30-Step Un-Distilled CFG=4.0)",
+      "model_type": "flux2_klein_base_4b",
+      "suitability_notes": "Rank #12: 30-step un-distilled 4B Flux 2 Klein. Low VRAM footprint with better prompt adherence than the 4-step 4B model, though 7B/9B models hold faces better.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 30,
+      "guidance_scale": 4.0
+    },
+    "13": {
+      "name": "Flux 2 Klein 4B (4-Step Distilled \u2014 Already Installed)",
+      "model_type": "flux2_klein_4b",
+      "suitability_notes": "Rank #13: Already downloaded on disk. Very fast (~15s, 4 steps), good lighting/atmosphere, but 4B capacity can lose facial likeness in complex two-shots.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 4,
+      "guidance_scale": 1.0
+    },
+    "14": {
+      "name": "Flux 1 Kontext DreamOmni2 12B (25-Step Multimodal)",
+      "model_type": "flux_dev_kontext_dreamomni2",
+      "suitability_notes": "Rank #14: 12B Flux 1 Kontext model trained with DreamOmni2 for multi-reference subject generation and instruction following.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 25,
+      "guidance_scale": 3.5
+    },
+    "15": {
+      "name": "pi-FLUX.2 Dev 32B (4-Step Distilled Giant Model)",
+      "model_type": "pi_flux2",
+      "suitability_notes": "Rank #15: 4-step pi-Flow distilled 32B Flux 2 model. High capacity, but 32B requires heavy RAM-to-VRAM offloading on 8GB VRAM.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 4,
+      "embedded_guidance_scale": 4.0
+    },
+    "16": {
+      "name": "Flux 2 Dev 32B Base (30-Step Full Giant Model)",
+      "model_type": "flux2_dev",
+      "suitability_notes": "Rank #16: Full 30-step 32B Flux 2 Dev model. Highest parameter count in Wan2GP, but very slow on 8GB VRAM due to 32B offloading.",
+      "ref_tag_style": "image N",
+      "num_inference_steps": 30,
+      "embedded_guidance_scale": 4.0
+    }
+  },
+  "video_renderers": {
+    "1": {
+      "name": "MiniMax H3 FL2VA Pruned PDD 8-Step 20B (Current Default)",
+      "model_type": "minimax_h3_fl2va_pruned_pdd",
+      "suitability_notes": "Rank #1 (Current Default \u2014 Already Installed): Fast 8-step PDD distilled 20B model (merges 32 intervals into 8 evaluations). Native <Picture 1> start-frame lock, vocal soundtrack lip-sync, and GVA grouped-row spatial mask inpainting.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "2": {
+      "name": "MiniMax H3 FL2VA PDD 8-Step 33B (Full Unpruned 8-Step PDD)",
+      "model_type": "minimax_h3_fl2va_pdd",
+      "suitability_notes": "Rank #2 (Top Recommended Upgrade): Full 33B unpruned counterpart to #1. Keeps fast 8-step PDD speed and identical GVA mask/lip-sync behavior while restoring the unpruned 33B AdaLN modulation weights for sharper faces, hands, and lip motion.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "3": {
+      "name": "MiniMax H3 FL2VA Pruned VDN 8-Step 20B (Hybrid Window/Linear Attention)",
+      "model_type": "minimax_h3_vdn_pruned",
+      "suitability_notes": "Rank #3: Reuses your already-installed 20B Pruned FL2VA base with the VDN 8-step acceleration LoRA and trained hybrid window/linear attention for faster, smoother long clips.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "4": {
+      "name": "MiniMax H3 FL2VA VDN 8-Step 33B (Full 33B Hybrid Attention)",
+      "model_type": "minimax_h3_vdn",
+      "suitability_notes": "Rank #4: Full 33B unpruned FL2VA with VDN 8-step acceleration LoRA and hybrid window/linear attention.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "5": {
+      "name": "MiniMax H3 FL2VA Pruned 20B (Full 20-Step Un-Distilled \u2014 Zero Download)",
+      "model_type": "minimax_h3_fl2va_pruned",
+      "suitability_notes": "Rank #5 (Zero-Download Quality Upgrade): Uses your already-installed 20B Pruned FL2VA weights without 8-step PDD merging, running 20 true Euler steps (flow_shift=7.0). ~2.5x slower than #1, but cleaner motion and lip-sync on difficult shots.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 20,
+      "guidance_phases": 1,
+      "flow_shift": 7.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "6": {
+      "name": "MiniMax H3 FL2VA Pruned Veda Sparse 20B (20-Step Learned Sparse Attention)",
+      "model_type": "minimax_h3_fl2va_pruned_veda",
+      "suitability_notes": "Rank #6: Reuses your 20B Pruned FL2VA weights with Veda learned sparse attention (up to 2x faster than #5 at 20 steps on RTX 30/40/50 GPUs).",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 20,
+      "guidance_phases": 1,
+      "flow_shift": 7.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "7": {
+      "name": "MiniMax H3 FL2VA 33B Base (Full 20-Step Unpruned Reference Quality)",
+      "model_type": "minimax_h3_fl2va",
+      "suitability_notes": "Rank #7: Full 33B unpruned, un-distilled MiniMax H3 FL2VA at 20 steps. Highest fidelity in the FL2VA family, though slowest per clip.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 20,
+      "guidance_phases": 1,
+      "flow_shift": 7.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "8": {
+      "name": "MiniMax H3 FL2VA Veda Sparse 33B (20-Step Sparse 33B)",
+      "model_type": "minimax_h3_fl2va_veda",
+      "suitability_notes": "Rank #8: Full 33B unpruned FL2VA with Veda learned sparse attention to accelerate 20-step high-fidelity generation.",
+      "frames_formula": "h3",
+      "prompt_style": "h3",
+      "num_inference_steps": 20,
+      "guidance_phases": 1,
+      "flow_shift": 7.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "9": {
+      "name": "MiniMax H3 Ref2VA Pruned PTD RefAsymOPD 8-Step 20B",
+      "model_type": "minimax_h3_ref2va_pruned_ptd_refasymopd",
+      "suitability_notes": "Rank #9: 8-step Ref2VA 20B with RefAsymOPD per-step hop LoRAs tuned for sharper facial details and more realistic backgrounds at 8 steps (uses audio_prompt_type=AS).",
+      "frames_formula": "h3_ref2va",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "10": {
+      "name": "MiniMax H3 Ref2VA PTD RefAsymOPD 8-Step 33B",
+      "model_type": "minimax_h3_ref2va_ptd_refasymopd",
+      "suitability_notes": "Rank #10: Full 33B unpruned version of #9 with 8-step RefAsymOPD hop LoRAs for sharper details and realism.",
+      "frames_formula": "h3_ref2va",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "11": {
+      "name": "MiniMax H3 FastH3 Omni 8-Step 20B (FastVideo VSA Student)",
+      "model_type": "minimax_h3_fasth3_omni",
+      "suitability_notes": "Rank #11: FastVideo 8-step distilled Ref2VA student with VSA sparse attention (fastest H3 20B model).",
+      "frames_formula": "h3_ref2va",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "12": {
+      "name": "MiniMax H3 Ref2VA Pruned PDD 8-Step 20B",
+      "model_type": "minimax_h3_ref2va_pruned_pdd",
+      "suitability_notes": "Rank #12: Ref2VA 20B counterpart to #1 using 8-step PDD interval merging.",
+      "frames_formula": "h3_ref2va",
+      "prompt_style": "h3",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "flow_shift": 12.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "13": {
+      "name": "MiniMax H3 Singularity V2 Ref2VA Pruned 20B (20-Step Fine-Tune)",
+      "model_type": "minimax_h3_singularity_v2_pruned",
+      "suitability_notes": "Rank #13: Singularity V2 20B fine-tune of MiniMax H3 Ref2VA (20 steps) for rich cinematic contrast and motion.",
+      "frames_formula": "h3_ref2va",
+      "prompt_style": "h3",
+      "num_inference_steps": 20,
+      "guidance_phases": 1,
+      "flow_shift": 7.0,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "GVA",
+      "denoising_strength": 1.0,
+      "masking_strength": 1.0,
+      "sliding_window_size": 362,
+      "sliding_window_overlap": 18,
+      "custom_settings": {
+        "h3_mask_mode": "grouped_rows"
+      },
+      "force_fps": "",
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "14": {
+      "name": "LTX-2 2.5 Distilled 22B (8-Step Audio-Video + IC-LoRA Inpainting)",
+      "model_type": "ltx2_25_22B_distilled",
+      "suitability_notes": "Rank #14: Different model family (Lightricks LTX-2.5 22B Distilled, 8 steps, Gemma-4 12B encoder). Supports start-image + audio lip-sync and uses LTX-2 Inpainting IC-LoRA (MVGA) for Pass 2 masked duets.",
+      "frames_formula": "ltx2",
+      "prompt_style": "ltx2",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "MVGA",
+      "denoising_strength": 1.0,
+      "masking_strength": 0.0,
+      "sliding_window_size": 241,
+      "sliding_window_overlap": 9,
+      "custom_settings": {},
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "15": {
+      "name": "LTX-2 2.3 Distilled 1.1 22B (8-Step Audio-Video + IC-LoRA Inpainting)",
+      "model_type": "ltx2_22B_distilled_1_1",
+      "suitability_notes": "Rank #15: LTX-2.3 Distilled 1.1 22B checkpoint (8 steps) with start-image + soundtrack conditioning and IC-LoRA masked inpainting (MVGA).",
+      "frames_formula": "ltx2",
+      "prompt_style": "ltx2",
+      "num_inference_steps": 8,
+      "guidance_phases": 1,
+      "sample_solver": "euler",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "MVGA",
+      "denoising_strength": 1.0,
+      "masking_strength": 0.0,
+      "sliding_window_size": 241,
+      "sliding_window_overlap": 9,
+      "custom_settings": {},
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "16": {
+      "name": "LTX-2 2.5 Dev 22B (2-Phase Distilled-Ancestral Quality)",
+      "model_type": "ltx2_25_22B",
+      "suitability_notes": "Rank #16: Full LTX-2.5 Dev 22B running 2-phase generation with distilled_8_steps_ancestral for stronger prompt adherence and detail than #14.",
+      "frames_formula": "ltx2",
+      "prompt_style": "ltx2",
+      "num_inference_steps": 8,
+      "guidance_phases": 2,
+      "sample_solver": "distilled_8_steps_ancestral",
+      "audio_prompt_type": "A",
+      "pass2_video_prompt_type": "MVGA",
+      "denoising_strength": 1.0,
+      "masking_strength": 0.0,
+      "sliding_window_size": 241,
+      "sliding_window_overlap": 9,
+      "custom_settings": {},
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+deepy found that the h3 model can do lip syncing and camera movements so there's no need for two models and two stages. it has some findings and tips. note these and especially the difference on min and max clip lengths. remember also previous things that helped reduce the thinking derpy needs to do, e.g. the root path. re-work the scenes plan accordingly, we don't need to stitch so many short clips together with potentially clunky joins, perhaps we can be more cinematic in the loud bits. give me all the scenes in one prompt, i want to leave it running overnight (btw runs now take roughly 1 minute per second of video, down from the previous 15 minutes). we should aim for 25fps rather than the 24fps deepy mentions. don't take deepy's advice as set in stone if they contradict something i've said, check with me or make a judgment call. the findings from deepy are: "Give me five things per scene, and I do the rest:
+
+Character + anchor image — reuse the same anchor (e.g. Male_Anchor_2) in every scene of that character; that's what keeps faces consistent.
+Action — keep it to singing/speaking only. Gestures, smiles and head-nods compete with the mouth in the same shot; if you want a gesture, make it its own non-vocal shot.
+One explicit camera move — "slow push-in", "subtle orbit", "static". One move per shot; specifying it saves me a guess-and-test pass. (Scene 06's push-in + orbital drift + parallax phrasing worked well.)
+The vocal clip path — e.g. @musicvideogeneration/merged_clips/Scene07_xxx.wav.
+Target length, if it must hit a beat or cut point — give exact seconds and I trim to it.
+What I handle: H3 structured-prompt syntax, soundscape fields, trimming, gallery bookkeeping. One shot per scene prompt; multi-shot scenes come as separate prompts and I merge them.
+
+Verified MiniMax H3 limits (our default engine):
+
+Minimum render: 107 frames = 4.458 s. Shorter vocals → the model invents a tail to lip-sync to; I trim to the audio end automatically (done for Scene 06).
+Maximum render: 362 frames = 15.08 s. Longer vocals → split into two shots.
+Length granularity before trimming: 17 frames (~0.71 s). Canvas 832×480 @ 24 fps.

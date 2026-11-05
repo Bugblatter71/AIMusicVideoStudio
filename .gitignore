@@ -1,0 +1,94 @@
+# ==============================================================================
+# Git Ignore - Music Video Generation Pipeline
+# ==============================================================================
+
+# --- Video Files (All video formats excluded) ---
+*.mp4
+*.m4v
+*.mov
+*.avi
+*.mkv
+*.webm
+*.flv
+*.ts
+*.tmp.mp4
+
+# --- Generated Render Caches & Intermediate Clips ---
+**/work/renders/
+**/work/renders_*/
+**/work/trimmed/
+**/work/trimmed_*/
+**/work/frames/
+**/work/frames_*/
+
+# --- Generated Masks & Bitmaps ---
+*.pgm
+**/work/masks/
+**/work/masks_*/
+
+# --- Generated Audio Slices & Raw Temp Dumps ---
+*.raw
+**/work/audio/
+**/work/audio_*/
+**/work/audio_full/
+temp_audio.*
+temp_stem.*
+
+# --- Diagnostic Analysis & Temporary Extracted Frames ---
+work/*.jpg
+work/*.png
+work/video_analysis/
+work/s01_mouth_check/
+work/test_review/
+work/test_trimmed_exact/
+
+# --- State Hashes & Runtime Job Manifests ---
+state_hashes.json
+**/work/jobs/
+**/work/jobs_*/
+*.log
+
+# --- Large Binary Tools & Virtual Environments ---
+tools/*.exe
+tools/*.dll
+tools/*.bin
+.venv/
+venv/
+env/
+
+# --- Python & OS Caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- IDE & Editor Settings ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# ==============================================================================
+# Explicitly Tracked Source Assets
+# ==============================================================================
+# Keep source configuration, models, scripts, templates
+!model_profiles.json
+!project_template.json
+!*.bat
+!work/*.py
+
+# Keep character reference sheets & primary anchor images
+!projects/*/references/
+!projects/*/work/ref_sheets/
+!projects/*/work/anchors*/A*.jpg
+
+# Keep project configs & READMEs
+!projects/*/*.json
+!projects/*/audio/*.mp3
+!projects/*/audio/*.txt
+!projects/*/*.txt
+!projects/*/*.md
+

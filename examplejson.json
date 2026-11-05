@@ -1,0 +1,284 @@
+[
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene06_GiveItAllToYou.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at a vintage condenser microphone in a dark moody studio sings with rising intensity, with natural lip movements synchronized. Slow cinematic push-in with orbital drift and gentle parallax between the foreground subject and the background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene07_GiveMyAllForYou.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_5.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in a shadowy industrial loft sings with building vocal intensity, with natural lip movements synchronized. Low-angle cinematic push-in with gentle parallax between the foreground subject and the background.\noverall_soundscape: Quiet loft room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene08_NeverAskedMeTo.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer sings earnestly into a vintage studio microphone, with natural lip movements synchronized. Subtle cinematic orbital pan with gentle parallax between the foreground subject and the studio bokeh background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene09_AllIEverWantToDo.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_1.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in close-up delivers an emotional pre-chorus vocal line directly into the lens, with natural lip movements synchronized. Tight cinematic push-in with gentle parallax between the foreground subject and the shallow depth-of-field background.\noverall_soundscape: Quiet room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene10_Chorus1_BestYearsMyLife.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in pouring rain at night sings a soaring chorus line with full vocal power as rain splashes through neon and amber light beams, with natural lip movements synchronized. Sweeping low-angle cinematic orbital tracking shot with heavy rain and gentle parallax between the foreground subject and the streetlight background.\noverall_soundscape: Heavy rain and stormy night tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 260
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene11.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer in a rain-soaked city alley at night sings a passionate soaring chorus line under glowing amber sodium lights, with natural lip movements synchronized. Dynamic cinematic push-in with orbital drift and gentle parallax between the foreground subject and the golden streetlight bokeh background.\noverall_soundscape: Rainy night alley tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 124
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene12_Chorus1_IDontKnowWhatToDo.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at a vintage studio microphone sings with intense emotional power in a dark studio, with natural lip movements synchronized. Fast cinematic push-in with gentle parallax between the foreground subject and the background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene13.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer at a vintage studio microphone sings a pleading emotional chorus phrase, with natural lip movements synchronized. Slow cinematic pull-back with orbital drift and gentle parallax between the foreground subject and the studio rim-light background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene14_Chorus1_IsItAllForNothing2.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_1.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in tight close-up sings softly and hauntingly into the camera, with natural lip movements synchronized. Slow cinematic pull-back from macro close-up with gentle depth parallax between the foreground subject and the background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "image_start": "@musicvideogeneration/anchors/BRoll_Anchor_8.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] A rain-soaked neon alley at night as raindrops ripple across glowing puddles. Low-angle forward cinematic tracking shot with gentle parallax between the foreground puddles and the neon background.\noverall_soundscape: N/A (silent shot).\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "image_start": "@musicvideogeneration/anchors/BRoll_Anchor_9.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Close-up of vintage cassette tape reels spinning smoothly inside a warm amber-lit wooden studio deck. Macro cinematic orbital drift with gentle parallax between the foreground reels and the shallow depth-of-field background.\noverall_soundscape: N/A (silent shot).\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene16.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer belts a soaring emotional chorus with full vocal power in a rain-drenched alley at night under golden-amber streetlights, with natural lip movements synchronized. Wide-to-medium sweeping cinematic orbital tracking shot with heavy pouring rain and gentle parallax between the foreground subject and the neon background.\noverall_soundscape: Rainy night alley tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 294
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene17_Chorus2_BestYearsYourLife.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer delivers an intense chorus belt in the pouring rain at night, with natural lip movements synchronized. Low-angle cinematic push-in with orbital drift and gentle parallax between the foreground subject and the falling rain background.\noverall_soundscape: Heavy rain and storm tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene18.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer at a studio microphone sings a quiet, defeated vocal phrase in dim studio light, with natural lip movements synchronized. High-angle descending cinematic drift with gentle parallax between the foreground subject and the shadow background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene19_Chorus2_IsItAllForNothing.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at a vintage studio microphone sings an aching, questioning vocal line and holds the final note, with natural lip movements synchronized. Slow cinematic orbital pull-back with gentle parallax between the foreground subject and the moody background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 175
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene20_Bridge_WaitedForever.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_3.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer by a rain-streaked apartment window at night sings a reflective bridge melody, with natural lip movements synchronized. Cinematic lateral tracking drift with gentle parallax between the foreground rain-glass and the background subject.\noverall_soundscape: Quiet night room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 175
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene21_Bridge_WithMeAndYoureNot.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_5.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in a shadowy industrial loft sings with longing and emotional weight, with natural lip movements synchronized. Slow cinematic push-in with orbital drift through volumetric loft light, creating gentle parallax between the foreground subject and the background.\noverall_soundscape: Quiet loft room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 175
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene22_Bridge_WaitingTillSomeoneNew.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_3.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer beside a wet window pane at night sings with growing realization, with natural lip movements synchronized. Slow cinematic pull-back with gentle parallax between the foreground subject and the blurred city-light bokeh background.\noverall_soundscape: Quiet night room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 192
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene23_Bridge_KnowWhatImWorth.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_5.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer stands tall in an industrial room singing with newfound resolve, with natural lip movements synchronized. Heroic low-angle cinematic push-in with strong spatial parallax between the foreground subject and the background.\noverall_soundscape: Quiet loft room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 192
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene24_Build_QuiteEnoughForYou.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at a studio microphone sings a sharp rhythmic buildup line, with natural lip movements synchronized. Dynamic cinematic push-in with gentle parallax shift between the foreground subject and the background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene25_Build_BreakMyHeartInTwo.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_5.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in a dark loft sings an intense buildup vocal line, with natural lip movements synchronized. Fast cinematic orbital drift with gentle parallax between the foreground subject and the high-contrast lighting background.\noverall_soundscape: Quiet loft room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene26_Build_TurnsOutWereThrough.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at the vintage studio microphone sings with rising pre-chorus urgency, with natural lip movements synchronized. Low-angle cinematic push-in with gentle parallax between the foreground subject and the studio bokeh background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene27_Build_ItsNotMeItsYou.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_1.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in close-up sings the pivotal pre-chorus line directly into the lens, with natural lip movements synchronized. Slow cinematic push-in to tight close-up with gentle parallax between the foreground subject and the shallow depth background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene28_Chorus3_BestYearsMyLife.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer belts the climactic chorus of the song in pouring rain at night under dramatic beams of light, with natural lip movements synchronized. Epic cinematic crane pull-back and sweeping orbital arc with gentle parallax between the foreground subject and the heavy rain background.\noverall_soundscape: Heavy rain and stormy night tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 294
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene29_Chorus3_BestYearsYourLife.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at the vintage studio microphone finishes the climactic chorus belt with full vocal power, with natural lip movements synchronized. Cinematic orbital tracking shot with gentle parallax between the foreground subject and the warm studio light flare background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 141
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene30_Outro_NowIKnowWhatToDo.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_3.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer by a window as cool blue morning light rises sings softly with calm acceptance, with natural lip movements synchronized. Slow cinematic lateral drift with gentle parallax between the foreground subject and the soft dawn window background.\noverall_soundscape: Quiet morning room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 124
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene31_Outro_AllOrNothing.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_6.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in a quiet studio as cold blue dawn light enters through the blinds sings the final lingering vocal lines, with natural lip movements synchronized. Slow cinematic pull-back with gentle parallax between the foreground subject and the morning light-beam background.\noverall_soundscape: Quiet morning room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 192
+  },
+  {
+    "image_start": "@musicvideogeneration/anchors/BRoll_Anchor_10.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] A lone figure walks away down a misty street as dawn breaks. High cinematic crane tracking shot with gentle depth parallax between the foreground street and the misty background.\noverall_soundscape: N/A (silent shot).\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene10.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer in a rain-soaked alley at night sings a soaring chorus line under golden streetlights, with natural lip movements synchronized. Sweeping low-angle cinematic orbital tracking shot with gentle parallax between the foreground subject and the rain and neon background.\noverall_soundscape: Rainy night alley tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 260
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene11_Chorus1_BestYearsYourLife.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer in pouring rain at night sings a passionate chorus line, with natural lip movements synchronized. Dynamic cinematic push-in with orbital drift and gentle parallax between the foreground subject and the rain background.\noverall_soundscape: Heavy rain night tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 124
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene12.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer at a vintage studio microphone sings with emotional intensity, with natural lip movements synchronized. Fast cinematic push-in with gentle parallax between the foreground subject and the studio background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene13_Chorus1_IsItAllForNothing1.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at a vintage studio microphone sings a pleading emotional chorus phrase, with natural lip movements synchronized. Slow cinematic pull-back with orbital drift and gentle parallax between the foreground subject and the rim-light background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene16_Chorus2_BestYearsMyLife.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer belts a soaring emotional chorus in the pouring rain at night, with natural lip movements synchronized. Sweeping cinematic orbital tracking shot with gentle parallax between the foreground subject and the pouring rain background.\noverall_soundscape: Heavy rain night tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 294
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene17.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_4.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer delivers an intense chorus belt in the rain at night, with natural lip movements synchronized. Low-angle cinematic push-in with orbital drift and gentle parallax between the foreground subject and the rain background.\noverall_soundscape: Rainy night tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 158
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Scene18_Chorus2_IDontKnowWhatToDo.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Male_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The male singer at a studio microphone sings a quiet vocal phrase, with natural lip movements synchronized. High-angle descending cinematic drift with gentle parallax between the foreground subject and the shadow background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 107
+  },
+  {
+    "audio_guide": "@musicvideogeneration/merged_clips/Female_Scene19.wav",
+    "audio_prompt_type": "A",
+    "image_start": "@musicvideogeneration/anchors/Female_Anchor_2.jpg",
+    "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] The female singer at a vintage studio microphone sings an aching vocal line and holds the final note, with natural lip movements synchronized. Slow cinematic orbital pull-back with gentle parallax between the foreground subject and the moody studio background.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A",
+    "template": "gen_video",
+    "video_length": 175
+  }
+]
