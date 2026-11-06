@@ -1380,6 +1380,7 @@ def run_stage2_scenes(
     sync_only: bool = False,
     stitch_only: bool = False,
     dummy_render: bool = False,
+    no_queue_sync: bool = False,
 ) -> list[dict]:
     def_vrid = str(ctx.default_video_renderer)
     def_vmodel = ctx.video_renderers.get(def_vrid, {}).get("model_type", "minimax_h3_fl2va_pruned_pdd")
@@ -1843,9 +1844,15 @@ def run_stage2_scenes(
             "resolution": t.get("resolution"),
         })
     queue_file = ctx.jobs_dir / "v3_queue.json"
-    queue_file.write_text(json.dumps(queue_summary, indent=2), encoding="utf-8")
+    if not (has_scene_filter or no_queue_sync):
+        try:
+            queue_file.write_text(json.dumps(queue_summary, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def _sync_queue():
+        if has_scene_filter or no_queue_sync:
+            return
         try:
             queue_file.write_text(json.dumps(queue_summary, indent=2), encoding="utf-8")
         except Exception:
@@ -2727,6 +2734,7 @@ def main():
         cascade_anchors=cascade_anchors,
         stitch_only=stitch_only,
         dummy_render=dummy_render,
+        no_queue_sync=bool(force_scenes),
     )
     run_stage3_assemble_master(ctx, scene_meta)
     print(f"\nPipeline finished in {(time.time() - t_start) / 60:.1f} minutes.", flush=True)

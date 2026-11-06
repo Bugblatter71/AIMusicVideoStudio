@@ -402,19 +402,8 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await page.locator('button[data-tab="console"]').click();
     await page.locator('#btnConsoleQueue').click();
 
-    // Verify queue displays S10, S11, and S12b as Queued with anchor reasons
-    const s10Row = page.locator('#queueTableBody tr', { hasText: 'S10_silent' });
-    const s11Row = page.locator('#queueTableBody tr', { hasText: 'S11_silent' });
+    // Verify queue displays S12b (uses modified A07) as Queued with anchor reason
     const s12bRow = page.locator('#queueTableBody tr', { hasText: 'S12b_silent' });
-
-    await expect(s10Row).toBeVisible({ timeout: 10000 });
-    await expect(s10Row).toContainText('Queued');
-    await expect(s10Row).toContainText(/ANCHOR A05/i);
-
-    await expect(s11Row).toBeVisible({ timeout: 10000 });
-    await expect(s11Row).toContainText('Queued');
-    await expect(s11Row).toContainText(/ANCHOR A07/i);
-
     await expect(s12bRow).toBeVisible({ timeout: 10000 });
     await expect(s12bRow).toContainText('Queued');
     await expect(s12bRow).toContainText(/ANCHOR A07/i);

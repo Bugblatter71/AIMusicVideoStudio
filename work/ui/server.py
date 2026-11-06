@@ -352,7 +352,7 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                 broadcast_log(f"[Studio UI Queue] >>> Starting single render [{next_idx + 1}/{len(items)}]: {out_fn} ({target_arg})")
 
                 # 4. Submit single render task to engine
-                cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch"]
+                cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
                 code = execute_single_render(cmd_args, project_slug)
 
                 # 5. Reload queue file fresh to respect any user reordering/deletions done during render
@@ -933,10 +933,17 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             # Targeted scene render (e.g. clicking "Render Scene")
             if args:
                 target_sid = str(args[0]).strip().upper()
+                target_base = target_sid.split(":")[0].strip()
+                target_pass = None
+                if ":" in target_sid:
+                    p_tok = target_sid.split(":")[1].lower().replace("p", "").strip()
+                    if p_tok.isdigit():
+                        target_pass = int(p_tok)
+
                 try:
                     items = json.loads(queue_file.read_text(encoding="utf-8"))
-                    # Mark all matching passes as queued
                     matched_items = []
+
                     for item in items:
                         out_fn = item.get("output_filename", "")
                         sid = item.get("scene_id") or derive_scene_id(out_fn)
@@ -944,24 +951,78 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         if not item.get("target_arg"):
                             item["target_arg"] = derive_target_arg(out_fn)
 
+                        pass_num = item.get("pass")
+                        if pass_num is None:
+                            if "Pass1" in out_fn:
+                                pass_num = 1
+                            elif "Pass2" in out_fn:
+                                pass_num = 2
+                            item["pass"] = pass_num
+
                         is_match = (
-                            sid.upper() == target_sid
-                            or target_sid in out_fn.upper()
-                            or (target_sid.startswith(sid.upper()) and len(target_sid) <= len(sid) + 3)
+                            sid.upper() == target_base
+                            or out_fn.upper().startswith(f"{target_base}_")
+                            or out_fn.upper() == target_base
                         )
+                        if is_match and target_pass is not None:
+                            is_match = (pass_num == target_pass)
+
                         if is_match:
                             item["status"] = "queued"
                             item["needs_render"] = True
-                            item["reason"] = f"MANUALLY QUEUED ({target_sid})"
+                            item["reason"] = f"TARGETED ({target_sid})"
                             matched_items.append(item)
                         elif item.get("status") == "rendering" and not (active_process and active_process.poll() is None):
                             item["status"] = "queued" if item.get("needs_render") else "skipped"
                             item["reason"] = "INTERRUPTED"
 
+                    # If targeted scene was not found in existing queue, generate it from project config
+                    if not matched_items:
+                        try:
+                            cfg_data = json.loads(config_file.read_text(encoding="utf-8"))
+                            sc = next((s for s in cfg_data.get("scenes", []) if s.get("id", "").upper() == target_base), None)
+                            if sc:
+                                res_str = resolve_project_resolution(cfg_data)
+                                sid = sc.get("id", target_base)
+                                mode = sc.get("mode", "solo")
+                                is_two_pass = mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
+                                if is_two_pass:
+                                    targets = [
+                                        (f"{sid}_Pass1_Left_{res_str}", f"{sid}:p1", 1),
+                                        (f"{sid}_Pass2_Final_{res_str}", f"{sid}:p2", 2),
+                                    ]
+                                else:
+                                    raw_name = sc.get("output_name", f"{sid}_{mode}")
+                                    out_fn = f"{raw_name}_{res_str}" if res_str not in raw_name else raw_name
+                                    targets = [(out_fn, sid, None)]
+
+                                for out_fn, tgt_arg, p_num in targets:
+                                    if target_pass is not None and p_num != target_pass:
+                                        continue
+                                    new_item = {
+                                        "idx": len(items) + 1,
+                                        "id": out_fn,
+                                        "scene_id": sid,
+                                        "target_arg": tgt_arg,
+                                        "pass": p_num,
+                                        "filename": f"{out_fn}.mp4",
+                                        "output_filename": out_fn,
+                                        "status": "queued",
+                                        "reason": f"TARGETED ({target_sid})",
+                                        "needs_render": True,
+                                        "model_type": "minimax_h3_fl2va_pruned_pdd",
+                                        "resolution": res_str,
+                                    }
+                                    items.insert(0, new_item)
+                                    matched_items.append(new_item)
+                        except Exception as ge:
+                            broadcast_log(f"[Studio UI Warning] Could not dynamically generate queue item for {target_sid}: {ge}")
+
                     # Move matched items to the top of the queued list
                     if matched_items:
                         for m in reversed(matched_items):
-                            items.remove(m)
+                            if m in items:
+                                items.remove(m)
                             items.insert(0, m)
                         for i, itm in enumerate(items, 1):
                             itm["idx"] = i

@@ -2717,8 +2717,9 @@ async function triggerRender(args = []) {
   state.renderStartTime = Date.now();
   if (args && args.length > 0) {
     const targetSid = String(args[0]).trim().toUpperCase();
+    const targetBase = targetSid.split(":")[0];
     const match = state.renderQueue?.find(
-      (t) => (t.scene_id || "").toUpperCase() === targetSid || (t.filename || "").toUpperCase().includes(targetSid)
+      (t) => (t.scene_id || "").toUpperCase() === targetBase || (t.output_filename || "").toUpperCase().startsWith(`${targetBase}_`) || (t.output_filename || "").toUpperCase() === targetBase
     );
     if (match) {
       state.activeRenderTask = {
