@@ -60,12 +60,15 @@ def _file_sha256(path: Path) -> str:
 
 
 # Task keys that are NOT render settings (tracked elsewhere: prompt/seed in the task hash,
-# input files via anchor hash / pass-1 cascade). Everything else in a video task is a
-# render setting (resolution, model, steps, solver, flow_shift, custom_settings, ...).
-_NON_SETTING_TASK_KEYS = {"prompt", "seed", "output_filename", "image_start", "audio_guide", "video_guide", "video_mask"}
+# input files via anchor hash / pass-1 cascade, and timing/length via coverage checks).
+# Everything else in a video task is a render setting (resolution, model, steps, solver, flow_shift, custom_settings, ...).
+_NON_SETTING_TASK_KEYS = {
+    "prompt", "seed", "output_filename", "image_start", "audio_guide", "video_guide", "video_mask",
+    "video_length", "render_start", "render_end",
+}
 # Keys compared against the settings JSON that Wan2GP embeds in each rendered MP4
 # (used for clips rendered before render-settings tracking existed).
-_EMBEDDED_CHECK_KEYS = ("model_type", "resolution", "video_length", "force_fps", "sample_solver", "guidance_phases", "flow_shift", "spatial_upsampling", "config")
+_EMBEDDED_CHECK_KEYS = ("model_type", "resolution", "force_fps", "sample_solver", "guidance_phases", "flow_shift", "spatial_upsampling", "config")
 
 
 def render_settings_of(task: dict) -> dict:
@@ -148,12 +151,94 @@ def probe_video_dimensions(ffmpeg: Path, mp4: Path) -> tuple[int, int] | None:
     return None
 
 
+def probe_video_duration(ffmpeg: Path, mp4: Path) -> float | None:
+    """Probes the total duration in seconds of an MP4 file."""
+    ffprobe = ffmpeg.with_name("ffprobe" + ffmpeg.suffix)
+    if not ffprobe.exists():
+        ffprobe = Path("ffprobe")
+    try:
+        out = subprocess.run(
+            [
+                str(ffprobe), "-v", "quiet", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(mp4),
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        )
+        val = out.stdout.strip()
+        return float(val) if val else None
+    except Exception:
+        return None
+
+
+def probe_video_frames(ffmpeg: Path, mp4: Path) -> int | None:
+    """Probes the total video frame count of an MP4 file."""
+    ffprobe = ffmpeg.with_name("ffprobe" + ffmpeg.suffix)
+    if not ffprobe.exists():
+        ffprobe = Path("ffprobe")
+    try:
+        out = subprocess.run(
+            [
+                str(ffprobe), "-v", "quiet", "-select_streams", "v:0",
+                "-show_entries", "stream=nb_frames",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(mp4),
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
+        )
+        val = out.stdout.strip()
+        return int(val) if val.isdigit() else None
+    except Exception:
+        return None
+
+
+def check_scene_render_coverage(
+    ffmpeg: Path,
+    out_mp4: Path,
+    scene_renders: dict,
+    out_name: str,
+    start: float,
+    end: float,
+) -> tuple[bool, float | None, float | None]:
+    """
+    Checks if an existing rendered mp4 clip fully covers the required [start, end] timeline window.
+    Returns (is_covered, rendered_start, rendered_end).
+    """
+    if not (out_mp4.exists() and out_mp4.stat().st_size > 50000):
+        return False, None, None
+
+    render_info = scene_renders.get(out_name)
+    if render_info and "render_start" in render_info and "render_end" in render_info:
+        r_start = float(render_info["render_start"])
+        r_end = float(render_info["render_end"])
+    else:
+        # Legacy fallback or newly discovered clip on disk: probe duration
+        dur = probe_video_duration(ffmpeg, out_mp4)
+        frames = probe_video_frames(ffmpeg, out_mp4)
+        if dur is not None and dur > 0:
+            r_start = float(start)
+            r_end = float(start) + float(dur)
+            scene_renders[out_name] = {
+                "render_start": r_start,
+                "render_end": r_end,
+                "frames": frames,
+                "duration": dur,
+            }
+        else:
+            return False, None, None
+
+    # Fully covered if rendered clip starts at or before timeline start and ends at or after timeline end
+    # Uses a tiny 50ms tolerance for numerical/frame-rate quantization
+    is_covered = (r_start <= (start + 0.05)) and (r_end >= (end - 0.05))
+    return is_covered, r_start, r_end
+
+
 def settings_change_reason(ffmpeg: Path, settings_store: dict, out_name: str, task: dict, out_mp4: Path, file_exists: bool) -> str | None:
     """Returns a human-readable reason if the clip's render settings differ from the last render, else None."""
     cur = render_settings_of(task)
     prev = settings_store.get(out_name)
     if prev is not None:
-        diffs = [k for k in sorted(set(prev) | set(cur)) if prev.get(k) != cur.get(k)]
+        prev_clean = {k: v for k, v in prev.items() if k not in _NON_SETTING_TASK_KEYS}
+        diffs = [k for k in sorted(set(prev_clean) | set(cur)) if prev_clean.get(k) != cur.get(k)]
+        prev = prev_clean
     elif file_exists:
         meta = read_embedded_render_settings(ffmpeg, out_mp4)
         if not meta:
@@ -215,6 +300,60 @@ def expand_variables(text: str, variables: dict[str, str]) -> str:
     for k, v in variables.items():
         out = out.replace("{" + k + "}", str(v))
     return out
+
+
+def resolve_marker_prompt(prompt_text: str, scene_start: float, markers: list[dict], fps: float = 24.0) -> str:
+    """Replaces <marker_name> tags with the marker's relative offset from clip start."""
+    if not prompt_text or not markers:
+        return prompt_text
+
+    marker_map = {m["name"].strip().lower(): m for m in markers if "name" in m and "time" in m}
+    if not marker_map:
+        return prompt_text
+
+    def repl(match):
+        full_inner = match.group(1).strip()
+        parts = [p.strip() for p in full_inner.split(":", 1)]
+        tag_name = parts[0].lower()
+        modifier = parts[1].lower() if len(parts) > 1 else None
+
+        if tag_name not in marker_map:
+            return match.group(0)
+
+        marker = marker_map[tag_name]
+        rel_time = float(marker["time"]) - float(scene_start)
+        rel_frame = max(0, round(rel_time * float(fps)))
+
+        # Context lookaround
+        start_idx = match.start()
+        end_idx = match.end()
+        preceding = prompt_text[max(0, start_idx - 15) : start_idx]
+        following = prompt_text[end_idx : end_idx + 15]
+
+        preceded_by_frame = bool(re.search(r"\b(frame|frames|f)\s*$", preceding, re.IGNORECASE))
+        followed_by_frame = bool(re.match(r"^\s*(frames?|f\b)", following, re.IGNORECASE))
+        followed_by_sec = bool(re.match(r"^\s*(seconds?|s\b)", following, re.IGNORECASE))
+
+        # Explicit modifiers
+        if modifier in ("frame", "frames"):
+            return str(rel_frame) if (preceded_by_frame or followed_by_frame) else f"frame {rel_frame}"
+        elif modifier in ("f", "raw_frame"):
+            return str(rel_frame)
+        elif modifier in ("sec", "seconds"):
+            return f"{rel_time:.2f} seconds"
+        elif modifier == "s":
+            return f"{rel_time:.2f}s"
+        elif modifier in ("raw", "num"):
+            return f"{rel_time:.2f}"
+
+        # Context-dependent defaults
+        if preceded_by_frame or followed_by_frame:
+            return str(rel_frame)
+        if followed_by_sec:
+            return f"{rel_time:.2f}"
+        return f"{rel_time:.2f}s"
+
+    return re.sub(r"<([^>]+)>", repl, prompt_text)
 
 
 def adapt_ref_tags(prompt: str, ref_tag_style: str) -> str:
@@ -307,6 +446,7 @@ class ProjectContext:
         raw_models = raw.get("models", {})
         self.run_controls = raw.get("run_controls", {})
         self.variables = raw.get("variables", {})
+        self.markers = raw.get("markers", [])
 
         extra_paths = [str(resolve_path(self.project_dir, p)) for p in env.get("extra_path_dirs", [])]
         if extra_paths:
@@ -322,6 +462,15 @@ class ProjectContext:
         self.trim_first_frame_s = float(proj.get("trim_first_frame_seconds", 0.04))
         self.fade_out_last_s = float(proj.get("fade_out_last_scene_seconds", 2.5))
 
+        # Configurable render overlap padding (head and tail handles)
+        raw_overlap = proj.get("render_overlap_seconds", proj.get("overlap_seconds", 0.0))
+        if isinstance(raw_overlap, dict):
+            self.head_overlap_s = float(raw_overlap.get("head", 0.0))
+            self.tail_overlap_s = float(raw_overlap.get("tail", 0.0))
+        else:
+            self.head_overlap_s = float(raw_overlap or 0.0)
+            self.tail_overlap_s = float(raw_overlap or 0.0)
+
         self.master_audio = resolve_path(self.project_dir, proj["master_audio"])
         self.master_output_template = proj.get("master_output", "All_Or_Nothing_Master_{resolution}_{fps}fps.mp4")
         self.master_output = resolve_path(self.project_dir, self.master_output_template)
@@ -329,6 +478,16 @@ class ProjectContext:
             k: resolve_path(self.project_dir, v)
             for k, v in proj.get("stems", {}).items()
         }
+        # Auto-discover any audio files dropped into the project audio directory
+        audio_folder = self.project_dir / "audio"
+        if audio_folder.is_dir():
+            for af in audio_folder.glob("*.*"):
+                if af.suffix.lower() in (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"):
+                    if af.name != self.master_audio.name:
+                        if af.stem not in self.stems:
+                            self.stems[af.stem] = af
+                        if af.name not in self.stems:
+                            self.stems[af.name] = af
 
         dirs = proj.get("directories", {})
         self.anchors_dir = resolve_path(self.project_dir, dirs.get("anchors", "work/anchors"))
@@ -680,14 +839,45 @@ class ProjectContext:
         return out_wav
 
     def resolve_scene_audio(self, sid: str, stem_key: str, start_s: float, gen_dur: float, frames: int) -> Path:
-        if not stem_key or stem_key.lower() in ("silent", "none"):
+        skey = (stem_key or "").strip().lower()
+        if not skey or skey in ("silent", "none"):
             return self.ensure_silent_wav(gen_dur, frames)
+
+        # Match configured project stems or master audio
+        src = None
         if stem_key in self.stems:
             src = self.stems[stem_key]
+        elif skey in ("master", "full"):
+            src = self.master_audio
         else:
-            src = resolve_path(self.project_dir, stem_key)
-        out_wav = self.audio_dir / f"{sid}_{stem_key}.wav"
-        self.slice_audio(src, start_s, gen_dur, out_wav)
+            for k, v in self.stems.items():
+                if k.lower() == skey:
+                    src = v
+                    break
+            if src is None:
+                cand = resolve_path(self.project_dir, stem_key)
+                if cand.exists() and cand.is_file():
+                    src = cand
+                else:
+                    for ext in ("", ".mp3", ".wav", ".flac", ".ogg", ".m4a"):
+                        c = self.project_dir / "audio" / f"{stem_key}{ext}"
+                        if c.exists() and c.is_file():
+                            src = c
+                            break
+
+        # If stem does not exist, log a clear warning with valid stems and fall back safely to silence
+        if src is None or not Path(src).exists():
+            valid_keys = list(self.stems.keys()) + ["master", "silent"]
+            print(
+                f"  [Warning] Scene {sid}: Audio stem '{stem_key}' not found on disk (valid stems: {valid_keys}). "
+                f"Using silence so the render can proceed.",
+                flush=True,
+            )
+            return self.ensure_silent_wav(gen_dur, frames)
+
+        safe_stem_tag = re.sub(r"[^a-zA-Z0-9_\-]", "_", stem_key)
+        out_wav = self.audio_dir / f"{sid}_{safe_stem_tag}.wav"
+        self.slice_audio(Path(src), start_s, gen_dur, out_wav)
         return out_wav
 
     def ensure_right_mask(self, frames: int, split_x_pct: float = 0.50, resolution: str | None = None) -> Path:
@@ -925,6 +1115,7 @@ def run_stage1_anchors(
     state: dict,
     force_anchors: list[str],
     sync_only: bool = False,
+    dummy_render: bool = False,
 ) -> set[str]:
     def_rid = str(ctx.default_anchor_renderer)
     def_model = ctx.anchor_renderers.get(def_rid, {}).get("model_type", "qwen_image_21_turbo_7B")
@@ -947,7 +1138,7 @@ def run_stage1_anchors(
         rid, rspec = ctx.resolve_anchor_renderer(sp)
         model_type = rspec["model_type"]
 
-        raw_expanded = expand_variables(sp["prompt"], ctx.variables)
+        raw_expanded = expand_variables(sp.get("prompt", ""), ctx.variables)
         adapted_prompt = adapt_ref_tags(raw_expanded, rspec.get("ref_tag_style", "<imageN>"))
 
         hash_payload = {
@@ -999,6 +1190,26 @@ def run_stage1_anchors(
 
         if target_file.exists():
             target_file.unlink()
+
+        if dummy_render:
+            t0 = time.time()
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [
+                    str(ctx.ffmpeg), "-y", "-f", "lavfi",
+                    "-i", "color=c=0x1e293b:s=960x544:d=1",
+                    "-vf", f"drawtext=text='[DUMMY ANCHOR {aid}]':fontcolor=white:fontsize=32:x=(w-text_w)/2:y=(h-text_h)/2",
+                    "-frames:v", "1", "-q:v", "2", str(target_file),
+                ],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            print(f"      -> [DUMMY] Generated mock anchor {target_file.name} in {time.time() - t0:.2f}s", flush=True)
+            anchor_hashes[fn] = cur_hash
+            anchor_file_hashes[aid] = _file_sha256(target_file)
+            ctx.save_state_hashes(state)
+            regenerated_anchors.add(aid)
+            regenerated_anchors.add(fn)
+            continue
 
         session = lazy_session.get()
         cfg = session.get_default_settings(model_type)
@@ -1140,7 +1351,7 @@ def import_anchors_from_dir(ctx: ProjectContext, src_dir_str: str, state: dict) 
         if res.returncode != 0:
             shutil.copy2(str(matched), str(target_file))
 
-        raw_expanded = expand_variables(sp["prompt"], ctx.variables)
+        raw_expanded = expand_variables(sp.get("prompt", ""), ctx.variables)
         rid, rspec = ctx.resolve_anchor_renderer(sp)
         hash_payload = {
             "filename": fn,
@@ -1168,6 +1379,7 @@ def run_stage2_scenes(
     cascade_anchors: bool = True,
     sync_only: bool = False,
     stitch_only: bool = False,
+    dummy_render: bool = False,
 ) -> list[dict]:
     def_vrid = str(ctx.default_video_renderer)
     def_vmodel = ctx.video_renderers.get(def_vrid, {}).get("model_type", "minimax_h3_fl2va_pruned_pdd")
@@ -1206,8 +1418,15 @@ def run_stage2_scenes(
         if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
             vrid, vrspec = ctx.resolve_video_renderer(sc)
             vmodel = vrspec["model_type"]
-            frames = ctx.valid_video_frames(edit_dur, vrspec)
+
+            # Overlap calculation: render with configured padding beyond timeline edit boundaries
+            req_start = max(0.0, start - ctx.head_overlap_s)
+            req_end = end + ctx.tail_overlap_s
+            req_dur = req_end - req_start
+            frames = ctx.valid_video_frames(req_dur, vrspec)
             gen_dur = frames / ctx.model_fps(vrspec)
+            target_render_start = req_start
+            target_render_end = target_render_start + gen_dur
 
             res_str = ctx.resolve_resolution(vrspec.get("resolution", ctx.current_resolution))
             if mode == "male_solo":
@@ -1220,7 +1439,7 @@ def run_stage2_scenes(
                 stem_key = "silent"
                 raw_out_name = sc.get("output_name", f"{sid}_silent")
             elif mode == "solo":
-                stem_key = sc.get("stem", "lead_vocal")
+                stem_key = sc.get("stem", "male")
                 raw_out_name = sc.get("output_name", f"{sid}_solo")
             else:
                 stem_key = sc.get("stem", "silent")
@@ -1231,6 +1450,19 @@ def run_stage2_scenes(
             else:
                 out_name = raw_out_name
 
+            # Fast skip: if targeting specific scene(s) and this scene is not targeted, skip audio slicing and disk checks
+            if has_scene_filter and not match_scene_pass(force_scenes, sid, None):
+                all_tasks.append((
+                    {"output_filename": out_name, "model_type": vmodel, "video_length": frames, "resolution": res_str},
+                    "", "SKIPPED (NOT TARGETED)", False,
+                ))
+                scene_meta.append({
+                    "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
+                    "clip": f"{out_name}.mp4", "render_start": target_render_start, "render_end": target_render_end,
+                    "anchor": sc.get("anchor"),
+                })
+                continue
+
             out_mp4 = ctx.renders_dir / f"{out_name}.mp4"
             if not out_mp4.exists():
                 legacy_mp4 = ctx.renders_dir / f"{raw_out_name}.mp4"
@@ -1239,22 +1471,37 @@ def run_stage2_scenes(
                     if dims and f"{dims[0]}x{dims[1]}" == res_str:
                         shutil.copy2(str(legacy_mp4), str(out_mp4))
 
-            wav_path = ctx.resolve_scene_audio(sid, stem_key, start, gen_dur, frames)
-            expanded_prompt = expand_variables(sc["prompt"], ctx.variables)
+            scene_renders = state.setdefault("scene_renders", {})
+            is_covered, rendered_start, rendered_end = check_scene_render_coverage(
+                ctx.ffmpeg, out_mp4, scene_renders, out_name, start, end
+            )
+            actual_render_start = rendered_start if is_covered else target_render_start
+            actual_render_end = rendered_end if is_covered else target_render_end
+
+            wav_path = ctx.resolve_scene_audio(sid, stem_key, target_render_start, gen_dur, frames)
+            raw_prompt = sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or ""
+            expanded_prompt = expand_variables(raw_prompt, ctx.variables)
+            expanded_prompt = resolve_marker_prompt(expanded_prompt, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec))
+            scene_seed = int(sc.get("seed") if sc.get("seed") is not None else (sc.get("seed_m") or 1000))
 
             t_dict = ctx.make_video_task(
                 output_filename=out_name,
                 prompt=expanded_prompt,
                 video_length=frames,
-                seed=sc["seed"],
+                seed=scene_seed,
                 image_start=anchor_path,
                 audio_path=wav_path,
                 rspec=vrspec,
             )
+            t_dict["render_start"] = target_render_start
+            t_dict["render_end"] = target_render_end
+
+            # Content hash: hashes prompt, seed, model, resolution, anchor.
+            # Independent of start/end timing so moving boundaries within overlap doesn't invalidate content.
             t_payload = {
-                "sid": sid, "mode": mode, "start": start, "end": end,
+                "sid": sid, "mode": mode,
                 "anchor": anchor_fn, "a_hash": a_hash,
-                "prompt": expanded_prompt, "seed": sc["seed"],
+                "prompt": expanded_prompt, "seed": scene_seed,
                 "resolution": t_dict["resolution"],
                 "model_type": vmodel,
                 "steps": vrspec.get("num_inference_steps"),
@@ -1266,9 +1513,15 @@ def run_stage2_scenes(
                 "skip_steps_cache_type": t_dict.get("skip_steps_cache_type", ""),
             }
             t_hash = _sha256(t_payload)
-            out_mp4 = ctx.renders_dir / f"{out_name}.mp4"
+            # Legacy hash compatibility (hashes that were computed before start/end decoupling)
+            t_payload_leg = dict(t_payload)
+            t_payload_leg["start"] = start
+            t_payload_leg["end"] = end
+            t_hash_legacy = _sha256(t_payload_leg)
+
             file_exists = out_mp4.exists() and out_mp4.stat().st_size > 50000
             prev_hash = task_hashes.get(out_name)
+            changed = (prev_hash is not None) and (prev_hash != t_hash) and (prev_hash != t_hash_legacy)
 
             if sync_only and file_exists:
                 task_hashes[out_name] = t_hash
@@ -1289,6 +1542,8 @@ def run_stage2_scenes(
                         needs_render, reason = True, f"FORCED ({settings_reason})"
                     elif changed:
                         needs_render, reason = True, "FORCED (EDITED)"
+                    elif not is_covered:
+                        needs_render, reason = True, f"FORCED (BOUNDS NOT COVERED: [{start:.2f}, {end:.2f}] vs [{rendered_start:.2f}, {rendered_end:.2f}])"
                     else:
                         needs_render, reason = True, "FORCED"
             else:
@@ -1297,82 +1552,126 @@ def run_stage2_scenes(
                 anchor_newer = file_exists and anchor_path.exists() and (out_mp4.stat().st_mtime < anchor_path.stat().st_mtime)
                 settings_reason = settings_change_reason(ctx.ffmpeg, settings_store, out_name, t_dict, out_mp4, file_exists)
 
-                if prev_hash is None and file_exists and not forced and not anchor_was_regen and not anchor_newer and not settings_reason:
-                    task_hashes[out_name] = t_hash
-                    needs_render, reason = False, "UP-TO-DATE"
-                elif forced:
+                if forced:
                     needs_render, reason = True, "FORCED"
+                elif not file_exists:
+                    needs_render, reason = True, "MISSING FILE"
                 elif anchor_was_regen:
                     needs_render, reason = True, f"ANCHOR {aid} UPDATED"
                 elif anchor_newer:
                     needs_render, reason = True, f"ANCHOR {aid} NEWER ON DISK"
-                elif not file_exists:
-                    needs_render, reason = True, "MISSING FILE"
                 elif settings_reason:
                     needs_render, reason = True, settings_reason
                 elif changed:
                     needs_render, reason = True, "PROMPT/SEED/RENDERER/ANCHOR EDITED"
+                elif not is_covered:
+                    r_str = f"[{rendered_start:.2f}, {rendered_end:.2f}]" if rendered_start is not None else "none"
+                    needs_render, reason = True, f"TIMELINE EXCEEDS RENDER ([{start:.2f}, {end:.2f}] not covered by {r_str})"
                 else:
-                    needs_render, reason = False, "UP-TO-DATE"
+                    needs_render, reason = False, "UP-TO-DATE (COVERED BY RENDER)"
+
                 if not needs_render:
+                    task_hashes[out_name] = t_hash
                     settings_store[out_name] = render_settings_of(t_dict)
 
             all_tasks.append((t_dict, t_hash, reason, needs_render))
-            scene_meta.append({"id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode, "clip": f"{out_name}.mp4", "anchor": sc.get("anchor")})
+            scene_meta.append({
+                "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
+                "clip": f"{out_name}.mp4", "render_start": actual_render_start, "render_end": actual_render_end,
+                "anchor": sc.get("anchor")
+            })
 
         elif mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
             vrid_p1, vrspec_p1 = ctx.resolve_video_renderer(sc, pass_num=1)
             vrid_p2, vrspec_p2 = ctx.resolve_video_renderer(sc, pass_num=2)
             vmodel_p1 = vrspec_p1["model_type"]
             vmodel_p2 = vrspec_p2["model_type"]
-            frames = ctx.valid_video_frames(edit_dur, vrspec_p2)
+
+            # Overlap calculation
+            req_start = max(0.0, start - ctx.head_overlap_s)
+            req_end = end + ctx.tail_overlap_s
+            req_dur = req_end - req_start
+            frames = ctx.valid_video_frames(req_dur, vrspec_p2)
             gen_dur = frames / ctx.model_fps(vrspec_p2)
-
-            stem_m = sc.get("stem_m", "male")
-            if mode == "duet_method_b":
-                stem_f = sc.get("stem_f", "female")
-            elif mode == "gva_male_left_silent_right":
-                stem_f = sc.get("stem_f", "silent")
-            else:
-                stem_f = sc.get("stem_f", "silent")
-
-            wav_m = ctx.resolve_scene_audio(sid, stem_m, start, gen_dur, frames)
-            wav_f = ctx.resolve_scene_audio(sid, stem_f, start, gen_dur, frames)
+            target_render_start = req_start
+            target_render_end = target_render_start + gen_dur
 
             res_str = ctx.resolve_resolution(vrspec_p2.get("resolution", ctx.current_resolution))
-            split_x = float(sc.get("split_x", 0.50))
-            mask_path = ctx.ensure_right_mask(frames, split_x, res_str)
             out_p1 = f"{sid}_Pass1_Left_{res_str}"
             out_p2 = f"{sid}_Pass2_Final_{res_str}"
 
-            exp_prompt_m = expand_variables(sc["prompt_m"], ctx.variables)
-            exp_prompt_f = expand_variables(sc["prompt_f"], ctx.variables)
+            # Fast skip: if targeting specific scene(s) and neither pass of this scene is targeted, skip audio and masks
+            if has_scene_filter and not (match_scene_pass(force_scenes, sid, 1) or match_scene_pass(force_scenes, sid, 2)):
+                all_tasks.append((
+                    {"output_filename": out_p1, "model_type": vmodel_p1, "video_length": frames, "resolution": res_str},
+                    "", "SKIPPED (NOT TARGETED)", False,
+                ))
+                all_tasks.append((
+                    {"output_filename": out_p2, "model_type": vmodel_p2, "video_length": frames, "resolution": res_str},
+                    "", "SKIPPED (NOT TARGETED)", False,
+                ))
+                scene_meta.append({
+                    "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
+                    "clip": f"{out_p2}.mp4", "render_start": target_render_start, "render_end": target_render_end,
+                    "anchor": sc.get("anchor"),
+                })
+                continue
+
+            stem_m = sc.get("stem_m") or sc.get("stem_p1") or sc.get("stem") or "male"
+            if mode == "duet_method_b":
+                stem_f = sc.get("stem_f") or sc.get("stem_p2") or "female"
+            elif mode == "gva_male_left_silent_right":
+                stem_f = sc.get("stem_f") or sc.get("stem_p2") or "silent"
+            else:
+                stem_f = sc.get("stem_f") or sc.get("stem_p2") or "silent"
+
+            wav_m = ctx.resolve_scene_audio(sid, stem_m, target_render_start, gen_dur, frames)
+            wav_f = ctx.resolve_scene_audio(sid, stem_f, target_render_start, gen_dur, frames)
+
+            split_x = float(sc.get("split_x", 0.50))
+            mask_path = ctx.ensure_right_mask(frames, split_x, res_str)
+
+            raw_m = sc.get("prompt_m") or sc.get("prompt") or ""
+            raw_f = sc.get("prompt_f") or sc.get("prompt") or ""
+            exp_prompt_m = expand_variables(raw_m, ctx.variables)
+            exp_prompt_m = resolve_marker_prompt(exp_prompt_m, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p1))
+            exp_prompt_f = expand_variables(raw_f, ctx.variables)
+            exp_prompt_f = resolve_marker_prompt(exp_prompt_f, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p2))
+
+            seed_m = int(sc.get("seed_m") if sc.get("seed_m") is not None else (sc.get("seed") or 1000))
+            seed_f = int(sc.get("seed_f") if sc.get("seed_f") is not None else (sc.get("seed") or 1000))
 
             t_p1 = ctx.make_video_task(
                 output_filename=out_p1,
                 prompt=exp_prompt_m,
                 video_length=frames,
-                seed=sc["seed_m"],
+                seed=seed_m,
                 image_start=anchor_path,
                 audio_path=wav_m,
                 rspec=vrspec_p1,
             )
+            t_p1["render_start"] = target_render_start
+            t_p1["render_end"] = target_render_end
+
             t_p2 = ctx.make_video_task(
                 output_filename=out_p2,
                 prompt=exp_prompt_f,
                 video_length=frames,
-                seed=sc["seed_f"],
+                seed=seed_f,
                 image_start=anchor_path,
                 audio_path=wav_f,
                 rspec=vrspec_p2,
                 video_guide=ctx.renders_dir / f"{out_p1}.mp4",
                 video_mask=mask_path,
             )
+            t_p2["render_start"] = target_render_start
+            t_p2["render_end"] = target_render_end
 
+            # Content hashes (independent of start/end boundaries)
             p1_payload = {
-                "sid": sid, "pass": 1, "mode": mode, "start": start, "end": end,
+                "sid": sid, "pass": 1, "mode": mode,
                 "anchor": anchor_fn, "a_hash": a_hash,
-                "prompt_m": exp_prompt_m, "seed_m": sc["seed_m"],
+                "prompt_m": exp_prompt_m, "seed_m": seed_m,
                 "resolution": t_p1["resolution"],
                 "model_type": vmodel_p1,
                 "steps": vrspec_p1.get("num_inference_steps"),
@@ -1384,11 +1683,15 @@ def run_stage2_scenes(
                 "skip_steps_cache_type": t_p1.get("skip_steps_cache_type", ""),
             }
             h_p1 = _sha256(p1_payload)
+            p1_leg = dict(p1_payload)
+            p1_leg["start"] = start
+            p1_leg["end"] = end
+            h_p1_leg = _sha256(p1_leg)
 
             p2_payload = {
-                "sid": sid, "pass": 2, "mode": mode, "start": start, "end": end,
+                "sid": sid, "pass": 2, "mode": mode,
                 "h_p1": h_p1, "split_x": split_x,
-                "prompt_f": exp_prompt_f, "seed_f": sc["seed_f"],
+                "prompt_f": exp_prompt_f, "seed_f": seed_f,
                 "resolution": t_p2["resolution"],
                 "model_type": vmodel_p2,
                 "steps": vrspec_p2.get("num_inference_steps"),
@@ -1400,6 +1703,11 @@ def run_stage2_scenes(
                 "skip_steps_cache_type": t_p2.get("skip_steps_cache_type", ""),
             }
             h_p2 = _sha256(p2_payload)
+            p2_leg = dict(p2_payload)
+            p2_leg["start"] = start
+            p2_leg["end"] = end
+            p2_leg["h_p1"] = h_p1_leg
+            h_p2_leg = _sha256(p2_leg)
 
             mp4_p1 = ctx.renders_dir / f"{out_p1}.mp4"
             mp4_p2 = ctx.renders_dir / f"{out_p2}.mp4"
@@ -1419,6 +1727,13 @@ def run_stage2_scenes(
             ex_p2 = mp4_p2.exists() and mp4_p2.stat().st_size > 50000
             prev_p1 = task_hashes.get(out_p1)
             prev_p2 = task_hashes.get(out_p2)
+
+            scene_renders = state.setdefault("scene_renders", {})
+            cov_p1, r_start_p1, r_end_p1 = check_scene_render_coverage(ctx.ffmpeg, mp4_p1, scene_renders, out_p1, start, end)
+            cov_p2, r_start_p2, r_end_p2 = check_scene_render_coverage(ctx.ffmpeg, mp4_p2, scene_renders, out_p2, start, end)
+
+            actual_render_start = r_start_p2 if cov_p2 else target_render_start
+            actual_render_end = r_end_p2 if cov_p2 else target_render_end
 
             if sync_only and ex_p1 and ex_p2:
                 task_hashes[out_p1] = h_p1
@@ -1440,6 +1755,8 @@ def run_stage2_scenes(
                     nr_p1, r_p1 = True, (f"FORCED ({set_p1})" if set_p1 else "FORCED")
                 elif force_p2 and not ex_p1:
                     nr_p1, r_p1 = True, "REQUIRED FOR PASS 2"
+                elif force_p2 and not cov_p1:
+                    nr_p1, r_p1 = True, f"FORCED PASS 1 (BOUNDS NOT COVERED)"
                 else:
                     nr_p1, r_p1 = False, "SKIPPED (NOT TARGETED)"
 
@@ -1452,34 +1769,31 @@ def run_stage2_scenes(
             else:
                 force_p1 = match_scene_pass(force_scenes, sid, 1)
                 force_p2 = match_scene_pass(force_scenes, sid, 2)
-                chg_p1 = (prev_p1 is not None) and (prev_p1 != h_p1)
+                chg_p1 = (prev_p1 is not None) and (prev_p1 != h_p1) and (prev_p1 != h_p1_leg)
                 anchor_newer_p1 = ex_p1 and anchor_path.exists() and (mp4_p1.stat().st_mtime < anchor_path.stat().st_mtime)
                 set_p1 = settings_change_reason(ctx.ffmpeg, settings_store, out_p1, t_p1, mp4_p1, ex_p1)
                 set_p2 = settings_change_reason(ctx.ffmpeg, settings_store, out_p2, t_p2, mp4_p2, ex_p2)
 
-                if prev_p1 is None and ex_p1 and not force_p1 and not anchor_was_regen and not anchor_newer_p1 and not set_p1:
-                    task_hashes[out_p1] = h_p1
-                    nr_p1, r_p1 = False, "UP-TO-DATE"
-                elif force_p1:
+                if force_p1:
                     nr_p1, r_p1 = True, "FORCED"
+                elif not ex_p1:
+                    nr_p1, r_p1 = True, "MISSING FILE"
                 elif anchor_was_regen:
                     nr_p1, r_p1 = True, f"ANCHOR {aid} UPDATED"
                 elif anchor_newer_p1:
                     nr_p1, r_p1 = True, f"ANCHOR {aid} NEWER ON DISK"
-                elif not ex_p1:
-                    nr_p1, r_p1 = True, "MISSING FILE"
                 elif set_p1:
                     nr_p1, r_p1 = True, set_p1
                 elif chg_p1:
                     nr_p1, r_p1 = True, "PASS 1 (prompt_m/seed_m) EDITED"
+                elif not cov_p1:
+                    r_str = f"[{r_start_p1:.2f}, {r_end_p1:.2f}]" if r_start_p1 is not None else "none"
+                    nr_p1, r_p1 = True, f"TIMELINE EXCEEDS RENDER ([{start:.2f}, {end:.2f}] not covered by {r_str})"
                 else:
-                    nr_p1, r_p1 = False, "UP-TO-DATE"
+                    nr_p1, r_p1 = False, "UP-TO-DATE (COVERED BY RENDER)"
 
-                chg_p2 = (prev_p2 is not None) and (prev_p2 != h_p2)
-                if prev_p2 is None and ex_p2 and not force_p2 and not nr_p1 and not set_p2:
-                    task_hashes[out_p2] = h_p2
-                    nr_p2, r_p2 = False, "UP-TO-DATE"
-                elif force_p2:
+                chg_p2 = (prev_p2 is not None) and (prev_p2 != h_p2) and (prev_p2 != h_p2_leg)
+                if force_p2:
                     nr_p2, r_p2 = True, "FORCED"
                 elif nr_p1:
                     nr_p2, r_p2 = True, f"PASS 1 RE-RENDERED ({r_p1})"
@@ -1489,20 +1803,53 @@ def run_stage2_scenes(
                     nr_p2, r_p2 = True, set_p2
                 elif chg_p2:
                     nr_p2, r_p2 = True, "PASS 2 (prompt_f/seed_f/split_x) EDITED"
+                elif not cov_p2:
+                    r_str = f"[{r_start_p2:.2f}, {r_end_p2:.2f}]" if r_start_p2 is not None else "none"
+                    nr_p2, r_p2 = True, f"TIMELINE EXCEEDS RENDER ([{start:.2f}, {end:.2f}] not covered by {r_str})"
                 else:
-                    nr_p2, r_p2 = False, "UP-TO-DATE"
+                    nr_p2, r_p2 = False, "UP-TO-DATE (COVERED BY RENDER)"
+
                 if not nr_p1:
+                    task_hashes[out_p1] = h_p1
                     settings_store[out_p1] = render_settings_of(t_p1)
                 if not nr_p2:
+                    task_hashes[out_p2] = h_p2
                     settings_store[out_p2] = render_settings_of(t_p2)
 
             all_tasks.append((t_p1, h_p1, r_p1, nr_p1))
             all_tasks.append((t_p2, h_p2, r_p2, nr_p2))
-            scene_meta.append({"id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode, "clip": f"{out_p2}.mp4", "anchor": sc.get("anchor")})
+            scene_meta.append({
+                "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
+                "clip": f"{out_p2}.mp4", "render_start": actual_render_start, "render_end": actual_render_end,
+                "anchor": sc.get("anchor")
+            })
 
     ctx.save_state_hashes(state)
     (ctx.jobs_dir / "v3_manifest.json").write_text(json.dumps([t[0] for t in all_tasks], indent=2), encoding="utf-8")
     (ctx.jobs_dir / "v3_timeline.json").write_text(json.dumps(scene_meta, indent=2), encoding="utf-8")
+
+    queue_summary = []
+    for idx, (t, t_hash, reason, needs_render) in enumerate(all_tasks, 1):
+        queue_summary.append({
+            "idx": idx,
+            "total": len(all_tasks),
+            "filename": f"{t['output_filename']}.mp4",
+            "output_filename": t["output_filename"],
+            "reason": reason,
+            "needs_render": needs_render,
+            "status": "queued" if needs_render else "skipped",
+            "model_type": t.get("model_type"),
+            "video_length": t.get("video_length"),
+            "resolution": t.get("resolution"),
+        })
+    queue_file = ctx.jobs_dir / "v3_queue.json"
+    queue_file.write_text(json.dumps(queue_summary, indent=2), encoding="utf-8")
+
+    def _sync_queue():
+        try:
+            queue_file.write_text(json.dumps(queue_summary, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     if sync_only or stitch_only:
         return scene_meta
@@ -1511,17 +1858,116 @@ def run_stage2_scenes(
     print(f"  -> {pending_count} of {len(all_tasks)} video passes queued for GPU rendering.", flush=True)
 
     # Initial progressive master assembly (displays all existing clips and anchor placeholders)
-    assemble_progressive_master(ctx, scene_meta, log_prefix="  ")
+    if not has_scene_filter:
+        assemble_progressive_master(ctx, scene_meta, log_prefix="  ")
 
     for idx, (t, t_hash, reason, needs_render) in enumerate(all_tasks, 1):
         out_name = t["output_filename"]
         out_mp4 = ctx.renders_dir / f"{out_name}.mp4"
+
+        # Check dynamic user queue requests from UI
+        req_file = ctx.jobs_dir / "queue_requests.json"
+        if req_file.exists():
+            try:
+                dyn_reqs = json.loads(req_file.read_text(encoding="utf-8"))
+                matched = False
+                for r in list(dyn_reqs):
+                    r_clean = str(r).strip()
+                    if r_clean and (r_clean in out_name or out_name.startswith(f"{r_clean}_") or out_name == r_clean):
+                        matched = True
+                        needs_render = True
+                        reason = f"QUEUED BY USER"
+                        queue_summary[idx - 1]["needs_render"] = True
+                        queue_summary[idx - 1]["reason"] = reason
+                        dyn_reqs.remove(r)
+                        break
+                if matched:
+                    req_file.write_text(json.dumps(dyn_reqs, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+
         if not needs_render:
+            queue_summary[idx - 1]["status"] = "skipped"
+            _sync_queue()
             print(f"  [{idx:02d}/{len(all_tasks)}] {out_mp4.name} [{reason}] — skipping.", flush=True)
+            print(f"[QUEUE_SKIP] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'reason': reason})}", flush=True)
             continue
 
         if out_mp4.exists():
             out_mp4.unlink()
+
+        if dummy_render:
+            t0 = time.time()
+            print(
+                f"  [{idx:02d}/{len(all_tasks)}] [DUMMY] Simulating render for {out_mp4.name} [{reason}] "
+                f"({t.get('video_length')}f, {t.get('resolution')})...",
+                flush=True,
+            )
+            print(
+                f"[QUEUE_ACTIVE] {json.dumps({'idx': idx, 'total': len(all_tasks), 'filename': out_mp4.name, 'reason': reason, 'model': t.get('model_type'), 'frames': t.get('video_length'), 'resolution': t.get('resolution')})}",
+                flush=True,
+            )
+            queue_summary[idx - 1]["status"] = "rendering"
+            _sync_queue()
+
+            # Emit mock progress steps
+            total_dummy_steps = 5
+            for step in range(1, total_dummy_steps + 1):
+                time.sleep(0.04)
+                pct = round((step / total_dummy_steps) * 100, 1)
+                print(
+                    f"[QUEUE_PROGRESS] {json.dumps({'idx': idx, 'phase': 'Sampling', 'step': step, 'total_steps': total_dummy_steps, 'pct': pct})}",
+                    flush=True,
+                )
+
+            # Generate mock video with FFmpeg
+            frames = t.get("video_length", 107)
+            dur = frames / ctx.fps
+            res = t.get("resolution") or ctx.current_resolution
+            w, h = [int(x) for x in res.split("x")]
+            cmd = [
+                str(ctx.ffmpeg), "-y",
+                "-f", "lavfi", "-i", f"color=c=0x1e293b:s={w}x{h}:r={ctx.fps}:d={dur:.3f}",
+            ]
+            audio_file = t.get("audio_guide")
+            if audio_file and Path(audio_file).exists() and Path(audio_file).stat().st_size > 100:
+                cmd.extend(["-i", str(audio_file), "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-shortest"])
+            else:
+                cmd.extend(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-map", "0:v:0", "-map", "1:a:0", "-c:a", "aac", "-shortest"])
+
+            cmd.extend([
+                "-vf", f"drawtext=text='[DUMMY RENDER - {out_name}]':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=(h-text_h)/2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", f"{dur:.3f}", str(out_mp4),
+            ])
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            elapsed = round(time.time() - t0, 1)
+            print(f"      -> [DUMMY] Generated mock {out_mp4.name} in {elapsed:.1f}s", flush=True)
+            print(
+                f"[QUEUE_DONE] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'elapsed': elapsed})}",
+                flush=True,
+            )
+            queue_summary[idx - 1]["status"] = "completed"
+            queue_summary[idx - 1]["elapsed"] = elapsed
+            _sync_queue()
+
+            task_hashes[out_name] = t_hash
+            settings_store[out_name] = render_settings_of(t)
+            scene_renders = state.setdefault("scene_renders", {})
+            scene_renders[out_name] = {
+                "render_start": t.get("render_start", 0.0),
+                "render_end": t.get("render_end", 0.0),
+                "frames": t.get("video_length", 0),
+            }
+            img_start = t.get("image_start")
+            if img_start and Path(img_start).exists():
+                aid = extract_anchor_id(Path(img_start).name)
+                if aid.startswith("A") and aid[1:].isdigit():
+                    state.setdefault("anchor_file_hashes", {})[aid] = _file_sha256(Path(img_start))
+            ctx.save_state_hashes(state)
+
+            if "_Pass1_Left" not in out_name and not has_scene_filter:
+                assemble_progressive_master(ctx, scene_meta, log_prefix="      ")
+            continue
 
         session = lazy_session.get()
         t0 = time.time()
@@ -1530,23 +1976,62 @@ def run_stage2_scenes(
             f"(model={t['model_type']}, {t['video_length']}f, vpt={t['video_prompt_type'] or 'S'})...",
             flush=True,
         )
-        job = session.submit_task(t)
+        print(
+            f"[QUEUE_ACTIVE] {json.dumps({'idx': idx, 'total': len(all_tasks), 'filename': out_mp4.name, 'reason': reason, 'model': t.get('model_type'), 'frames': t.get('video_length'), 'resolution': t.get('resolution')})}",
+            flush=True,
+        )
+        queue_summary[idx - 1]["status"] = "rendering"
+        _sync_queue()
+
+        wangp_task = {k: v for k, v in t.items() if k not in ("render_start", "render_end")}
+        job = session.submit_task(wangp_task)
         for event in job.events.iter(timeout=0.5):
             if event.kind == "progress":
                 p = event.data
                 if p.total_steps and p.current_step in (1, p.total_steps // 2, p.total_steps):
                     print(f"      [{p.phase}] {p.current_step}/{p.total_steps} ({p.progress:.0f}%)", flush=True)
+                if p.total_steps:
+                    print(
+                        f"[QUEUE_PROGRESS] {json.dumps({'idx': idx, 'phase': p.phase, 'step': p.current_step, 'total_steps': p.total_steps, 'pct': round(p.progress, 1)})}",
+                        flush=True,
+                    )
         res = job.result()
         if not res.success or not res.generated_files:
+            queue_summary[idx - 1]["status"] = "failed"
+            queue_summary[idx - 1]["error"] = [e.message for e in res.errors]
+            _sync_queue()
+            print(
+                f"[QUEUE_FAIL] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'error': [e.message for e in res.errors]})}",
+                flush=True,
+            )
             raise RuntimeError(f"Failed rendering {out_mp4.name}: {[e.message for e in res.errors]}")
 
         gen_path = Path(res.generated_files[0])
         if gen_path.resolve() != out_mp4.resolve():
             shutil.copy2(gen_path, out_mp4)
-        print(f"      -> Completed {out_mp4.name} in {time.time() - t0:.1f}s", flush=True)
+        elapsed = round(time.time() - t0, 1)
+        print(f"      -> Completed {out_mp4.name} in {elapsed:.1f}s", flush=True)
+        print(
+            f"[QUEUE_DONE] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'elapsed': elapsed})}",
+            flush=True,
+        )
+        queue_summary[idx - 1]["status"] = "completed"
+        queue_summary[idx - 1]["elapsed"] = elapsed
+        _sync_queue()
 
         task_hashes[out_name] = t_hash
         settings_store[out_name] = render_settings_of(t)
+        scene_renders = state.setdefault("scene_renders", {})
+        scene_renders[out_name] = {
+            "render_start": t.get("render_start", 0.0),
+            "render_end": t.get("render_end", 0.0),
+            "frames": t.get("video_length", 0),
+        }
+        img_start = t.get("image_start")
+        if img_start and Path(img_start).exists():
+            aid = extract_anchor_id(Path(img_start).name)
+            if aid.startswith("A") and aid[1:].isdigit():
+                state.setdefault("anchor_file_hashes", {})[aid] = _file_sha256(Path(img_start))
         ctx.save_state_hashes(state)
 
         # Update progressive master if this pass completed a full scene (not an intermediate pass 1 guide)
@@ -1560,8 +2045,13 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
     """Assembles a full-song master video from start to finish.
     Uses rendered AI video clips where available, and loops high-res anchor portraits as storyboard
     placeholders for scenes that have not yet been rendered.
+    Supports head-offset trimming for clips generated with render overlap padding.
     Safely handles Windows media player file locks.
     """
+    state = ctx.load_state_hashes()
+    scene_renders = state.setdefault("scene_renders", {})
+    trim_cache = state.setdefault("trim_cache", {})
+
     target_w, target_h = None, None
     for sc in scene_meta:
         src = ctx.renders_dir / sc["clip"]
@@ -1608,10 +2098,29 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
         end_frame = int(round(sc["end"] * ctx.fps))
         target_frames = max(1, end_frame - start_frame)
 
+        # Retrieve render_start for offset trimming
+        render_start = sc.get("render_start")
+        if render_start is None:
+            r_info = scene_renders.get(src_clip.stem)
+            if r_info and "render_start" in r_info:
+                render_start = float(r_info["render_start"])
+            else:
+                render_start = float(sc["start"])
+        else:
+            render_start = float(render_start)
+
+        # Head offset into the rendered clip to reach timeline edit start
+        head_offset_s = max(0.0, float(sc["start"]) - render_start) + ctx.trim_first_frame_s
+        trim_sig = f"{sc['start']:.3f}_{sc['end']:.3f}_{head_offset_s:.3f}_{target_frames}_{res_str}_{ctx.fps}"
+
         if src_clip.exists() and src_clip.stat().st_size > 50000:
             rendered_count += 1
             active_clip = dst_clip
-            needs_encode = (not dst_clip.exists()) or (dst_clip.stat().st_mtime < src_clip.stat().st_mtime)
+            needs_encode = (
+                (not dst_clip.exists())
+                or (dst_clip.stat().st_mtime < src_clip.stat().st_mtime)
+                or (trim_cache.get(dst_clip.name) != trim_sig)
+            )
             if not needs_encode and dst_clip.exists():
                 clip_fps = probe_video_fps(ctx.ffmpeg, dst_clip)
                 if clip_fps is None or abs(clip_fps - ctx.fps) > 0.1:
@@ -1620,11 +2129,15 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                     dims = probe_video_dimensions(ctx.ffmpeg, dst_clip)
                     if dims != (target_tw, target_th):
                         needs_encode = True
+                    else:
+                        cframes = probe_video_frames(ctx.ffmpeg, dst_clip)
+                        if cframes is not None and cframes != target_frames:
+                            needs_encode = True
             if needs_encode:
                 vf_filters = []
-                if ctx.trim_first_frame_s > 0:
+                if head_offset_s > 0.0005:
                     vf_filters.extend([
-                        f"trim=start={ctx.trim_first_frame_s:.3f}",
+                        f"trim=start={head_offset_s:.3f}",
                         "setpts=PTS-STARTPTS",
                     ])
                 vf_filters.extend([
@@ -1644,6 +2157,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                     ],
                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
+                trim_cache[dst_clip.name] = trim_sig
             if dst_placeholder.exists():
                 try:
                     dst_placeholder.unlink()
@@ -1654,7 +2168,11 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
             active_clip = dst_placeholder
             anchor_fn = sc.get("anchor")
             aid, anchor_path = ctx.resolve_anchor_path(anchor_fn)
-            needs_encode = (not dst_placeholder.exists()) or (anchor_path.exists() and dst_placeholder.stat().st_mtime < anchor_path.stat().st_mtime)
+            needs_encode = (
+                (not dst_placeholder.exists())
+                or (anchor_path.exists() and dst_placeholder.stat().st_mtime < anchor_path.stat().st_mtime)
+                or (trim_cache.get(dst_placeholder.name) != trim_sig)
+            )
             if not needs_encode and dst_placeholder.exists():
                 ph_fps = probe_video_fps(ctx.ffmpeg, dst_placeholder)
                 if ph_fps is None or abs(ph_fps - ctx.fps) > 0.1:
@@ -1663,6 +2181,10 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                     dims = probe_video_dimensions(ctx.ffmpeg, dst_placeholder)
                     if dims != (target_tw, target_th):
                         needs_encode = True
+                    else:
+                        cframes = probe_video_frames(ctx.ffmpeg, dst_placeholder)
+                        if cframes is not None and cframes != target_frames:
+                            needs_encode = True
             if needs_encode:
                 vf_filters = [
                     f"scale={res_str}:flags=lanczos",
@@ -1689,20 +2211,23 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                         str(dst_placeholder),
                     ]
                 subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                trim_cache[dst_placeholder.name] = trim_sig
 
         concat_lines.append(f"file '{active_clip.as_posix()}'")
 
         if ctx.generate_review_strips:
             strip_jpg = ctx.strips_dir / f"review_{sid}.jpg"
-            if not strip_jpg.exists() or (src_clip.exists() and strip_jpg.stat().st_mtime < src_clip.stat().st_mtime):
+            if not strip_jpg.exists() or (src_clip.exists() and strip_jpg.stat().st_mtime < src_clip.stat().st_mtime) or needs_encode:
                 subprocess.run(
                     [
                         str(ctx.ffmpeg), "-y", "-i", str(active_clip),
-                        "-vf", f"fps=4/{max(1.0, dur):.3f},scale=320:184,tile=4x1",
-                        "-frames:v", "1", "-q:v", "3", str(strip_jpg),
+                        "-vf", f"fps=5/{max(1.0, dur):.3f},scale=-1:144,tile=5x1",
+                        "-frames:v", "1", "-q:v", "2", str(strip_jpg),
                     ],
                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
+
+    ctx.save_state_hashes(state)
 
     concat_txt = ctx.trimmed_dir / "concat_list.txt"
     concat_txt.write_text("\n".join(concat_lines), encoding="utf-8")
@@ -1918,6 +2443,10 @@ def parse_cli_and_config(argv: list[str]):
     skip_anchors = bool(rc.get("skip_anchors", False)) or cli_skip_anchors
     sync_only = False
     list_only = False
+    dummy_render = (
+        bool(os.environ.get("DUMMY_RENDER", "0") in ("1", "true", "yes"))
+        or bool(rc.get("dummy_render", False))
+    )
 
     valid_scene_ids = {sc["id"].upper() for sc in ctx.scenes}
 
@@ -1928,6 +2457,8 @@ def parse_cli_and_config(argv: list[str]):
         tu = t.upper()
         if tu in ("--LIST", "-L", "LIST"):
             list_only = True
+        elif tu in ("--DUMMY-RENDER", "--DUMMY", "--MOCK", "-M"):
+            dummy_render = True
         elif tu in ("--SYNC-HASHES", "SYNC-HASHES"):
             sync_only = True
         elif tu in ("--STITCH-ONLY", "--STITCH", "STITCH"):
@@ -1960,6 +2491,7 @@ def parse_cli_and_config(argv: list[str]):
         list_only,
         cli_import_dir,
         skip_anchors,
+        dummy_render,
     )
 
 
@@ -2119,6 +2651,7 @@ def main():
         list_only,
         cli_import_dir,
         skip_anchors,
+        dummy_render,
     ) = parse_cli_and_config(args)
 
     if list_only:
@@ -2135,15 +2668,50 @@ def main():
         print(f"[Sync] Baseline {ctx.state_hash_file} synced with current JSON state.", flush=True)
         return
 
+    if stitch_only:
+        print("\n[Stitch] Immediate master restitch requested. Skipping anchor and audio prep...", flush=True)
+        timeline_file = ctx.jobs_dir / "v3_timeline.json"
+        scene_meta = None
+        if timeline_file.is_file():
+            try:
+                scene_meta = json.loads(timeline_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        if not scene_meta:
+            scene_meta = []
+            res_str = ctx.resolve_resolution(ctx.current_resolution)
+            for sc in ctx.scenes:
+                sid = sc["id"]
+                start = float(sc["start"])
+                end = float(sc["end"])
+                edit_dur = round(end - start, 3)
+                mode = sc["mode"]
+                if mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
+                    out_clip = f"{sid}_Pass2_Final_{res_str}.mp4"
+                elif mode == "female_solo":
+                    out_clip = f"{sid}_female_solo_{res_str}.mp4"
+                elif mode == "silent_locked":
+                    out_clip = f"{sid}_silent_{res_str}.mp4"
+                else:
+                    out_clip = f"{sid}_male_solo_{res_str}.mp4"
+                scene_meta.append({
+                    "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
+                    "clip": out_clip, "render_start": start, "render_end": end,
+                    "anchor": sc.get("anchor"),
+                })
+        run_stage3_assemble_master(ctx, scene_meta)
+        print(f"\n[Stitch] Master video restitched in {time.time() - t_start:.1f}s.", flush=True)
+        return
+
     imported_anchors: set[str] = set()
     if cli_import_dir:
         imported_anchors = import_anchors_from_dir(ctx, cli_import_dir, state)
 
-    if skip_anchors:
-        print("\n[Anchors] Skipping Stage 1 anchor generation (using external / imported anchors on disk).", flush=True)
+    if skip_anchors or (force_scenes and not force_anchors):
+        print("\n[Anchors] Skipping Stage 1 anchor checks (single-scene render mode).", flush=True)
         regen_anchors = set(imported_anchors)
     else:
-        regen_anchors = run_stage1_anchors(ctx, lazy_session, state, force_anchors).union(imported_anchors)
+        regen_anchors = run_stage1_anchors(ctx, lazy_session, state, force_anchors, dummy_render=dummy_render).union(imported_anchors)
 
     if anchors_only:
         print(f"\n[Anchors-Only Mode] Finished anchor processing in {time.time() - t_start:.1f}s.", flush=True)
@@ -2158,6 +2726,7 @@ def main():
         regen_anchors,
         cascade_anchors=cascade_anchors,
         stitch_only=stitch_only,
+        dummy_render=dummy_render,
     )
     run_stage3_assemble_master(ctx, scene_meta)
     print(f"\nPipeline finished in {(time.time() - t_start) / 60:.1f} minutes.", flush=True)

@@ -1,6 +1,7 @@
 REM ============================================================================
 REM   Generic Music Video Render Pipeline - Quick Reference
 REM ============================================================================
+REM Launch Local Studio Web UI:                       .\launch_ui.bat
 REM Create fresh project structure:                   .\render_video.bat --new [my_song]
 REM Auto-render edits (detects changes in JSON):       .\render_video.bat all_or_nothing
 REM List project catalog (anchors, scenes, models):   .\render_video.bat all_or_nothing --list

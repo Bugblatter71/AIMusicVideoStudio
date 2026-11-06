@@ -1,0 +1,76 @@
+{
+  "project": {
+    "name": "Test Project",
+    "project_dir": ".",
+    "master_audio": "audio/test_master.mp3",
+    "stems": {
+      "male": "audio/male.mp3",
+      "female": "audio/female.mp3"
+    },
+    "master_output": "Test_Project_Master_{resolution}_{fps}fps.mp4",
+    "master_resolution": "960x544",
+    "fps": 24,
+    "total_duration": 12.0,
+    "trim_first_frame_seconds": 0.0,
+    "fade_out_last_scene_seconds": 1.0,
+    "directories": {
+      "anchors": "work/anchors_v3",
+      "audio_slices": "work/audio_v3",
+      "masks": "work/masks_v3",
+      "jobs": "work/jobs_v3",
+      "renders": "work/renders_v3",
+      "trimmed": "work/trimmed_v3",
+      "review_strips": "work/frames_v3"
+    }
+  },
+  "anchor_prompts": [
+    {
+      "id": "A01",
+      "filename": "A01_Anchor_Solo.jpg",
+      "seed": 5001,
+      "prompt": "A solo singer portrait test anchor"
+    },
+    {
+      "id": "A02",
+      "filename": "A02_Anchor_Duet.jpg",
+      "seed": 5002,
+      "prompt": "A duet singers portrait test anchor"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "S01",
+      "start": 0.0,
+      "end": 4.0,
+      "mode": "male_solo",
+      "stem": "male",
+      "anchor": "A01_Anchor_Solo.jpg",
+      "seed": 6001,
+      "prompt": "Male singer singing intro"
+    },
+    {
+      "id": "S02",
+      "start": 4.0,
+      "end": 8.0,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "stem_m": "male",
+      "stem_f": "female",
+      "anchor": "A02_Anchor_Duet.jpg",
+      "seed_m": 6002,
+      "seed_f": 6003,
+      "prompt_m": "Male singer singing left side of duet",
+      "prompt_f": "Female singer singing right side of duet"
+    },
+    {
+      "id": "S03",
+      "start": 8.0,
+      "end": 12.0,
+      "mode": "female_solo",
+      "stem": "female",
+      "anchor": "A01_Anchor_Solo.jpg",
+      "seed": 6004,
+      "prompt": "Female singer singing outro"
+    }
+  ]
+}

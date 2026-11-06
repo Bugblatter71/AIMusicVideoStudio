@@ -71,6 +71,11 @@ desktop.ini
 *.sublime-project
 *.sublime-workspace
 
+# --- Node & Test Artifacts ---
+node_modules/
+test-results/
+scratch/
+
 # ==============================================================================
 # Explicitly Tracked Source Assets
 # ==============================================================================

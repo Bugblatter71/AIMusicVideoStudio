@@ -1,0 +1,490 @@
+{
+  "project": {
+    "name": "All Or Nothing v4",
+    "project_dir": ".",
+    "master_audio": "audio/All Or Nothing.mp3",
+    "stems": {
+      "male": "audio/male_vocal.mp3",
+      "female": "audio/female_vocal.mp3"
+    },
+    "master_output": "All_Or_Nothing_v4_1_Master_{resolution}_{fps}fps.mp4",
+    "master_resolution": "",
+    "fps": 24,
+    "total_duration": 219.771438,
+    "trim_first_frame_seconds": 0,
+    "fade_out_last_scene_seconds": 2.5,
+    "render_overlap_seconds": 0,
+    "directories": {
+      "anchors": "work/anchors_v3",
+      "audio_slices": "work/audio_v3",
+      "masks": "work/masks_v3",
+      "jobs": "work/jobs_v3",
+      "renders": "work/renders_v3",
+      "trimmed": "work/trimmed_v3",
+      "review_strips": "work/frames_v3"
+    }
+  },
+  "profiles_file": "model_profiles.json",
+  "models": {
+    "default_anchor_renderer": 3,
+    "default_video_renderer": 1,
+    "anchor_shared_settings": {
+      "image_refs": [
+        "work/ref_sheets/male_angle1_front34.jpg",
+        "work/ref_sheets/male_angle3_profile.jpg",
+        "work/ref_sheets/female_angle1_front34.jpg",
+        "work/ref_sheets/female_angle3_profile.jpg"
+      ]
+    },
+    "video_shared_settings": {
+      "negative_prompt": "split-screen, split frame, vertical divider, dividing line, vertical seam, border, two panels, split image"
+    },
+    "resolution_options_quick_reference": {
+      "1": "832x480   - 480p Fast Preview (~1 min/s video, lowest VRAM, best for quick motion tests)",
+      "2": "960x544   - 540p qHD Balanced (~1.5 min/s video, good balance for full-song drafts)",
+      "3": "1280x720  - 720p HD Standard  (~2.5 min/s video, crisp standard 16:9 widescreen)",
+      "4": "1344x768  - 768p WXGA High-Res (DEFAULT) (~3.2 min/s video, recommended native DiT detail)",
+      "5": "1536x864  - 864p Near-1080p   (~4.5 min/s video, high fidelity for hero scenes)",
+      "6": "1920x1088 - 1080p Full HD     (~6-7 min/s video, cinema-grade DiT multiple-of-16 preset)"
+    },
+    "default_video_resolution": 2
+  },
+  "run_controls": {
+    "force_rerender_anchors": [],
+    "force_rerender_scenes": [],
+    "anchors_only": false,
+    "cascade_anchors": true,
+    "stitch_only": false
+  },
+  "variables": {
+    "MALE_STUDIO_DESC": "the exact 30-year-old Black male singer from <image1> and <image2> (short tapered fade haircut, neat short beard, wearing a dark slate-navy suede jacket over a burgundy crew-neck t-shirt and thin silver chain)",
+    "FEMALE_STUDIO_DESC": "the exact late-20s woman from <image3> and <image4> (shoulder-length wavy dark auburn-chestnut hair with curtain bangs, warm hazel eyes, wearing a black suede biker jacket over a dark charcoal V-neck top and a thin silver necklace)",
+    "MALE_NIGHTOUT_DESC": "the exact 30-year-old Black male singer from <image1> and <image2> (short tapered fade haircut, neat short beard, wearing a smart dark midnight-blue collared shirt)",
+    "FEMALE_NIGHTOUT_DESC": "the exact late-20s woman from <image3> and <image4> (shoulder-length wavy dark auburn-chestnut hair with curtain bangs, warm hazel eyes, wearing a chic sleeveless burgundy-black evening top)"
+  },
+  "markers": [
+    {
+      "id": "M01",
+      "name": "drums come in here",
+      "time": 132,
+      "color": "#f59e0b"
+    }
+  ],
+  "anchors": [
+    {
+      "filename": "A01 - 2Man_singing_into_microphone_ed7b66b4_2K.jpg",
+      "renderer": null,
+      "seed": 8101,
+      "prompt": "A cinematic 16:9 medium close-up inside a dark recording soundstage. In the foreground stands {MALE_STUDIO_DESC} at a vintage brass condenser microphone, with his eyes clearly open and expressive, leaning slightly into the microphone as he sings. He stands inside a single large glowing sapphire-blue Venn circle of light on the wooden floor, and in soft bokeh behind him sit chamber orchestra string players (violinists and cellists) waiting (not bowing their instruments) and a grand piano with a pianist who is playing."
+    },
+    {
+      "filename": "A02 - 2Man_singing_at_microphone_cfd7bbc7_2K.jpg",
+      "renderer": null,
+      "seed": 8102,
+      "prompt": "A cinematic 16:9 medium waist-up shot inside a grand dark recording soundstage. {MALE_STUDIO_DESC} stands at a vintage brass stand microphone, gripping the mic stand with one hand, eyes clearly open, singing passionately. Around him on the wooden stage floor glows a single large all-encompassing sapphire-blue Venn circle of light where a chamber string orchestra (violins, violas, cellos, and a grand piano) is seated playing behind him, while on the far right edge three smaller overlapping warm golden-amber circles in the shape of a venn diagram glow softly."
+    },
+    {
+      "filename": "A03 - 2Man_singing_and_woman_listening_90de80da_2K.jpg",
+      "renderer": null,
+      "seed": 8133,
+      "prompt": "A single continuous, undivided wide-angle 16:9 photograph inside one open recording soundstage (no split-screen, no vertical divider line, continuous wooden floor and continuous dark studio wall across the entire frame). On the continuous wooden floor, a single large glowing sapphire-blue Venn circle on the left intersects with a cluster of three warm golden-amber Venn diagram circles on the right. Standing on the left side inside the sapphire-blue floor circle is {MALE_STUDIO_DESC} at a vintage brass studio microphone in three-quarter profile facing right toward the woman, eyes clearly open, singing to her with two seated violinists and a grand pianist and piano in soft bokeh behind him. Standing in the same room on the right side inside the three overlapping golden-amber venn diagram floor circles is {FEMALE_STUDIO_DESC} in three-quarter profile facing left toward him with her eyes open and her mouth completely closed, wearing wired headphones (she holds one hand to the headphones and her other hand is holding a sound meter) as she listens intently to his vocal take."
+    },
+    {
+      "filename": "A04 - 2Man_singing_to_woman_in_0e61c834_2K.jpg",
+      "renderer": null,
+      "seed": 8134,
+      "prompt": "A single continuous, undivided 16:9 medium-wide photograph inside one open wood-paneled recording studio (no split-screen, no vertical divider, continuous studio room and continuous wooden floor across the entire frame). On the continuous wooden floor, one large glowing sapphire-blue circle on the left overlaps with three intersecting warm golden-amber Venn diagram circles on the right. On the left side inside the sapphire-blue floor circle stands {MALE_STUDIO_DESC} at a vintage brass stand microphone turned in three-quarter profile facing right toward the woman, eyes clearly open, singing emotionally while gripping the mic stand. In the exact same room on the right side inside the three overlapping golden-amber Venn circles sits {FEMALE_STUDIO_DESC} on a studio stool beside a music stand with sheet music, headphones around her neck, and an acoustic-electric guitar on a stand beside her, her eyes open and her mouth completely closed as she watches him sing with a cellist seated in the background."
+    },
+    {
+      "filename": "A05 - 2Man_and_woman_looking_at_8410e52f_2K.jpg",
+      "renderer": null,
+      "seed": 8105,
+      "prompt": "A slowly panning high-angle cinematic 16:9 wide crane shot over a dark recording soundstage floor illuminated by a glowing Venn diagram of light rings: on the left is one single giant all-encompassing sapphire-blue circle of light containing a full chamber string orchestra (violins, violas, cellos, double bass) bowing in unison; on the right is a multi-set Venn diagram of three intersecting warm golden-amber and rose circles of light containing a pop drum kit, bass amp, and guitar stand; where the giant blue circle overlaps one of the golden circles in a glowing violet intersection at the center sit {MALE_STUDIO_DESC} (left, facing right, eyes open, mouth closed) and {FEMALE_STUDIO_DESC} (right, facing left, eyes open, mouth closed) looking at each other, both sat in facing chairs, sitting in the middle between the orchestra and the drums"
+    },
+    {
+      "filename": "A06 - 2Woman_playing_electric_guitar_f92b39a1_2K.jpg",
+      "renderer": null,
+      "seed": 8106,
+      "prompt": "A cinematic 16:9 medium shot on the recording soundstage illuminated by three intersecting warm golden-amber Venn circles of light on the wooden floor. In the center-right sits {FEMALE_STUDIO_DESC} playing an electric pop guitar , angled in three-quarter view with her eyes clearly open and her mouth completely closed, playing a melodic guitar intro while looking toward the left."
+    },
+    {
+      "filename": "A07 - Orchestra_and_band_playing_on_cc899f16_2K.jpg",
+      "renderer": null,
+      "seed": 8107,
+      "prompt": "A cinematic 16:9 medium two-shot at the center of the recording soundstage where a single large sapphire-blue floor circle (left) overlaps with three intersecting warm golden-amber venn diagram floor circles (right) in a glowing violet Venn diagram intersection. On the left half stands {MALE_STUDIO_DESC} at a vintage brass stand microphone in three-quarter profile facing right, eyes clearly open and mouth completely closed. On the right half stands {FEMALE_STUDIO_DESC} at her vintage brass stand microphone in three-quarter profile facing left, eyes clearly open and mouth completely closed, looking deeply into his eyes just before she begins to sing, with violinists and cellists seated in soft bokeh behind them."
+    },
+    {
+      "filename": "A08 - 2Duet_vocal_recording_in_studio_a164bc0d_2K.jpg",
+      "renderer": null,
+      "seed": 8108,
+      "prompt": "A cinematic 16:9 medium two-shot inside the wood-paneled recording studio during a duet vocal recording. On the left half (`x < 50%`), illuminated by one single large sapphire-blue floor circle, stands {MALE_STUDIO_DESC} at a vintage brass condenser microphone, turned in three-quarter profile facing right toward the woman, eyes clearly open and locked on her eyes as he sings directly to her, with violinists seated in soft bokeh behind him. On the right half (`x > 50%`), illuminated by three overlapping warm golden-amber Venn diagram floor circles, stands {FEMALE_STUDIO_DESC} at her vintage brass condenser microphone, turned in three-quarter profile facing left toward the man, eyes clearly open and locked on his eyes as she sings directly to him, with her guitar on a stand in the warm background."
+    },
+    {
+      "filename": "A09 - 2Man_and_woman_singing_into_dc656dec_2K.jpg",
+      "renderer": null,
+      "seed": 8109,
+      "prompt": "A cinematic 16:9 medium-wide two-shot on the dark recording soundstage with glowing floor Venn diagram lighting: one single giant sapphire-blue circle on the left overlapping with a cluster of three warm golden-amber venn diagram circles on the right. On the left half (`x < 50%`) stands {MALE_STUDIO_DESC} at a vintage brass stand microphone in three-quarter profile facing right, eyes clearly open, singing passionately to her. On the right half (`x > 50%`) stands {FEMALE_STUDIO_DESC} at her vintage brass stand microphone in three-quarter profile facing left, eyes clearly open, singing passionately to him. In the background inside the glowing rings sit chamber string players bowing violins and cellos."
+    },
+    {
+      "filename": "A10 - 2Man_singing_and_drummer_playing_32e5bc7f_2K.jpg",
+      "renderer": null,
+      "seed": 8110,
+      "prompt": "A cinematic 16:9 medium-wide shot inside the recording soundstage as the pop drum kit kicks in. In the foreground left (`x < 50%`) inside his large sapphire-blue floor circle stands {MALE_STUDIO_DESC} at a vintage brass stand microphone, eyes clearly open, singing with expressive energy. In the midground right (`x > 50%`) inside three overlapping warm golden-amber Venn diagram circles on the floor, a pop drummer actively plays an acoustic drum kit with drumsticks in motion as the pop rhythm section joins the song."
+    },
+    {
+      "filename": "A11 - 2Man_singing_to_woman_at_996040c2_2K.jpg",
+      "renderer": null,
+      "seed": 8111,
+      "prompt": "A cinematic 16:9 medium shot inside an upscale party at night with overhead Venn diagram ring chandeliers (one single sapphire-blue ring on the left overlapping with three warm golden-amber rings on the right). {FEMALE_NIGHTOUT_DESC} is amongst a circle of friends talking and laughing with them. {MALE_NIGHTOUT_DESC} stands next to her but not within the main circle, he feels emotionally isolated, turned in three-quarter profile toward the woman right beside him, eyes open and aching as he sings directly to her."
+    },
+    {
+      "filename": "A12 - 2Man_singing_with_musicians_playing_779ac7c8_2K.jpg",
+      "renderer": null,
+      "seed": 8112,
+      "prompt": "A cinematic 16:9 medium-wide shot on the recording soundstage at the musical climax where the electric bass guitar and rising violins enter together. In the foreground center-left inside his single large sapphire-blue floor circle stands {MALE_STUDIO_DESC} gripping his vintage brass stand microphone, eyes clearly open, singing with intense emotion. Behind him on the left inside the blue circle, a section of violinists stands bowing rising string melodies; behind him on the right inside three overlapping warm golden-amber Venn diagram floor circles, a bass guitarist actively plays an electric bass guitar alongside the drummer actively drumming on the drum kit."
+    },
+    {
+      "filename": "A13 - 2Man_and_woman_singing_together_53bcba4d_2K.jpg",
+      "renderer": null,
+      "seed": 8113,
+      "prompt": "A cinematic 16:9 medium two-shot on the grand recording soundstage surrounded by both the chamber string orchestra and the pop rhythm section (drummer and bass guitarist). On the wooden floor, one giant sapphire-blue circle on the left overlaps with three intersecting warm golden-amber Venn circles on the right. On the left half (`x < 50%`) stands {MALE_STUDIO_DESC} at his vintage brass microphone in three-quarter profile facing right, eyes clearly open and locked on her eyes, singing directly to her. On the right half (`x > 50%`) stands {FEMALE_STUDIO_DESC} at her vintage brass microphone in three-quarter profile facing left, eyes clearly open and locked on his eyes, singing directly to him."
+    },
+    {
+      "filename": "A14 - 2Man_and_woman_looking_at_0ab81fbd_2K.jpg",
+      "renderer": null,
+      "seed": 8114,
+      "prompt": "A cinematic 16:9 medium-wide two-shot on the grand recording soundstage at the end of the song. Standing central in the frame facing each other in three-quarter profile (with no microphones blocking their faces) are {MALE_STUDIO_DESC} on the left and {FEMALE_STUDIO_DESC} on the right. Both have their eyes clearly open looking tenderly into each other's eyes, and both have their mouths completely closed. On the wooden floor around them glows a clear Venn diagram: one single giant all-encompassing sapphire-blue circle around him on the left and a multi-circle Venn diagram of three intersecting warm golden-amber circles around her on the right, touching at a luminous violet tangent point between them."
+    }
+  ],
+  "scenes": [
+    {
+      "id": "S01",
+      "renderer": null,
+      "start": 0,
+      "end": 6.8,
+      "mode": "male_solo",
+      "anchor": "A01_Male_Orchestra_CloseMic.jpg",
+      "seed": 8201,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Inside the dark recording soundstage within his single large sapphire-blue Venn circle of light with string players bowing softly in background bokeh, {MALE_STUDIO_DESC} leans into the vintage brass condenser microphone with his eyes open, natural head and upper-body sway, singing a quiet, vulnerable opening phrase with synchronized lip movements. Slow cinematic push-in.\noverall_soundscape: Quiet studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S02",
+      "renderer": null,
+      "start": 6.8,
+      "end": 13.6,
+      "mode": "gva_male_left_silent_right",
+      "split_x": 0.48,
+      "anchor": "A03_Meta_Studio_HeSings_SheProduces.jpg",
+      "seed_m": 8202,
+      "seed_f": 8302,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage. Across the unified wooden floor, on the left side inside his single large sapphire-blue circle of light, {MALE_STUDIO_DESC} at the studio brass microphone sings directly toward the woman on the right with open eyes, natural head and body movement, and synchronized lip movements, while the woman on the right listens quietly with her mouth closed.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage. Across the unified wooden floor, on the right side inside her three intersecting warm golden-amber Venn floor circles by the mixing console, {FEMALE_STUDIO_DESC} keeps her mouth completely closed and her eyes open as she looks at the lyric sheets and glances up at him singing, realizing the song they are recording is about their own relationship.\noverall_soundscape: Quiet studio room tone, no speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S03",
+      "renderer": null,
+      "start": 13.6,
+      "end": 20.4,
+      "mode": "male_solo",
+      "anchor": "A02_Male_Orchestra_MediumStage.jpg",
+      "seed": 8203,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Medium waist-up shot on the recording soundstage where {MALE_STUDIO_DESC} grips the vintage brass stand microphone inside his single large sapphire-blue Venn circle while the chamber string orchestra and pianist play behind him. He sways naturally with open, expressive eyes, singing with synchronized lip movements. Subtle orbital camera drift.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S04",
+      "renderer": null,
+      "start": 20.4,
+      "end": 27.2,
+      "mode": "male_solo",
+      "anchor": "A04_Meta_Studio_ChartCollaboration.jpg",
+      "seed": 8204,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. On the left side inside his sapphire-blue floor circle, {MALE_STUDIO_DESC} at the brass microphone sings emotionally toward the woman on the right with open eyes, natural hand and head movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S05",
+      "renderer": null,
+      "start": 27.2,
+      "end": 33.4,
+      "mode": "male_solo",
+      "anchor": "A02_Male_Orchestra_MediumStage.jpg",
+      "seed": 8205,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Pre-chorus intensity rises as {MALE_STUDIO_DESC} grips the brass stand microphone inside his single giant sapphire-blue circle with the string orchestra bowing behind him, singing earnestly with open eyes, natural body movement, and synchronized lip movements. Slow push-in.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S06",
+      "renderer": null,
+      "start": 33.4,
+      "end": 39.6,
+      "mode": "male_solo",
+      "anchor": "A01_Male_Orchestra_CloseMic.jpg",
+      "seed": 8206,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Tight close-up on {MALE_STUDIO_DESC} at the vintage brass condenser microphone as he sings the climax of the pre-chorus into the microphone with eyes open, intense emotional focus, and synchronized lip movements.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S07",
+      "renderer": null,
+      "start": 39.6,
+      "end": 48.4,
+      "mode": "male_solo",
+      "anchor": "A02_Male_Orchestra_MediumStage.jpg",
+      "seed": 8207,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Chorus 1 erupts: {MALE_STUDIO_DESC} performs passionately into the vintage brass stand microphone inside his single all-encompassing sapphire-blue Venn circle while the chamber string orchestra bows vigorously behind him. Expressive body and head motion, eyes open (blinking naturally), and synchronized lip movements. Dynamic orbital tracking shot.\noverall_soundscape: Studio room tone under the powerful vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S08",
+      "renderer": null,
+      "start": 48.4,
+      "end": 57.2,
+      "mode": "gva_male_left_silent_right",
+      "split_x": 0.48,
+      "anchor": "A03_Meta_Studio_HeSings_SheProduces.jpg",
+      "seed_m": 8208,
+      "seed_f": 8308,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage with unified wooden flooring. On the left side inside his large sapphire-blue circle, {MALE_STUDIO_DESC} pours his heart into the studio microphone facing right toward her, with animated upper-body movement, open eyes locked on her, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage with unified wooden flooring. On the right side inside her three intersecting warm golden Venn floor circles by the mixing console, {FEMALE_STUDIO_DESC} keeps her mouth completely closed and her eyes open as she marks the arrangement on her music stand and looks back at him with deep emotion.\noverall_soundscape: Quiet studio room tone, no speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S09",
+      "renderer": null,
+      "start": 57.2,
+      "end": 66.3,
+      "mode": "male_solo",
+      "anchor": "A01_Male_Orchestra_CloseMic.jpg",
+      "seed": 8209,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Close-up at the vintage brass microphone as {MALE_STUDIO_DESC} delivers the final lines of the first chorus with open eyes, natural chest and head movement, and synchronized lip movements, then gently closes his mouth and exhales at the end as the strings take over.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S10",
+      "renderer": null,
+      "start": 66.3,
+      "end": 79,
+      "mode": "silent_locked",
+      "anchor": "A05_Interlude_Orchestra_VennWide.jpg",
+      "seed": 8210,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection, the light glows softly.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S11",
+      "renderer": null,
+      "start": 79,
+      "end": 92.5,
+      "mode": "silent_locked",
+      "anchor": "A07_Interlude_BothAtMics_ClosedMouth.jpg",
+      "seed": 8211,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S12a",
+      "renderer": null,
+      "start": 92.5,
+      "end": 99,
+      "mode": "silent_locked",
+      "anchor": "A06_Interlude_HerGuitar_LeadUp.jpg",
+      "seed": 8212,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. As the guitar enters the arrangement, the camera slowly pushes in on {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar. Her mouth is completely closed and her eyes are open.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S12b",
+      "renderer": null,
+      "start": 99,
+      "end": 104.4,
+      "mode": "silent_locked",
+      "anchor": "A07_Interlude_BothAtMics_ClosedMouth.jpg",
+      "seed": 8213,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Steady medium two-shot at eye-level on the soundstage, static camera. {MALE_STUDIO_DESC} and {FEMALE_STUDIO_DESC} stand quietly at their microphones with mouths closed and eyes open, preparing to sing the duet, as the strings and brass build intensity in the background.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S13",
+      "renderer": null,
+      "start": 104.4,
+      "end": 110.9,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A08_Duet_Studio_FacingEachOther_StringsGuitar.jpg",
+      "seed_m": 8214,
+      "seed_f": 8314,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the left half , {MALE_STUDIO_DESC} in three-quarter profile at his brass microphone sings directly to the woman on the right with his eyes clearly open, natural head movement, and synchronized lip movements, while the woman on the right stands with her mouth closed.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the right half, {FEMALE_STUDIO_DESC} in three-quarter profile at her brass microphone sings her counter-melody directly to the man on the left with her eyes clearly open, expressive emotion, and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S14",
+      "renderer": null,
+      "start": 110.9,
+      "end": 117.4,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A09_Duet_Stage_FacingEachOther_Venn.jpg",
+      "seed_m": 8215,
+      "seed_f": 8315,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the left half of the Venn soundstage inside his giant sapphire-blue floor circle, {MALE_STUDIO_DESC} at his stand microphone faces right toward the woman and sings directly to her with open eyes, natural body sway, and synchronized lip movements.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the right half of the Venn soundstage inside her three overlapping warm golden floor circles, {FEMALE_STUDIO_DESC} at her stand microphone faces left toward the man and sings directly to him with open eyes, expressive head movement, and synchronized lip movements.\noverall_soundscape: Stage room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S15",
+      "renderer": null,
+      "start": 117.4,
+      "end": 123.9,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A08_Duet_Studio_FacingEachOther_StringsGuitar.jpg",
+      "seed_m": 8216,
+      "seed_f": 8316,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Inside the studio, {MALE_STUDIO_DESC} on the left faces right toward the woman and sings passionately to her with open eyes locked on hers, natural upper-body movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Inside the studio, {FEMALE_STUDIO_DESC} on the right faces left toward the man and sings her counter-lyric ('You want to build a home') directly to him with open eyes locked on his and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S16",
+      "renderer": null,
+      "start": 123.9,
+      "end": 130.6,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A09_Duet_Stage_FacingEachOther_Venn.jpg",
+      "seed_m": 8217,
+      "seed_f": 8317,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the Venn stage, {MALE_STUDIO_DESC} on the left and {FEMALE_STUDIO_DESC} on the right sing in vocal counterpoint: he delivers his lines with open eyes and synchronized lip movements directly toward her.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the Venn stage, {FEMALE_STUDIO_DESC} on the right sings her soaring counter-melody ('I want to live my life') directly toward the man with open eyes and synchronized lip movements.\noverall_soundscape: Stage room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S17a",
+      "renderer": null,
+      "start": 130.6,
+      "end": 136.8,
+      "mode": "gva_male_left_silent_right",
+      "split_x": 0.48,
+      "anchor": "A10_DrumsEnter_2m12s_Studio.jpg",
+      "seed_m": 8218,
+      "seed_f": 8318,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. In the studio as the heavy drums enter, {MALE_STUDIO_DESC} on the left sings with increasing desperation into the brass microphone, with open eyes, dynamic head sway, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. In the studio on the right, {FEMALE_STUDIO_DESC} stands by her microphone, her mouth completely closed and eyes open, listening with a conflicted expression as the arrangement builds.\noverall_soundscape: Quiet studio room tone, no speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S17b",
+      "renderer": null,
+      "start": 136.8,
+      "end": 144.5,
+      "mode": "gva_male_left_silent_right",
+      "split_x": 0.46,
+      "anchor": "A11_NightOut_SameTable_SideBySide.jpg",
+      "seed_m": 8219,
+      "seed_f": 8319,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Standing at an upscale evening party under a single sapphire-blue ceiling light ring on the left, {MALE_NIGHTOUT_DESC} stands just outside the lively group, turned in three-quarter profile toward the woman right beside him, singing 'You're with me and you're not, how do you feel?' directly to her with open, aching eyes and synchronized lip movements (never looking at the camera). Static eye-level camera.\noverall_soundscape: Quiet party ambience and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Standing right beside him under three overlapping warm golden ceiling rings, {FEMALE_NIGHTOUT_DESC} is happily engaged with a circle of friends on the right, laughing with mouth closed, holding a drink, gesturing naturally, and completely engrossed in conversation without noticing him singing to her. Static eye-level camera.\noverall_soundscape: Quiet party ambience, no speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S18",
+      "renderer": null,
+      "start": 144.5,
+      "end": 152.1,
+      "mode": "gva_male_left_silent_right",
+      "split_x": 0.46,
+      "anchor": "A11_NightOut_SameTable_SideBySide.jpg",
+      "seed_m": 8220,
+      "seed_f": 8320,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Standing at the party under his single sapphire-blue light ring, {MALE_NIGHTOUT_DESC} continues to look across at the woman beside him, feeling emotionally distant amid the celebration, singing 'We're staying together / Until someone new comes along' with open, pained eyes, subtle head sway, and synchronized lip movements. Static eye-level camera.\noverall_soundscape: Quiet party ambience and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Standing under the cluster of warm golden rings, {FEMALE_NIGHTOUT_DESC} and her friends smile, converse, and enjoy the party with closed mouths, immersed in their own world and completely oblivious to his song. Static eye-level camera.\noverall_soundscape: Quiet party ambience, no speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S19",
+      "renderer": null,
+      "start": 152.1,
+      "end": 159,
+      "mode": "male_solo",
+      "anchor": "A02_Male_Orchestra_MediumStage.jpg",
+      "seed": 8221,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Returning to the dark soundstage, {MALE_STUDIO_DESC} grips the brass microphone inside his sapphire-blue circle and sings 'I'm with you and I'm not / Oh I know how it feels' with raw vulnerability, open eyes, and synchronized lip movements.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S20",
+      "renderer": null,
+      "start": 159,
+      "end": 166,
+      "mode": "male_solo",
+      "anchor": "A12_BassAndViolins_2m39s_FullBand.jpg",
+      "seed": 8222,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Medium shot on the soundstage as {MALE_STUDIO_DESC} delivers the building pre-chorus lines with open eyes, natural upper-body movement, and synchronized lip movements while the full string ensemble and bass player groove passionately behind him.\noverall_soundscape: Stage room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S21",
+      "renderer": null,
+      "start": 166,
+      "end": 173,
+      "mode": "male_solo",
+      "anchor": "A01_Male_Orchestra_CloseMic.jpg",
+      "seed": 8223,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Extreme close-up on {MALE_STUDIO_DESC} at the brass condenser microphone as he delivers the final soaring line before Chorus 3, with wide open emotional eyes, subtle head movement, and synchronized lip movements.as he sings 'it's not me it's you' he looks directly into the camera. \noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S22",
+      "renderer": null,
+      "start": 173,
+      "end": 180.1,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A13_Chorus3_FullEnsemble_DuetFacing.jpg",
+      "seed_m": 8224,
+      "seed_f": 8324,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Chorus 3 full-ensemble explosion: on the left side of the stage inside his giant sapphire-blue circle, {MALE_STUDIO_DESC} belts out Chorus 3 with maximum passion into his stand microphone facing right toward her, with open eyes, full chest movement, and synchronized lip movements.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Chorus 3 full-ensemble explosion: on the right side of the stage inside her three warm golden circles, {FEMALE_STUDIO_DESC} belts her counter-melody into her stand microphone facing left toward him, with open eyes, passionate head and arm movement, and synchronized lip movements.\noverall_soundscape: Stage room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S23",
+      "renderer": null,
+      "start": 180.1,
+      "end": 187.2,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A08_Duet_Studio_FacingEachOther_StringsGuitar.jpg",
+      "seed_m": 8225,
+      "seed_f": 8325,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. In the studio, {MALE_STUDIO_DESC} on the left faces right toward the woman and sings 'Got to start to live for me' directly into her eyes with open eyes, expressive head movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. In the studio, {FEMALE_STUDIO_DESC} on the right faces left toward the man and sings 'to my life / You want to build a home' directly into his eyes with open eyes and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S24",
+      "renderer": null,
+      "start": 187.2,
+      "end": 194.4,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A13_Chorus3_FullEnsemble_DuetFacing.jpg",
+      "seed_m": 8226,
+      "seed_f": 8326,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the full-ensemble Venn soundstage, {MALE_STUDIO_DESC} on the left faces right toward the woman and sings 'Who I am is all I need to be' directly to her with open eyes and synchronized lip movements.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the full-ensemble Venn soundstage, {FEMALE_STUDIO_DESC} on the right faces left toward the man and sings 'I need a life of my own' directly to him with open eyes and synchronized lip movements.\noverall_soundscape: Stage room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S25",
+      "renderer": null,
+      "start": 194.4,
+      "end": 201.6,
+      "mode": "duet_method_b",
+      "split_x": 0.5,
+      "anchor": "A09_Duet_Stage_FacingEachOther_Venn.jpg",
+      "seed_m": 8227,
+      "seed_f": 8327,
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the Venn soundstage, {MALE_STUDIO_DESC} on the left sings the final vocal lines 'Now it's all or nothing / So is it all or nothing' directly to the woman on the right with open eyes and synchronized lip movements.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the Venn soundstage, {FEMALE_STUDIO_DESC} on the right finishes singing her final phrase 'I need a life of my own' directly to him with open eyes and synchronized lip movements, then gently closes her mouth while holding eye contact with him.\noverall_soundscape: Stage room tone and female vocal.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S26a",
+      "renderer": null,
+      "start": 201.6,
+      "end": 210.7,
+      "mode": "silent_locked",
+      "anchor": "A14_Outro_BothCentral_ClosedMouth_FullVenn.jpg",
+      "seed": 8228,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Instrumental outro Part 1: {MALE_STUDIO_DESC} on the left and {FEMALE_STUDIO_DESC} on the right stand stationary in the center of the frame facing each other with mouths completely closed and eyes open, holding a tender, lingering gaze after the final vocal note. On the floor around them, his single sapphire-blue Venn circle and her cluster of golden Venn circles touch at a bright tangent point between them. Static locked-off camera on tripod.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+    },
+    {
+      "id": "S26b",
+      "renderer": null,
+      "start": 210.7,
+      "end": 219.771,
+      "mode": "silent_locked",
+      "anchor": "A14_Outro_BothCentral_ClosedMouth_FullVenn.jpg",
+      "seed": 8229,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Instrumental outro Part 2: {MALE_STUDIO_DESC} and {FEMALE_STUDIO_DESC} remain standing in their exact positions central in the frame facing each other with mouths closed and eyes locked across the space. As the camera slowly pulls back, the sapphire-blue circle on the left and the cluster of golden Venn circles on the right slowly drift and separate apart across the dark soundstage floor, opening an expanse of dark space between them as the scene gently fades out to black.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+    }
+  ]
+}
