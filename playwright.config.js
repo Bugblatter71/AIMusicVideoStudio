@@ -18,7 +18,7 @@ module.exports = defineConfig({
     headless: true,
   },
   webServer: {
-    command: 'python work/ui/server.py --port 8765',
+    command: 'python work/ui/server.py --port 8765 --dummy',
     port: 8765,
     timeout: 15000,
     reuseExistingServer: true,

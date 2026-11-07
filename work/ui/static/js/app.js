@@ -291,7 +291,9 @@ async function refreshProjectAssets(silent = false) {
   try {
     const res = await fetch(`/api/project/${state.currentSlug}${q}`);
     const json = await res.json();
-    state.projectData = json.data;
+    if (!state.isDirty) {
+      state.projectData = json.data;
+    }
     state.assets = json.assets;
 
     // Clear canvas image cache so fresh re-rendered thumbnails load
@@ -307,6 +309,7 @@ async function refreshProjectAssets(silent = false) {
       updateSceneClipPreview(state.projectData.scenes[state.selectedSceneIdx]);
     }
     updateMasterVideoUI();
+    loadProjectQueue(state.currentSlug);
 
     if (!silent) {
       showToast("Refreshed project assets and thumbnails from disk");
@@ -1499,6 +1502,7 @@ function updateSceneStart(sceneIdx, newStart) {
   if (sceneIdx > 0 && state.selectedSceneIdx === sceneIdx - 1 && prevEndInput && document.activeElement !== prevEndInput) {
     prevEndInput.value = scenes[sceneIdx - 1].end;
   }
+  markProjectDirty();
 }
 
 function updateSceneEnd(sceneIdx, newEnd) {
@@ -1529,6 +1533,7 @@ function updateSceneEnd(sceneIdx, newEnd) {
   if (sceneIdx < scenes.length - 1 && state.selectedSceneIdx === sceneIdx + 1 && nextStartInput && document.activeElement !== nextStartInput) {
     nextStartInput.value = scenes[sceneIdx + 1].start;
   }
+  markProjectDirty();
 }
 
 // Bind inspector form changes to in-memory state
@@ -1672,6 +1677,7 @@ document.getElementById("btnRandomSeed")?.addEventListener("click", () => {
   const seed = Math.floor(Math.random() * 90000) + 1000;
   state.projectData.scenes[state.selectedSceneIdx].seed = seed;
   document.getElementById("sceneSeed").value = seed;
+  markProjectDirty();
 });
 
 document.getElementById("btnRandomSeedM")?.addEventListener("click", () => {
@@ -1679,6 +1685,7 @@ document.getElementById("btnRandomSeedM")?.addEventListener("click", () => {
   const seed = Math.floor(Math.random() * 90000) + 1000;
   state.projectData.scenes[state.selectedSceneIdx].seed_m = seed;
   document.getElementById("sceneSeedM").value = seed;
+  markProjectDirty();
 });
 
 document.getElementById("btnRandomSeedF")?.addEventListener("click", () => {
@@ -1686,6 +1693,7 @@ document.getElementById("btnRandomSeedF")?.addEventListener("click", () => {
   const seed = Math.floor(Math.random() * 90000) + 1000;
   state.projectData.scenes[state.selectedSceneIdx].seed_f = seed;
   document.getElementById("sceneSeedF").value = seed;
+  markProjectDirty();
 });
 
 // Play Scene Audio Only
@@ -1764,6 +1772,15 @@ function deleteScene(idx) {
       scenes[0].start = 0.00;
     } else if (idx < scenes.length) {
       scenes[idx - 1].end = scenes[idx].start;
+    } else {
+      // Deleted trailing scene: extend new last scene to fill timeline to total_duration
+      const lastScene = scenes[scenes.length - 1];
+      const totalDur = state.projectData?.project?.total_duration;
+      if (typeof totalDur === "number" && totalDur > lastScene.start) {
+        lastScene.end = parseFloat(totalDur.toFixed(2));
+      } else if (sc && sc.end > lastScene.start) {
+        lastScene.end = parseFloat(Number(sc.end).toFixed(2));
+      }
     }
   }
 
@@ -2260,6 +2277,7 @@ function renderResolutionCards(activeRes) {
     `;
     card.addEventListener("click", () => {
       state.projectData.models.default_video_resolution = parseInt(k);
+      markProjectDirty();
       renderResolutionCards(k);
       showToast(`Selected Resolution Option #${k} (${r.width}x${r.height})`);
     });
@@ -2267,8 +2285,27 @@ function renderResolutionCards(activeRes) {
   });
 }
 
+// Mark project dirty when any Project Settings field is edited
+[
+  "cfgProjectName",
+  "cfgMasterAudio",
+  "cfgFps",
+  "cfgFadeOut",
+  "cfgRenderOverlap",
+  "cfgDefaultAnchorRenderer",
+  "cfgDefaultVideoRenderer",
+  "cfgNegativePrompt",
+].forEach((id) => {
+  const el = document.getElementById(id);
+  if (el) {
+    el.addEventListener("input", () => markProjectDirty());
+    el.addEventListener("change", () => markProjectDirty());
+  }
+});
+
 // Save Project Changes
-document.getElementById("btnSaveProject").addEventListener("click", async () => {
+async function saveProjectData(showNotice = true) {
+  if (!state.currentSlug || !state.projectData) return false;
   // Sync form values into state safely
   const p = state.projectData.project || (state.projectData.project = {});
   const m = state.projectData.models || (state.projectData.models = {});
@@ -2303,14 +2340,20 @@ document.getElementById("btnSaveProject").addEventListener("click", async () => 
     const json = await res.json();
     if (json.success) {
       markProjectDirty(false);
-      showToast("💾 Project saved! (Backup archived in backup/)");
+      loadProjectQueue(state.currentSlug);
+      if (showNotice) showToast("💾 Project saved! (Backup archived in backup/)");
+      return true;
     } else {
-      alert(`Save failed: ${json.error}`);
+      if (showNotice) alert(`Save failed: ${json.error}`);
+      return false;
     }
   } catch (err) {
-    alert(`Error saving project: ${err}`);
+    if (showNotice) alert(`Error saving project: ${err}`);
+    return false;
   }
-});
+}
+window.saveProjectData = saveProjectData;
+document.getElementById("btnSaveProject").addEventListener("click", () => saveProjectData(true));
 
 // ============================================================================
 // Render Console: Queue, Status & SSE Terminal Stream
@@ -2669,7 +2712,7 @@ function initLogStream() {
       if (data.text) {
         if (data.text.includes("[MASTER_UPDATED]")) {
           showToast("🎬 Master video restitched!");
-          selectProject(state.currentSlug);
+          refreshProjectAssets(true);
           return;
         }
         if (data.text.startsWith("[QUEUE_")) {
@@ -2691,8 +2734,8 @@ function initLogStream() {
         renderQueueUI();
         document.getElementById("renderStatusText").textContent = `Finished (Code ${data.exit_code})`;
         document.getElementById("renderStatusText").style.color = data.exit_code === 0 ? "var(--accent-green)" : "var(--accent-red)";
-        // Refresh project assets & master video
-        selectProject(state.currentSlug);
+        // Refresh project assets & master video without clobbering unsaved UI edits or playhead
+        refreshProjectAssets(true);
       }
     } catch (err) {
       console.error("SSE parse error:", err);
@@ -2707,6 +2750,14 @@ function initLogStream() {
 }
 
 async function triggerRender(args = []) {
+  if (state.isDirty) {
+    showToast("💾 Auto-saving project changes before render...");
+    const saved = await saveProjectData(false);
+    if (!saved) {
+      alert("Auto-save failed; aborting render so unsaved changes are not ignored.");
+      return;
+    }
+  }
   const term = document.getElementById("terminalOutput");
   term.innerHTML = "";
   document.getElementById("renderStatusText").textContent = "Running...";
@@ -2894,6 +2945,14 @@ document.getElementById("queueTableBody")?.addEventListener("click", async (e) =
 });
 
 async function triggerImmediateRestitch() {
+  if (state.isDirty) {
+    showToast("💾 Auto-saving project changes before restitch...");
+    const saved = await saveProjectData(false);
+    if (!saved) {
+      alert("Auto-save failed; aborting restitch so unsaved changes are not ignored.");
+      return;
+    }
+  }
   const btn1 = document.getElementById("btnStitchMaster");
   const btn2 = document.getElementById("btnStitchMasterFromTab");
   if (btn1) {
@@ -2942,7 +3001,17 @@ async function triggerImmediateRestitch() {
 document.getElementById("btnRenderAll").addEventListener("click", () => triggerRender([]));
 document.getElementById("btnStitchMaster").addEventListener("click", () => triggerImmediateRestitch());
 
+const dummyContainer = document.getElementById("dummyModeContainer");
 const chkDummyMode = document.getElementById("chkDummyRenderMode");
+
+// Dummy mode is hidden by default to prevent accidental selection by regular users.
+// Only expose in UI if explicitly requested via URL parameter (?dev=1 or ?dummy=1).
+const devUrlParams = new URLSearchParams(window.location.search);
+const showDevControls = devUrlParams.get("dev") === "1" || devUrlParams.get("dummy") === "1";
+if (dummyContainer) {
+  dummyContainer.style.display = showDevControls ? "flex" : "none";
+}
+
 if (chkDummyMode) {
   fetch("/api/settings/dummy_mode")
     .then((r) => r.json())
@@ -2967,6 +3036,21 @@ if (chkDummyMode) {
     }
   });
 }
+
+window.setDummyMode = async function (enabled = true) {
+  try {
+    const res = await fetch("/api/settings/dummy_mode", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    const data = await res.json();
+    if (chkDummyMode) chkDummyMode.checked = !!data.dummy_render;
+    return data;
+  } catch (e) {
+    console.error("Failed to set dummy mode:", e);
+  }
+};
 document.getElementById("btnStopRender").addEventListener("click", async () => {
   const statusElem = document.getElementById("renderStatusText");
   statusElem.textContent = "Stopped (Ready)";

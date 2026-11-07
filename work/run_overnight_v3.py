@@ -190,6 +190,54 @@ def probe_video_frames(ffmpeg: Path, mp4: Path) -> int | None:
         return None
 
 
+def resolve_rendered_clip_path(renders_dir: Path, out_name: str, promote: bool = False) -> Path:
+    """Finds the active MP4 file for a given out_name.
+    If numbered duplicates exist (e.g. out_name(2).mp4 created by Wan2GP due to file locks),
+    returns the newest valid duplicate. When promote=True, attempts to reconcile/promote
+    the newest duplicate back to canonical out_name.mp4 if writable.
+    """
+    renders_dir = Path(renders_dir)
+    base_name = re.sub(r"\(\d+\)$", "", Path(out_name).stem)
+    canonical = renders_dir / f"{base_name}.mp4"
+    if not renders_dir.exists():
+        return canonical
+
+    candidates = []
+    pattern = f"{base_name}*.mp4"
+    for p in renders_dir.glob(pattern):
+        if p.name.endswith(".tmp.mp4") or p.name.endswith(".tmp_promote.mp4") or "placeholder" in p.name.lower():
+            continue
+        stem = p.stem
+        if stem == base_name or re.match(rf"^{re.escape(base_name)}\(\d+\)$", stem):
+            try:
+                sz = p.stat().st_size
+                if sz > 50000:
+                    candidates.append((p.stat().st_mtime, sz, p))
+            except Exception:
+                pass
+
+    if not candidates:
+        return canonical
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    best_path = candidates[0][2]
+
+    if promote and best_path != canonical and best_path.exists():
+        tmp_canon = renders_dir / f"{base_name}.tmp_promote.mp4"
+        try:
+            shutil.copy2(str(best_path), str(tmp_canon))
+            os.replace(str(tmp_canon), str(canonical))
+            best_path.unlink(missing_ok=True)
+            return canonical
+        except Exception:
+            try:
+                tmp_canon.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    return best_path if best_path.exists() else canonical
+
+
 def check_scene_render_coverage(
     ffmpeg: Path,
     out_mp4: Path,
@@ -411,7 +459,7 @@ class ProjectContext:
     """Holds all resolved paths, model settings, anchors, and scenes loaded from a JSON file."""
 
     def __init__(self, json_path: Path, profiles_path: Path | None = None):
-        self.json_path = json_path.resolve()
+        self.json_path = Path(json_path).resolve()
         if not self.json_path.exists():
             raise FileNotFoundError(f"Configuration JSON not found: {self.json_path}")
 
@@ -612,6 +660,7 @@ class ProjectContext:
             raw_models.get("default_video_resolution")
             or raw_models.get("resolution")
             or (raw_models.get("video_shared_settings", {}).get("resolution") if isinstance(raw_models.get("video_shared_settings"), dict) else None)
+            or self.project_cfg.get("master_resolution")
             or 4
         )
         self.default_video_resolution = str(raw_res)
@@ -809,8 +858,10 @@ class ProjectContext:
         min_f = 124 if formula == "h3_ref2va" else 107
         needed = max(min_f, needed)
         k = math.ceil((needed - 5) / 17)
-        max_win = int(spec.get("sliding_window_size", self.video_shared_cfg.get("sliding_window_size", 362)))
-        return min(max_win, 17 * k + 5)
+        calculated = 17 * k + 5
+        if "max_frames" in spec:
+            calculated = min(int(spec["max_frames"]), calculated)
+        return calculated
 
     def slice_audio(self, src_audio: Path, start_s: float, dur_s: float, out_wav: Path):
         expected_size = round(dur_s * 176400) + 44
@@ -1370,6 +1421,178 @@ def import_anchors_from_dir(ctx: ProjectContext, src_dir_str: str, state: dict) 
     return imported
 
 
+def _stem_matches_legacy_render(ctx: ProjectContext, sid: str, stem_key: str, default_stem: str) -> bool:
+    """Returns True if stem_key is either the mode's default stem or already has a sliced audio file on disk."""
+    if stem_key == default_stem:
+        return True
+    skey = (stem_key or "").strip().lower()
+    if not skey or skey in ("silent", "none"):
+        return default_stem in ("", "silent", "none")
+    safe_stem_tag = re.sub(r"[^a-zA-Z0-9_\-]", "_", stem_key)
+    return (ctx.audio_dir / f"{sid}_{safe_stem_tag}.wav").exists()
+
+
+def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | None = None) -> dict[str, tuple[str, ...]]:
+    """Computes (current_hash, *compat_hashes) for every video pass in the project.
+    Single source of truth used by both server.py and run_stage2_scenes.
+    Includes audio stem selection (`stem`, `stem_m`, `stem_f`) in `current_hash`, while
+    preserving backward-compatible hashes for existing unedited scenes.
+    """
+    results: dict[str, tuple[str, ...]] = {}
+    vshared = ctx.video_shared_cfg
+    res_override = ctx.resolve_resolution(target_resolution) if target_resolution else None
+
+    for sc in ctx.scenes:
+        sid = sc["id"]
+        start = float(sc.get("start", 0))
+        end = float(sc.get("end", 0))
+        mode = sc.get("mode", "solo")
+        aid, anchor_path = ctx.resolve_anchor_path(sc.get("anchor", ""))
+        anchor_fn = anchor_path.name
+        a_hash = f"{_file_sha256(anchor_path)}"
+
+        if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
+            vrid, vrspec = ctx.resolve_video_renderer(sc)
+            vmodel = vrspec["model_type"]
+            res_str = res_override or ctx.resolve_resolution(vrspec.get("resolution", ctx.current_resolution))
+            if mode == "male_solo":
+                default_stem = "male"
+                stem_key = sc.get("stem", default_stem)
+                raw_out_name = sc.get("output_name", f"{sid}_male_solo")
+            elif mode == "female_solo":
+                default_stem = "female"
+                stem_key = sc.get("stem", default_stem)
+                raw_out_name = sc.get("output_name", f"{sid}_female_solo")
+            elif mode == "silent_locked":
+                default_stem = "silent"
+                stem_key = "silent"
+                raw_out_name = sc.get("output_name", f"{sid}_silent")
+            elif mode == "solo":
+                default_stem = "male"
+                stem_key = sc.get("stem", default_stem)
+                raw_out_name = sc.get("output_name", f"{sid}_solo")
+            else:
+                default_stem = "silent"
+                stem_key = sc.get("stem", default_stem)
+                raw_out_name = sc.get("output_name", f"{sid}_{stem_key}")
+
+            out_name = f"{raw_out_name}_{res_str}" if res_str not in raw_out_name else raw_out_name
+
+            raw_prompt = sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or ""
+            expanded_prompt = expand_variables(raw_prompt, ctx.variables)
+            req_start = max(0.0, start - ctx.head_overlap_s)
+            expanded_prompt = resolve_marker_prompt(expanded_prompt, req_start, ctx.markers, fps=ctx.model_fps(vrspec))
+            scene_seed = int(sc.get("seed") if sc.get("seed") is not None else (sc.get("seed_m") or 1000))
+
+            flow_shift = vrspec.get("flow_shift", vshared.get("flow_shift", 12.0)) if ("flow_shift" in vrspec or "flow_shift" in vshared) else None
+            base_payload = {
+                "sid": sid, "mode": mode,
+                "anchor": anchor_fn, "a_hash": a_hash,
+                "prompt": expanded_prompt, "seed": scene_seed,
+                "resolution": res_str,
+                "model_type": vmodel,
+                "steps": vrspec.get("num_inference_steps"),
+                "phases": vrspec.get("guidance_phases"),
+                "flow_shift": flow_shift,
+                "sample_solver": vrspec.get("sample_solver", vshared.get("sample_solver", "euler")),
+                "spatial_upsampling": vrspec.get("spatial_upsampling", vshared.get("spatial_upsampling", "")),
+                "config": vrspec.get("config", vshared.get("config", "")),
+                "skip_steps_cache_type": vrspec.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
+            }
+            t_payload = dict(base_payload, stem=stem_key)
+            t_hash = _sha256(t_payload)
+            t_payload_leg = dict(t_payload, start=start, end=end)
+            valid_hashes = [t_hash, _sha256(t_payload_leg)]
+
+            if _stem_matches_legacy_render(ctx, sid, stem_key, default_stem):
+                h_nostem = _sha256(base_payload)
+                h_nostem_leg = _sha256(dict(base_payload, start=start, end=end))
+                valid_hashes.extend([h_nostem, h_nostem_leg])
+
+            results[out_name] = tuple(valid_hashes)
+
+        elif mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
+            vrid_p1, vrspec_p1 = ctx.resolve_video_renderer(sc, pass_num=1)
+            vrid_p2, vrspec_p2 = ctx.resolve_video_renderer(sc, pass_num=2)
+            vmodel_p1 = vrspec_p1["model_type"]
+            vmodel_p2 = vrspec_p2["model_type"]
+            res_str = res_override or ctx.resolve_resolution(vrspec_p2.get("resolution", ctx.current_resolution))
+            out_p1 = f"{sid}_Pass1_Left_{res_str}"
+            out_p2 = f"{sid}_Pass2_Final_{res_str}"
+
+            default_stem_m = "male"
+            stem_m = sc.get("stem_m") or sc.get("stem_p1") or sc.get("stem") or default_stem_m
+            default_stem_f = "female" if mode == "duet_method_b" else "silent"
+            stem_f = sc.get("stem_f") or sc.get("stem_p2") or default_stem_f
+
+            raw_m = sc.get("prompt_m") or sc.get("prompt") or ""
+            raw_f = sc.get("prompt_f") or sc.get("prompt") or ""
+            exp_prompt_m = expand_variables(raw_m, ctx.variables)
+            req_start = max(0.0, start - ctx.head_overlap_s)
+            exp_prompt_m = resolve_marker_prompt(exp_prompt_m, req_start, ctx.markers, fps=ctx.model_fps(vrspec_p1))
+            exp_prompt_f = expand_variables(raw_f, ctx.variables)
+            exp_prompt_f = resolve_marker_prompt(exp_prompt_f, req_start, ctx.markers, fps=ctx.model_fps(vrspec_p2))
+
+            seed_m = int(sc.get("seed_m") if sc.get("seed_m") is not None else (sc.get("seed") or 1000))
+            seed_f = int(sc.get("seed_f") if sc.get("seed_f") is not None else (sc.get("seed") or 1000))
+            split_x = float(sc.get("split_x", 0.50))
+
+            p1_flow = vrspec_p1.get("flow_shift", vshared.get("flow_shift", 12.0)) if ("flow_shift" in vrspec_p1 or "flow_shift" in vshared) else None
+            p1_base = {
+                "sid": sid, "pass": 1, "mode": mode,
+                "anchor": anchor_fn, "a_hash": a_hash,
+                "prompt_m": exp_prompt_m, "seed_m": seed_m,
+                "resolution": res_str,
+                "model_type": vmodel_p1,
+                "steps": vrspec_p1.get("num_inference_steps"),
+                "phases": vrspec_p1.get("guidance_phases"),
+                "flow_shift": p1_flow,
+                "sample_solver": vrspec_p1.get("sample_solver", vshared.get("sample_solver", "euler")),
+                "spatial_upsampling": vrspec_p1.get("spatial_upsampling", vshared.get("spatial_upsampling", "")),
+                "config": vrspec_p1.get("config", vshared.get("config", "")),
+                "skip_steps_cache_type": vrspec_p1.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
+            }
+            p1_payload = dict(p1_base, stem_m=stem_m)
+            h_p1 = _sha256(p1_payload)
+            h_p1_leg = _sha256(dict(p1_payload, start=start, end=end))
+            h_p1_nostem = _sha256(p1_base)
+            h_p1_nostem_leg = _sha256(dict(p1_base, start=start, end=end))
+
+            p1_valid = [h_p1, h_p1_leg]
+            p1_matches_legacy = _stem_matches_legacy_render(ctx, sid, stem_m, default_stem_m)
+            if p1_matches_legacy:
+                p1_valid.extend([h_p1_nostem, h_p1_nostem_leg])
+            results[out_p1] = tuple(p1_valid)
+
+            p2_flow = vrspec_p2.get("flow_shift", vshared.get("flow_shift", 12.0)) if ("flow_shift" in vrspec_p2 or "flow_shift" in vshared) else None
+            p2_base = {
+                "sid": sid, "pass": 2, "mode": mode,
+                "h_p1": h_p1, "split_x": split_x,
+                "prompt_f": exp_prompt_f, "seed_f": seed_f,
+                "resolution": res_str,
+                "model_type": vmodel_p2,
+                "steps": vrspec_p2.get("num_inference_steps"),
+                "phases": vrspec_p2.get("guidance_phases"),
+                "flow_shift": p2_flow,
+                "sample_solver": vrspec_p2.get("sample_solver", vshared.get("sample_solver", "euler")),
+                "spatial_upsampling": vrspec_p2.get("spatial_upsampling", vshared.get("spatial_upsampling", "")),
+                "config": vrspec_p2.get("config", vshared.get("config", "")),
+                "skip_steps_cache_type": vrspec_p2.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
+            }
+            p2_payload = dict(p2_base, stem_f=stem_f)
+            h_p2 = _sha256(p2_payload)
+            h_p2_leg = _sha256(dict(p2_payload, start=start, end=end, h_p1=h_p1_leg))
+
+            p2_valid = [h_p2, h_p2_leg]
+            if p1_matches_legacy and _stem_matches_legacy_render(ctx, sid, stem_f, default_stem_f):
+                p2_nostem = dict(p2_base, h_p1=h_p1_nostem)
+                p2_nostem_leg = dict(p2_base, h_p1=h_p1_nostem_leg, start=start, end=end)
+                p2_valid.extend([_sha256(p2_nostem), _sha256(p2_nostem_leg)])
+            results[out_p2] = tuple(p2_valid)
+
+    return results
+
+
 def run_stage2_scenes(
     ctx: ProjectContext,
     lazy_session: LazyWgpSession,
@@ -1395,6 +1618,7 @@ def run_stage2_scenes(
     anchor_hashes = state.setdefault("anchors", {})
     task_hashes = state.setdefault("tasks", {})
     settings_store = state.setdefault("task_settings", {})
+    project_task_hashes = compute_project_task_hashes(ctx)
 
     all_tasks: list[tuple[dict, str, str, bool]] = []
     scene_meta: list[dict] = []
@@ -1413,7 +1637,6 @@ def run_stage2_scenes(
         mode = sc["mode"]
         aid, anchor_path = ctx.resolve_anchor_path(sc["anchor"])
         anchor_fn = anchor_path.name
-        a_hash = f"{_file_sha256(anchor_path)}"
         anchor_was_regen = cascade_anchors and (anchor_fn in regenerated_anchors or aid in regenerated_anchors)
 
         if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
@@ -1464,7 +1687,7 @@ def run_stage2_scenes(
                 })
                 continue
 
-            out_mp4 = ctx.renders_dir / f"{out_name}.mp4"
+            out_mp4 = resolve_rendered_clip_path(ctx.renders_dir, out_name, promote=True)
             if not out_mp4.exists():
                 legacy_mp4 = ctx.renders_dir / f"{raw_out_name}.mp4"
                 if legacy_mp4.exists() and legacy_mp4.stat().st_size > 50000:
@@ -1497,32 +1720,12 @@ def run_stage2_scenes(
             t_dict["render_start"] = target_render_start
             t_dict["render_end"] = target_render_end
 
-            # Content hash: hashes prompt, seed, model, resolution, anchor.
-            # Independent of start/end timing so moving boundaries within overlap doesn't invalidate content.
-            t_payload = {
-                "sid": sid, "mode": mode,
-                "anchor": anchor_fn, "a_hash": a_hash,
-                "prompt": expanded_prompt, "seed": scene_seed,
-                "resolution": t_dict["resolution"],
-                "model_type": vmodel,
-                "steps": vrspec.get("num_inference_steps"),
-                "phases": vrspec.get("guidance_phases"),
-                "flow_shift": t_dict.get("flow_shift"),
-                "sample_solver": t_dict.get("sample_solver"),
-                "spatial_upsampling": t_dict.get("spatial_upsampling", ""),
-                "config": t_dict.get("config", ""),
-                "skip_steps_cache_type": t_dict.get("skip_steps_cache_type", ""),
-            }
-            t_hash = _sha256(t_payload)
-            # Legacy hash compatibility (hashes that were computed before start/end decoupling)
-            t_payload_leg = dict(t_payload)
-            t_payload_leg["start"] = start
-            t_payload_leg["end"] = end
-            t_hash_legacy = _sha256(t_payload_leg)
+            valid_hashes = project_task_hashes.get(out_name, ("",))
+            t_hash = valid_hashes[0]
 
             file_exists = out_mp4.exists() and out_mp4.stat().st_size > 50000
             prev_hash = task_hashes.get(out_name)
-            changed = (prev_hash is not None) and (prev_hash != t_hash) and (prev_hash != t_hash_legacy)
+            changed = (prev_hash is not None) and (prev_hash not in valid_hashes)
 
             if sync_only and file_exists:
                 task_hashes[out_name] = t_hash
@@ -1536,7 +1739,6 @@ def run_stage2_scenes(
                     needs_render, reason = False, "SKIPPED (NOT TARGETED)"
                 else:
                     settings_reason = settings_change_reason(ctx.ffmpeg, settings_store, out_name, t_dict, out_mp4, file_exists)
-                    changed = (prev_hash is not None) and (prev_hash != t_hash)
                     if not file_exists:
                         needs_render, reason = True, "MISSING FILE (TARGETED)"
                     elif settings_reason:
@@ -1549,7 +1751,6 @@ def run_stage2_scenes(
                         needs_render, reason = True, "FORCED"
             else:
                 forced = match_scene_pass(force_scenes, sid, None)
-                changed = (prev_hash is not None) and (prev_hash != t_hash)
                 anchor_newer = file_exists and anchor_path.exists() and (out_mp4.stat().st_mtime < anchor_path.stat().st_mtime)
                 settings_reason = settings_change_reason(ctx.ffmpeg, settings_store, out_name, t_dict, out_mp4, file_exists)
 
@@ -1578,7 +1779,7 @@ def run_stage2_scenes(
             all_tasks.append((t_dict, t_hash, reason, needs_render))
             scene_meta.append({
                 "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
-                "clip": f"{out_name}.mp4", "render_start": actual_render_start, "render_end": actual_render_end,
+                "clip": out_mp4.name, "render_start": actual_render_start, "render_end": actual_render_end,
                 "anchor": sc.get("anchor")
             })
 
@@ -1668,50 +1869,13 @@ def run_stage2_scenes(
             t_p2["render_start"] = target_render_start
             t_p2["render_end"] = target_render_end
 
-            # Content hashes (independent of start/end boundaries)
-            p1_payload = {
-                "sid": sid, "pass": 1, "mode": mode,
-                "anchor": anchor_fn, "a_hash": a_hash,
-                "prompt_m": exp_prompt_m, "seed_m": seed_m,
-                "resolution": t_p1["resolution"],
-                "model_type": vmodel_p1,
-                "steps": vrspec_p1.get("num_inference_steps"),
-                "phases": vrspec_p1.get("guidance_phases"),
-                "flow_shift": t_p1.get("flow_shift"),
-                "sample_solver": t_p1.get("sample_solver"),
-                "spatial_upsampling": t_p1.get("spatial_upsampling", ""),
-                "config": t_p1.get("config", ""),
-                "skip_steps_cache_type": t_p1.get("skip_steps_cache_type", ""),
-            }
-            h_p1 = _sha256(p1_payload)
-            p1_leg = dict(p1_payload)
-            p1_leg["start"] = start
-            p1_leg["end"] = end
-            h_p1_leg = _sha256(p1_leg)
+            valid_p1 = project_task_hashes.get(out_p1, ("",))
+            valid_p2 = project_task_hashes.get(out_p2, ("",))
+            h_p1 = valid_p1[0]
+            h_p2 = valid_p2[0]
 
-            p2_payload = {
-                "sid": sid, "pass": 2, "mode": mode,
-                "h_p1": h_p1, "split_x": split_x,
-                "prompt_f": exp_prompt_f, "seed_f": seed_f,
-                "resolution": t_p2["resolution"],
-                "model_type": vmodel_p2,
-                "steps": vrspec_p2.get("num_inference_steps"),
-                "phases": vrspec_p2.get("guidance_phases"),
-                "flow_shift": t_p2.get("flow_shift"),
-                "sample_solver": t_p2.get("sample_solver"),
-                "spatial_upsampling": t_p2.get("spatial_upsampling", ""),
-                "config": t_p2.get("config", ""),
-                "skip_steps_cache_type": t_p2.get("skip_steps_cache_type", ""),
-            }
-            h_p2 = _sha256(p2_payload)
-            p2_leg = dict(p2_payload)
-            p2_leg["start"] = start
-            p2_leg["end"] = end
-            p2_leg["h_p1"] = h_p1_leg
-            h_p2_leg = _sha256(p2_leg)
-
-            mp4_p1 = ctx.renders_dir / f"{out_p1}.mp4"
-            mp4_p2 = ctx.renders_dir / f"{out_p2}.mp4"
+            mp4_p1 = resolve_rendered_clip_path(ctx.renders_dir, out_p1, promote=True)
+            mp4_p2 = resolve_rendered_clip_path(ctx.renders_dir, out_p2, promote=True)
             if not mp4_p1.exists():
                 legacy_p1 = ctx.renders_dir / f"{sid}_Pass1_Left.mp4"
                 if legacy_p1.exists() and legacy_p1.stat().st_size > 50000:
@@ -1770,7 +1934,7 @@ def run_stage2_scenes(
             else:
                 force_p1 = match_scene_pass(force_scenes, sid, 1)
                 force_p2 = match_scene_pass(force_scenes, sid, 2)
-                chg_p1 = (prev_p1 is not None) and (prev_p1 != h_p1) and (prev_p1 != h_p1_leg)
+                chg_p1 = (prev_p1 is not None) and (prev_p1 not in valid_p1)
                 anchor_newer_p1 = ex_p1 and anchor_path.exists() and (mp4_p1.stat().st_mtime < anchor_path.stat().st_mtime)
                 set_p1 = settings_change_reason(ctx.ffmpeg, settings_store, out_p1, t_p1, mp4_p1, ex_p1)
                 set_p2 = settings_change_reason(ctx.ffmpeg, settings_store, out_p2, t_p2, mp4_p2, ex_p2)
@@ -1793,7 +1957,7 @@ def run_stage2_scenes(
                 else:
                     nr_p1, r_p1 = False, "UP-TO-DATE (COVERED BY RENDER)"
 
-                chg_p2 = (prev_p2 is not None) and (prev_p2 != h_p2) and (prev_p2 != h_p2_leg)
+                chg_p2 = (prev_p2 is not None) and (prev_p2 not in valid_p2)
                 if force_p2:
                     nr_p2, r_p2 = True, "FORCED"
                 elif nr_p1:
@@ -1821,7 +1985,7 @@ def run_stage2_scenes(
             all_tasks.append((t_p2, h_p2, r_p2, nr_p2))
             scene_meta.append({
                 "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
-                "clip": f"{out_p2}.mp4", "render_start": actual_render_start, "render_end": actual_render_end,
+                "clip": mp4_p2.name, "render_start": actual_render_start, "render_end": actual_render_end,
                 "anchor": sc.get("anchor")
             })
 
@@ -1901,7 +2065,10 @@ def run_stage2_scenes(
             continue
 
         if out_mp4.exists():
-            out_mp4.unlink()
+            try:
+                out_mp4.unlink()
+            except OSError:
+                pass
 
         if dummy_render:
             t0 = time.time()
@@ -2061,7 +2228,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
 
     target_w, target_h = None, None
     for sc in scene_meta:
-        src = ctx.renders_dir / sc["clip"]
+        src = resolve_rendered_clip_path(ctx.renders_dir, Path(sc["clip"]).stem, promote=True)
         if src.exists():
             dims = probe_video_dimensions(ctx.ffmpeg, src)
             if dims:
@@ -2096,7 +2263,8 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
     for i, sc in enumerate(scene_meta):
         sid = sc["id"]
         dur = sc["dur"]
-        src_clip = ctx.renders_dir / sc["clip"]
+        canonical_stem = re.sub(r"\(\d+\)$", "", Path(sc["clip"]).stem)
+        src_clip = resolve_rendered_clip_path(ctx.renders_dir, canonical_stem, promote=True)
         dst_clip = ctx.trimmed_dir / f"{i:02d}_{sid}_{res_tag}.mp4"
         dst_placeholder = ctx.trimmed_dir / f"{i:02d}_{sid}_placeholder_{res_tag}.mp4"
 
@@ -2108,7 +2276,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
         # Retrieve render_start for offset trimming
         render_start = sc.get("render_start")
         if render_start is None:
-            r_info = scene_renders.get(src_clip.stem)
+            r_info = scene_renders.get(canonical_stem) or scene_renders.get(src_clip.stem)
             if r_info and "render_start" in r_info:
                 render_start = float(r_info["render_start"])
             else:
@@ -2148,6 +2316,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                         "setpts=PTS-STARTPTS",
                     ])
                 vf_filters.extend([
+                    "tpad=stop_mode=clone:stop=-1",
                     f"scale={res_str}:flags=lanczos",
                     f"fps={ctx.fps}",
                 ])

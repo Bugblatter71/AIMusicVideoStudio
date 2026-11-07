@@ -12,8 +12,13 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
       return Boolean(window.state && window.state.projectData && window.state.projectData.scenes && window.state.projectData.scenes.length > 0);
     }, { timeout: 10000 });
 
-    // Reset queue to canonical scene order before each test
+    // Reset queue to canonical scene order before each test and ensure dummy render is active
     await page.evaluate(async () => {
+      await fetch('/api/settings/dummy_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+      });
       await fetch('/api/queue/enqueue_all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -60,12 +65,11 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     // Switch to Render Console tab
     await page.locator('button[data-tab="console"]').click();
 
-    // Verify dummy render mode toggle is present
+    // Verify dummy render mode toggle is HIDDEN from normal users to prevent accidental selection
+    const dummyContainer = page.locator('#dummyModeContainer');
+    await expect(dummyContainer).toBeHidden();
     const dummyChk = page.locator('#chkDummyRenderMode');
-    await expect(dummyChk).toBeVisible();
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
+    await expect(dummyChk).toBeHidden();
 
     // Switch to Queue View
     await page.locator('#btnConsoleQueue').click();
@@ -140,17 +144,6 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('06. Click Render Scene triggers single render and completes cleanly in dummy mode', async ({ page }) => {
-    // 1. Ensure dummy mode is enabled
-    await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    await expect(dummyChk).toBeVisible();
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
-
-    // 2. Switch back to timeline / scene editor
-    await page.locator('button[data-tab="timeline"]').click();
-
     // Select S01 (index 0)
     await page.evaluate(() => {
       // @ts-ignore
@@ -177,14 +170,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('07. Multi-stage journey: Cancel active run, add new scene to timeline, and verify queue updates', async ({ page }) => {
-    // 1. Ensure dummy mode is on
-    await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
-
-    // 2. Start a render of S01
+    // 1. Start a render of S01
     await page.locator('button[data-tab="timeline"]').click();
     await page.evaluate(() => {
       // @ts-ignore
@@ -271,14 +257,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('09. Multi-stage journey: Cancel Scene A, then render Scene B cleanly without ghost lingering or blockages', async ({ page }) => {
-    // 1. Ensure dummy mode is on
-    await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
-
-    // 2. Start render on S02 (duet scene)
+    // 1. Start render on S02 (duet scene)
     await page.locator('button[data-tab="timeline"]').click();
     await page.evaluate(() => {
       // @ts-ignore
@@ -354,12 +333,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('11. Multi-stage journey: Reorder queue to prioritize scene S03 and execute it first', async ({ page }) => {
-    // 1. Ensure dummy mode is on
     await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
     await page.locator('#btnConsoleQueue').click();
 
     // 2. Clear queue
@@ -441,12 +415,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('13. Target specific pass S02:p1 renders only Pass 1 and preserves Pass 2', async ({ page }) => {
-    // 1. Ensure dummy mode is checked
     await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
     await page.locator('#btnConsoleQueue').click();
 
     // 2. Trigger render for specific pass S02:p1 via triggerRender
@@ -471,26 +440,20 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('14. Render Two-Pass Duet scene queues and executes Pass 1 followed by Pass 2', async ({ page }) => {
-    // 1. Ensure dummy mode is on
-    await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
-
-    // 2. Trigger render for Two-Pass Duet scene S02
+    // 1. Trigger render for Two-Pass Duet scene S02
     await page.evaluate(async () => {
       // @ts-ignore
       await window.triggerRender(['S02']);
     });
 
-    // 3. Switch to Queue View and verify Pass 1 is at index 0 and Pass 2 is at index 1
+    // 2. Switch to Console & Queue View and verify Pass 1 is at index 0 and Pass 2 is at index 1
+    await page.locator('button[data-tab="console"]').click();
     await page.locator('#btnConsoleQueue').click();
     const rows = page.locator('#queueTableBody tr');
     await expect(rows.nth(0)).toContainText('S02_Pass1_Left', { timeout: 8000 });
     await expect(rows.nth(1)).toContainText('S02_Pass2_Final', { timeout: 8000 });
 
-    // 4. Stop render and wait for server to acknowledge termination
+    // 3. Stop render and wait for server to acknowledge termination
     await Promise.all([
       page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
       page.locator('#btnStopRender').click(),
@@ -498,36 +461,31 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('15. Dynamic queueing during active render: Add scene while another is actively rendering', async ({ page }) => {
-    // 1. Ensure dummy mode is on
     await page.locator('button[data-tab="console"]').click();
-    const dummyChk = page.locator('#chkDummyRenderMode');
-    if (!(await dummyChk.isChecked())) {
-      await dummyChk.check();
-    }
     await page.locator('#btnConsoleQueue').click();
 
-    // 2. Clear queue so all items are skipped
+    // 1. Clear queue so all items are skipped
     await page.locator('#btnClearQueue').click();
     const rows = page.locator('#queueTableBody tr');
     await expect(rows).toHaveCount(4, { timeout: 8000 });
 
-    // 3. Enqueue only S01 (row 0)
+    // 2. Enqueue only S01 (row 0)
     await rows.nth(0).locator('button[title="Add to Queue"]').click();
     await expect(rows.nth(0)).toContainText('Queued', { timeout: 5000 });
 
-    // 4. Trigger render on S01
+    // 3. Trigger render on S01
     await page.locator('#btnRenderAll').click();
     const statusText = page.locator('#renderStatusText');
     await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
 
-    // 5. Dynamically add S03 (row 3) to queue while engine is active
+    // 4. Dynamically add S03 (row 3) to queue while engine is active
     const addBtnS03 = rows.nth(3).locator('button[title="Add to Queue"]');
     if (await addBtnS03.isVisible()) {
       await addBtnS03.click();
       await expect(rows.nth(3)).toContainText('Queued', { timeout: 5000 });
     }
 
-    // 6. Stop render and wait for server to acknowledge termination
+    // 5. Stop render and wait for server to acknowledge termination
     await Promise.all([
       page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
       page.locator('#btnStopRender').click(),
@@ -580,5 +538,18 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
       saveBtn.click(),
     ]);
     await expect(saveBtn).not.toContainText('*', { timeout: 8000 });
+  });
+
+  test('17. Developer URL flag ?dev=1 exposes hidden dummy mode controls, while normal view hides them', async ({ page }) => {
+    // 1. Normal view: Dummy mode container is completely hidden
+    await page.goto('/?project=test_project');
+    await page.locator('button[data-tab="console"]').click();
+    await expect(page.locator('#dummyModeContainer')).toBeHidden();
+
+    // 2. Developer view: With ?dev=1 query parameter, container becomes visible
+    await page.goto('/?project=test_project&dev=1');
+    await page.locator('button[data-tab="console"]').click();
+    await expect(page.locator('#dummyModeContainer')).toBeVisible();
+    await expect(page.locator('#chkDummyRenderMode')).toBeVisible();
   });
 });

@@ -47,7 +47,7 @@
       "5": "1536x864  - 864p Near-1080p   (~4.5 min/s video, high fidelity for hero scenes)",
       "6": "1920x1088 - 1080p Full HD     (~6-7 min/s video, cinema-grade DiT multiple-of-16 preset)"
     },
-    "default_video_resolution": 2
+    "default_video_resolution": 4
   },
   "run_controls": {
     "force_rerender_anchors": [],
@@ -261,16 +261,17 @@
       "id": "S10",
       "renderer": null,
       "start": 66.3,
-      "end": 92.5,
+      "end": 91.19,
       "mode": "silent_locked",
       "anchor": "A05 - 2Man_and_woman_looking_at_8410e52f_2K.jpg",
       "seed": 8210,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection, the light glows softly.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection, the light glows softly.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "stem": "silent"
     },
     {
       "id": "S12a",
       "renderer": null,
-      "start": 92.5,
+      "start": 91.19,
       "end": 99,
       "mode": "solo",
       "anchor": "A06 - 2Woman_playing_electric_guitar_f92b39a1_2K.jpg",
@@ -286,7 +287,8 @@
       "mode": "solo",
       "anchor": "A07 - Orchestra_and_band_playing_on_cc899f16_2K.jpg",
       "seed": 8213,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing. the camera slowly pushes towards {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar in time with the audio track. Her mouth is completely closed and her eyes are open. \noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing. the camera slowly pushes towards {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar in time with the audio track. Her mouth is completely closed and her eyes are open. \noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "stem": "silent"
     },
     {
       "id": "S13",
@@ -301,8 +303,7 @@
       "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the left half , {MALE_STUDIO_DESC} in three-quarter profile at his brass microphone sings directly to the woman on the right with his eyes clearly open, natural head movement, and synchronized lip movements, while the woman on the right stands with her mouth closed.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
       "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the right half, {FEMALE_STUDIO_DESC} in three-quarter profile at her brass microphone sings her counter-melody directly to the man on the left with her eyes clearly open, expressive emotion, and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A",
       "stem_m": "male",
-      "stem_f": "female",
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. As the guitar enters the arrangement, the camera slowly pushes in on {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar in time with the . Her mouth is completely closed and her eyes are open.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+      "stem_f": "female"
     },
     {
       "id": "S14",
@@ -401,7 +402,7 @@
       "start": 166,
       "end": 173,
       "mode": "male_solo",
-      "anchor": "A01_Male_Orchestra_CloseMic.jpg",
+      "anchor": "A01 - 2Man_singing_into_microphone_ed7b66b4_2K.jpg",
       "seed": 8223,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Extreme close-up on {MALE_STUDIO_DESC} at the brass condenser microphone as he delivers the final soaring line before Chorus 3, with wide open emotional eyes, subtle head movement, and synchronized lip movements.as he sings 'it's not me it's you' he looks directly into the camera. \noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
     },
@@ -469,7 +470,7 @@
       "id": "S26a",
       "renderer": null,
       "start": 198.59,
-      "end": 213.67,
+      "end": 219.77,
       "mode": "male_solo",
       "anchor": "A14 - 2Man_and_woman_looking_at_0ab81fbd_2K.jpg",
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Instrumental outro Part 2: {MALE_STUDIO_DESC} remains standing in his exact position central in the frame  singing to {FEMALE_STUDIO_DESC} who stands silent on the right, her mouth completely closed and listening quietly, showing sadness and regret. He shows sadness and regret, voice breaking. As the camera slowly pulls back, the sapphire-blue circle on the left and the cluster of golden Venn circles on the right slowly drift and separate apart across the dark soundstage floor, opening an expanse of dark space between them as the scene gently fades out to black.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",

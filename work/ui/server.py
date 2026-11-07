@@ -32,6 +32,15 @@ BACKUP_DIR = WORKSPACE_ROOT / "backup"
 RUNNER_SCRIPT = WORKSPACE_ROOT / "work" / "run_overnight_v3.py"
 PROFILES_FILE = WORKSPACE_ROOT / "model_profiles.json"
 TEMPLATE_FILE = WORKSPACE_ROOT / "project_template.json"
+TEMPLATES_FILE = TEMPLATE_FILE
+
+sys.path.insert(0, str(WORKSPACE_ROOT / "work"))
+try:
+    from run_overnight_v3 import ProjectContext, compute_project_task_hashes, resolve_rendered_clip_path
+except ImportError:
+    ProjectContext = None
+    compute_project_task_hashes = None
+    resolve_rendered_clip_path = None
 
 # Global state for background render subprocess
 render_lock = threading.Lock()
@@ -183,8 +192,9 @@ def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
     finally:
         with render_lock:
             active_process = None
-            render_status["running"] = False
-            render_status["exit_code"] = exit_code
+            if not queue_worker_active:
+                render_status["running"] = False
+                render_status["exit_code"] = exit_code
 
     broadcast_log(f"[Studio UI] Finished single render (exit code {exit_code})")
     return exit_code
@@ -293,9 +303,12 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                 active_process = None
             queue_worker_active = False
         queue_worker_active = True
+        render_status["running"] = True
+        render_status["exit_code"] = None
 
     def _worker():
         global queue_worker_active
+        last_exit_code = 0
         try:
             broadcast_log("[Studio UI Queue] Queue processing started (single-render mode).")
             proj_dir = PROJECTS_DIR / project_slug
@@ -381,15 +394,19 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                     pass
 
                 if code != 0:
+                    last_exit_code = code
                     broadcast_log(f"[Studio UI Error] Single render failed for {out_fn} (exit code {code}). Queue paused.")
                     break
 
                 time.sleep(0.5)
         except Exception as e:
             broadcast_log(f"[Studio UI Queue Worker Exception] {e}")
+            last_exit_code = -1
         finally:
             with render_lock:
                 queue_worker_active = False
+                render_status["running"] = False
+                render_status["exit_code"] = last_exit_code
             broadcast_log("[Studio UI Queue] Queue runner idle.")
 
     t = threading.Thread(target=_worker, daemon=True)
@@ -442,6 +459,85 @@ def resolve_project_resolution(data: dict) -> str:
     return "1344x768"
 
 
+def collect_project_clips(proj_dir: Path, data: dict) -> dict[str, dict]:
+    """Collect rendered clips across renders_dir and trimmed_dir, prioritizing
+    Pass2_Final over Pass1, renders with audio over trimmed, and strictly
+    excluding placeholders from scene mapping.
+    """
+    proj_dir = Path(proj_dir)
+    trimmed_dir = proj_dir / data.get("project", {}).get("directories", {}).get("trimmed", "work/trimmed")
+    renders_dir = proj_dir / data.get("project", {}).get("directories", {}).get("renders", "work/renders")
+
+    clip_search_dirs = [
+        trimmed_dir,
+        renders_dir,
+        proj_dir / "work" / "trimmed_v3",
+        proj_dir / "work" / "renders_v3",
+    ]
+
+    def _clip_score(cname: str, cpath: str) -> int:
+        low_name = cname.lower()
+        low_path = cpath.lower()
+        if "placeholder" in low_name:
+            return -100
+        if "pass2_final" in low_name:
+            return 50
+        if "pass2" in low_name:
+            return 45
+        if "renders" in low_path and "pass1" not in low_name:
+            return 40
+        if "pass1" in low_name:
+            return 30
+        if "trimmed" in low_path:
+            return 20
+        return 10
+
+    existing_clips = {}
+    canonical_scores = {}
+    scanned_clip_dirs = set()
+    for cdir in clip_search_dirs:
+        if cdir.is_dir():
+            rcdir = str(cdir.resolve())
+            if rcdir in scanned_clip_dirs:
+                continue
+            scanned_clip_dirs.add(rcdir)
+            for clip in cdir.glob("*.mp4"):
+                if clip.name.endswith(".tmp.mp4"):
+                    continue
+                rel_path = clip.relative_to(proj_dir).as_posix()
+                score = _clip_score(clip.name, rel_path)
+                info = {
+                    "filename": clip.name,
+                    "path": rel_path,
+                    "size_bytes": clip.stat().st_size,
+                    "mtime": clip.stat().st_mtime,
+                }
+                if clip.name not in existing_clips:
+                    existing_clips[clip.name] = info
+
+                # Exclude placeholders from canonical scene ID mapping
+                if "placeholder" in clip.name.lower():
+                    continue
+
+                m = re.search(r"(?:^|_)(S\d{1,2}[a-z]?)(?:[_\.]|$)", clip.name, re.IGNORECASE)
+                if m:
+                    matched_sid = m.group(1)
+                    for sid_variant in (matched_sid, matched_sid.upper(), matched_sid.lower()):
+                        prev_score = canonical_scores.get(sid_variant, -999)
+                        prev_info = existing_clips.get(sid_variant)
+                        should_replace = False
+                        if prev_info is None or score > prev_score:
+                            should_replace = True
+                        elif score == prev_score and info["mtime"] > prev_info["mtime"]:
+                            should_replace = True
+
+                        if should_replace:
+                            canonical_scores[sid_variant] = score
+                            existing_clips[sid_variant] = info
+
+    return existing_clips
+
+
 def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[dict]:
     """Instantly evaluates all scenes in the project JSON against disk, anchor mtimes/hashes, and state hashes."""
     proj_dir = PROJECTS_DIR / slug
@@ -467,11 +563,13 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
     hashes_file = jobs_dir / "state_hashes.json"
     hashes = {}
     stored_anchor_hashes = {}
+    scene_renders = {}
     if hashes_file.is_file():
         try:
             h_data = json.loads(hashes_file.read_text(encoding="utf-8"))
             hashes = h_data.get("tasks", {})
             stored_anchor_hashes = h_data.get("anchor_file_hashes", {})
+            scene_renders = h_data.get("scene_renders", {})
         except Exception:
             pass
 
@@ -496,6 +594,14 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
     scene_by_id = {sc.get("id"): sc for sc in scenes if sc.get("id")}
     default_res = resolve_project_resolution(data)
 
+    task_hashes_current = {}
+    if ProjectContext and compute_project_task_hashes and config_file.is_file():
+        try:
+            ctx = ProjectContext(config_file)
+            task_hashes_current = compute_project_task_hashes(ctx, target_resolution=default_res)
+        except Exception:
+            pass
+
     existing_items = []
     if queue_file.is_file() and not force_recheck:
         try:
@@ -510,7 +616,10 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
 
     # Helper to evaluate pass state
     def _evaluate_pass(out_name: str, sid: str, pass_num: int | None, current_item: dict | None = None) -> tuple[str, str, bool]:
-        mp4_path = renders_dir / f"{out_name}.mp4"
+        if resolve_rendered_clip_path:
+            mp4_path = resolve_rendered_clip_path(renders_dir, out_name)
+        else:
+            mp4_path = renders_dir / f"{out_name}.mp4"
         file_exists = mp4_path.exists() and mp4_path.stat().st_size > 50000
 
         # Preserve active rendering status if engine is running
@@ -530,6 +639,18 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             return "queued", f"PASS 1 RE-RENDERED ({p1_needs_rerender[sid]})", True
 
         sc = scene_by_id.get(sid)
+
+        # Check timeline bounds coverage
+        if sc:
+            sc_start = float(sc.get("start", 0))
+            sc_end = float(sc.get("end", 0))
+            render_info = scene_renders.get(out_name)
+            if render_info and "render_start" in render_info and "render_end" in render_info:
+                r_start = float(render_info["render_start"])
+                r_end = float(render_info["render_end"])
+                if not ((r_start <= sc_start + 0.05) and (r_end >= sc_end - 0.05)):
+                    return "queued", f"TIMELINE EXCEEDS RENDER ([{sc_start:.2f}, {sc_end:.2f}] not covered by [{r_start:.2f}, {r_end:.2f}])", True
+
         aid = extract_anchor_id(sc.get("anchor", "")) if sc else ""
         anchor_info = disk_anchors.get(aid)
         stored_a_hash = stored_anchor_hashes.get(aid)
@@ -538,7 +659,17 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             return "queued", f"ANCHOR {aid} NEWER ON DISK", True
         if anchor_info and stored_a_hash and anchor_info["hash"] != stored_a_hash:
             return "queued", f"ANCHOR {aid} EDITED", True
-        if out_name not in hashes:
+
+        # Check if prompt, seed, stem, renderer, or settings have been edited
+        curr_hashes = task_hashes_current.get(out_name)
+        if curr_hashes:
+            prev_h = hashes.get(out_name)
+            if prev_h is not None:
+                if prev_h not in curr_hashes:
+                    return "queued", "PROMPT/SEED/SETTINGS EDITED", True
+            else:
+                return "queued", "EDITED", True
+        elif out_name not in hashes:
             return "queued", "EDITED", True
 
         # File exists and is up-to-date with anchor and settings
@@ -1265,37 +1396,9 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                             existing_anchors[aid] = info
 
         # Collect rendered clips across renders_dir and trimmed_dir
-        existing_clips = {}
-        trimmed_dir = proj_dir / data.get("project", {}).get("directories", {}).get("trimmed", "work/trimmed")
+        existing_clips = collect_project_clips(proj_dir, data)
         strips_dir = proj_dir / data.get("project", {}).get("directories", {}).get("review_strips", "work/frames_v3")
         strips_dir.mkdir(parents=True, exist_ok=True)
-
-        clip_search_dirs = [trimmed_dir, renders_dir, proj_dir / "work" / "trimmed_v3", proj_dir / "work" / "renders_v3"]
-        scanned_clip_dirs = set()
-        for cdir in clip_search_dirs:
-            if cdir.is_dir():
-                rcdir = str(cdir.resolve())
-                if rcdir in scanned_clip_dirs:
-                    continue
-                scanned_clip_dirs.add(rcdir)
-                for clip in cdir.glob("*.mp4"):
-                    if clip.name.endswith(".tmp.mp4"):
-                        continue
-                    info = {
-                        "filename": clip.name,
-                        "path": str(clip.relative_to(proj_dir)),
-                        "size_bytes": clip.stat().st_size,
-                        "mtime": clip.stat().st_mtime,
-                    }
-                    if clip.name not in existing_clips:
-                        existing_clips[clip.name] = info
-                    # Map canonical scene ID (e.g. S01, S02, S12a)
-                    m = re.search(r"(?:^|_)(S\d{1,2}[a-z]?)(?:[_\.]|$)", clip.name, re.IGNORECASE)
-                    if m:
-                        matched_sid = m.group(1)
-                        for sid_variant in (matched_sid, matched_sid.upper(), matched_sid.lower()):
-                            if sid_variant not in existing_clips or info["mtime"] > existing_clips[sid_variant]["mtime"]:
-                                existing_clips[sid_variant] = info
 
         # Collect existing filmstrip images
         existing_strips = {}
@@ -1368,7 +1471,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         # Send existing log history first
         with render_lock:
             existing = list(log_history)
-            is_running = render_status["running"]
+            is_running = render_status["running"] or queue_worker_active
             exit_code = render_status["exit_code"]
 
         last_seen_seq = 0
@@ -1387,7 +1490,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 time.sleep(0.15)
                 ping_timer += 0.15
                 with render_lock:
-                    is_running = render_status["running"]
+                    is_running = render_status["running"] or queue_worker_active
                     exit_code = render_status["exit_code"]
                     # If log_history was cleared or reset behind us
                     if log_history and log_history[-1][0] < last_seen_seq:
@@ -1708,5 +1811,7 @@ if __name__ == "__main__":
     for i, a in enumerate(sys.argv[1:]):
         if a in ("--port", "-p") and i + 1 < len(sys.argv[1:]):
             port = int(sys.argv[1:][i + 1])
+    if "--dummy" in sys.argv[1:]:
+        dummy_render_mode = True
     run_server(port)
 
