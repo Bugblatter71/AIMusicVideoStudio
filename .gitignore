@@ -91,6 +91,9 @@ scratch/
 !model_profiles.json
 !project_template.json
 !*.bat
+config.local.bat
+local_config.bat
+*.local.bat
 !work/run_overnight_v3.py
 !work/ui/
 !work/ui/**

@@ -279,6 +279,79 @@ def check_scene_render_coverage(
     return is_covered, r_start, r_end
 
 
+def find_local_config(root_dir: Path) -> dict:
+    """Searches for config.local.json or local_config.json in project or workspace root."""
+    for d in (root_dir, root_dir.parent, Path.cwd(), Path(__file__).resolve().parent.parent):
+        for fn in ("config.local.json", "local_config.json"):
+            p = d / fn
+            if p.is_file():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+    return {}
+
+
+def auto_detect_wgp_root() -> Path | None:
+    """Auto-detects Wan2GP app installation under Pinokio across standard locations."""
+    wgp_env = os.environ.get("WGP_ROOT")
+    if wgp_env and Path(wgp_env).is_dir():
+        return Path(wgp_env).resolve()
+
+    pinokio_home = os.environ.get("PINOKIO_HOME") or os.environ.get("PINOKIO_ROOT")
+    candidates = []
+    if pinokio_home:
+        candidates.append(Path(pinokio_home) / "api" / "wan.git" / "app")
+
+    user_profile = os.environ.get("USERPROFILE")
+    if user_profile:
+        up = Path(user_profile)
+        candidates.extend([
+            up / "pinokio" / "api" / "wan.git" / "app",
+            up / "Downloads" / "pinokio" / "api" / "wan.git" / "app",
+            up / "Documents" / "pinokio" / "api" / "wan.git" / "app",
+        ])
+    for drive in ("C", "D", "E", "F"):
+        candidates.append(Path(f"{drive}:/pinokio/api/wan.git/app"))
+        candidates.append(Path(f"{drive}:/Pinokio/api/wan.git/app"))
+
+    for c in candidates:
+        try:
+            if c.is_dir() and ((c / "wgp_config.json").exists() or (c / "models").exists()):
+                return c.resolve()
+        except Exception:
+            pass
+    return None
+
+
+def resolve_ffmpeg_path(project_dir: Path, configured_val: str, wgp_root: Path | None) -> Path:
+    """Finds a working FFmpeg executable across project tools, Wan2GP, Pinokio, or system PATH."""
+    if configured_val:
+        cand = resolve_path(project_dir, configured_val)
+        if cand.is_file():
+            return cand
+    local_tool = project_dir / "tools" / "ffmpeg.exe"
+    if local_tool.is_file():
+        return local_tool
+    workspace_tool = Path(__file__).resolve().parent.parent / "tools" / "ffmpeg.exe"
+    if workspace_tool.is_file():
+        return workspace_tool
+    if wgp_root and Path(wgp_root).is_dir():
+        wgp_ff = Path(wgp_root) / "ffmpeg_bins" / "ffmpeg.exe"
+        if wgp_ff.is_file():
+            return wgp_ff
+        try:
+            pin_ff = Path(wgp_root).parent.parent.parent / "bin" / "ffmpeg.exe"
+            if pin_ff.is_file():
+                return pin_ff
+        except Exception:
+            pass
+    sys_ff = shutil.which("ffmpeg")
+    if sys_ff:
+        return Path(sys_ff)
+    return Path("ffmpeg")
+
+
 def settings_change_reason(ffmpeg: Path, settings_store: dict, out_name: str, task: dict, out_mp4: Path, file_exists: bool) -> str | None:
     """Returns a human-readable reason if the clip's render settings differ from the last render, else None."""
     cur = render_settings_of(task)
@@ -487,22 +560,47 @@ class ProjectContext:
         else:
             self.profiles_path = None
 
-        # Environment setup: project overrides profile
+        # Environment setup: local override -> project config -> model profile
+        local_cfg = find_local_config(self.project_dir)
         env = dict(profiles_raw.get("environment", {}))
         env.update(raw.get("environment", {}))
+        if isinstance(local_cfg.get("environment"), dict):
+            env.update(local_cfg["environment"])
+        elif local_cfg:
+            env.update({k: v for k, v in local_cfg.items() if k in ("wgp_root", "ffmpeg", "extra_path_dirs")})
 
         raw_models = raw.get("models", {})
         self.run_controls = raw.get("run_controls", {})
         self.variables = raw.get("variables", {})
         self.markers = raw.get("markers", [])
 
-        extra_paths = [str(resolve_path(self.project_dir, p)) for p in env.get("extra_path_dirs", [])]
+        # Resolve WGP root with auto-detection fallback across standard Pinokio locations
+        wgp_str = os.environ.get("WGP_ROOT") or env.get("wgp_root", "")
+        if wgp_str and Path(wgp_str).is_dir():
+            self.wgp_root = Path(wgp_str).resolve()
+        else:
+            detected = auto_detect_wgp_root()
+            self.wgp_root = detected if detected else resolve_path(self.project_dir, wgp_str)
+
+        extra_paths = [str(resolve_path(self.project_dir, p)) for p in env.get("extra_path_dirs", []) if p]
+        if self.wgp_root and self.wgp_root.is_dir():
+            try:
+                pinokio_base = self.wgp_root.parent.parent.parent
+                for dyn_dir in (
+                    pinokio_base / "bin",
+                    pinokio_base / "bin" / "miniconda" / "Library" / "bin",
+                    self.wgp_root / "ffmpeg_bins",
+                ):
+                    if dyn_dir.is_dir() and str(dyn_dir) not in extra_paths:
+                        extra_paths.append(str(dyn_dir))
+            except Exception:
+                pass
+
         if extra_paths:
             os.environ["PATH"] = ";".join(extra_paths) + ";" + os.environ.get("PATH", "")
         os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 
-        self.wgp_root = resolve_path(self.project_dir, env.get("wgp_root", ""))
-        self.ffmpeg = resolve_path(self.project_dir, env.get("ffmpeg", "ffmpeg"))
+        self.ffmpeg = resolve_ffmpeg_path(self.project_dir, env.get("ffmpeg", ""), self.wgp_root)
 
         # Project parameters & paths
         self.fps = int(proj.get("fps", 25))

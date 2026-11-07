@@ -1,0 +1,25 @@
+# Music Video Generation Studio - Dependencies
+#
+# ==============================================================================
+# NOTE: If you are using Pinokio Wan2GP (recommended), NO pip install is required!
+# The Pinokio virtual environment already contains PyTorch, Diffusers, CUDA,
+# and all required generation backends.
+# The Studio Web UI server runs entirely on Python standard library modules.
+# ==============================================================================
+#
+# Standalone / Custom environment dependencies (optional):
+# python >= 3.10
+#
+# For UI & Pipeline Runner:
+# (Zero external dependencies - standard library only)
+#
+# For local Wan2GP GPU direct inference (if not using Pinokio):
+# torch>=2.4.0
+# torchvision
+# torchaudio
+# diffusers>=0.30.0
+# transformers>=4.44.0
+# accelerate>=0.33.0
+# opencv-python>=4.10.0
+# numpy>=1.26.0
+# pillow>=10.4.0

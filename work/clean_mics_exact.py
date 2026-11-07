@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-PROJECT = Path(r"C:\Users\bugbl\AppData\Local\Temp\MusicVideoGeneration")
+PROJECT = Path(r".")
 IMAGES = PROJECT / "images"
 
 pristine = cv2.imread(str(IMAGES / "Dual_Stage_FacingEachOther_ClosedMouth.jpg"))

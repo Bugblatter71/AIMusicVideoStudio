@@ -7,7 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
-PROJECT = Path(r"C:\Users\bugbl\AppData\Local\Temp\MusicVideoGeneration")
+PROJECT = Path(r".")
 FFMPEG = PROJECT / "tools" / "ffmpeg.exe"
 RENDERS_DIR = PROJECT / "work" / "renders"
 TRIMMED_DIR = PROJECT / "work" / "trimmed"

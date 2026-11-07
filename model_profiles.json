@@ -2,13 +2,9 @@
   "title": "Wan2GP Generic Model & Resolution Profiles",
   "version": "1.0",
   "environment": {
-    "wgp_root": "C:\\Users\\bugbl\\Downloads\\pinokio\\api\\wan.git\\app",
-    "ffmpeg": "tools/ffmpeg.exe",
-    "extra_path_dirs": [
-      "C:\\Users\\bugbl\\Downloads\\pinokio\\bin",
-      "C:\\Users\\bugbl\\Downloads\\pinokio\\bin\\miniconda\\Library\\bin",
-      "C:\\Users\\bugbl\\Downloads\\pinokio\\api\\wan.git\\app\\ffmpeg_bins"
-    ]
+    "wgp_root": "",
+    "ffmpeg": "",
+    "extra_path_dirs": []
   },
   "anchor_shared_settings": {
     "resolution": "1920x1080",

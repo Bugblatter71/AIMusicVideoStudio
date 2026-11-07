@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-PROJECT = Path(r"C:\Users\bugbl\AppData\Local\Temp\MusicVideoGeneration")
+PROJECT = Path(r".")
 IMAGES = PROJECT / "images"
 MASKS = PROJECT / "work" / "masks"
 JOBS = PROJECT / "work" / "jobs"

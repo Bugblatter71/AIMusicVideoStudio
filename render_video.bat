@@ -20,9 +20,26 @@ setlocal
 for %%I in ("%~dp0.") do set "PIPELINE_ROOT=%%~fI"
 cd /d "%PIPELINE_ROOT%"
 
-set "PINOKIO_PY=C:\Users\bugbl\Downloads\pinokio\api\wan.git\app\venv\Scripts\python.exe"
-if not exist "%PINOKIO_PY%" set "PINOKIO_PY=python"
-set "PATH=C:\Users\bugbl\Downloads\pinokio\bin;C:\Users\bugbl\Downloads\pinokio\bin\miniconda\Library\bin;C:\Users\bugbl\Downloads\pinokio\api\wan.git\app\ffmpeg_bins;%PATH%"
+REM Load machine-local config if present
+if exist "%PIPELINE_ROOT%\config.local.bat" call "%PIPELINE_ROOT%\config.local.bat"
+
+REM Auto-detect Pinokio Wan2GP Python environment if not already set
+if not defined PINOKIO_PY (
+    if exist "%USERPROFILE%\pinokio\api\wan.git\app\venv\Scripts\python.exe" (
+        set "PINOKIO_PY=%USERPROFILE%\pinokio\api\wan.git\app\venv\Scripts\python.exe"
+    ) else if exist "%USERPROFILE%\Downloads\pinokio\api\wan.git\app\venv\Scripts\python.exe" (
+        set "PINOKIO_PY=%USERPROFILE%\Downloads\pinokio\api\wan.git\app\venv\Scripts\python.exe"
+    ) else if exist "%USERPROFILE%\Documents\pinokio\api\wan.git\app\venv\Scripts\python.exe" (
+        set "PINOKIO_PY=%USERPROFILE%\Documents\pinokio\api\wan.git\app\venv\Scripts\python.exe"
+    ) else if exist "C:\pinokio\api\wan.git\app\venv\Scripts\python.exe" (
+        set "PINOKIO_PY=C:\pinokio\api\wan.git\app\venv\Scripts\python.exe"
+    ) else if exist "D:\pinokio\api\wan.git\app\venv\Scripts\python.exe" (
+        set "PINOKIO_PY=D:\pinokio\api\wan.git\app\venv\Scripts\python.exe"
+    ) else (
+        set "PINOKIO_PY=python"
+    )
+)
+
 set "GIT_PYTHON_REFRESH=quiet"
 
 echo ============================================================================
@@ -30,6 +47,7 @@ echo   Generic Music Video Render Pipeline
 echo ============================================================================
 echo   Root   : "%PIPELINE_ROOT%"
 echo   Runner : "%PIPELINE_ROOT%\work\run_overnight_v3.py"
+echo   Python : %PINOKIO_PY%
 echo   Args   : %*
 echo ============================================================================
 
@@ -49,4 +67,3 @@ if %ERRORLEVEL%==0 (
     echo.
     pause
 )
-exit /b 0

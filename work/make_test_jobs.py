@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-PROJECT = Path(r"C:\Users\bugbl\AppData\Local\Temp\MusicVideoGeneration")
+PROJECT = Path(r".")
 AUDIO = PROJECT / "work" / "audio"
 JOBS = PROJECT / "work" / "jobs"
 JOBS.mkdir(parents=True, exist_ok=True)

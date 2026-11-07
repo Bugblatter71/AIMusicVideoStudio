@@ -36,11 +36,57 @@ TEMPLATES_FILE = TEMPLATE_FILE
 
 sys.path.insert(0, str(WORKSPACE_ROOT / "work"))
 try:
-    from run_overnight_v3 import ProjectContext, compute_project_task_hashes, resolve_rendered_clip_path
+    from run_overnight_v3 import (
+        ProjectContext,
+        compute_project_task_hashes,
+        resolve_rendered_clip_path,
+        find_local_config,
+        auto_detect_wgp_root,
+    )
 except ImportError:
     ProjectContext = None
     compute_project_task_hashes = None
     resolve_rendered_clip_path = None
+    find_local_config = None
+    auto_detect_wgp_root = None
+
+
+def resolve_engine_python() -> str:
+    """Finds the best Python interpreter for GPU rendering jobs.
+    Checks environment variables, local machine config, Pinokio auto-detection,
+    and falls back to current running Python.
+    """
+    env_py = os.environ.get("PINOKIO_PY") or os.environ.get("WGP_PYTHON") or os.environ.get("ENGINE_PYTHON")
+    if env_py and Path(env_py).is_file():
+        return str(Path(env_py).resolve())
+
+    if find_local_config:
+        try:
+            cfg = find_local_config(WORKSPACE_ROOT)
+            cfg_py = cfg.get("python_path") or cfg.get("python") or cfg.get("wgp_python")
+            if cfg_py and Path(cfg_py).is_file():
+                return str(Path(cfg_py).resolve())
+            cfg_wgp = cfg.get("wgp_root") or cfg.get("environment", {}).get("wgp_root")
+            if cfg_wgp:
+                for rel in ("venv/Scripts/python.exe", "venv/bin/python"):
+                    cand = Path(cfg_wgp) / rel
+                    if cand.is_file():
+                        return str(cand.resolve())
+        except Exception:
+            pass
+
+    if auto_detect_wgp_root:
+        try:
+            detected = auto_detect_wgp_root()
+            if detected:
+                for rel in ("venv/Scripts/python.exe", "venv/bin/python"):
+                    cand = detected / rel
+                    if cand.is_file():
+                        return str(cand.resolve())
+        except Exception:
+            pass
+
+    return sys.executable
 
 # Global state for background render subprocess
 render_lock = threading.Lock()
@@ -144,8 +190,7 @@ def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
 
     broadcast_log(f"[Studio UI] Executing: {' '.join(cmd_args)}")
 
-    py_cand = Path(r"C:\Users\bugbl\Downloads\pinokio\api\wan.git\app\venv\Scripts\python.exe")
-    py_exec = str(py_cand) if py_cand.exists() else sys.executable
+    py_exec = resolve_engine_python()
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -216,8 +261,7 @@ def run_stitch_worker(config_path: str, project_slug: str):
         stitch_in_progress = True
 
     broadcast_log("[Studio UI Stitch] >>> Immediate master video restitch initiated...")
-    py_cand = Path(r"C:\Users\bugbl\Downloads\pinokio\api\wan.git\app\venv\Scripts\python.exe")
-    py_exec = str(py_cand) if py_cand.exists() else sys.executable
+    py_exec = resolve_engine_python()
 
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
