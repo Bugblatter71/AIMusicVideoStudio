@@ -48,6 +48,14 @@ state_hashes.json
 **/work/jobs_*/
 *.log
 
+# --- Project Backups & Machine-Local Configs ---
+backup/
+**/Backup/
+local_config.json
+config.local.json
+config.local.bat
+.env
+
 # --- Large Binary Tools & Virtual Environments ---
 tools/*.exe
 tools/*.dll
@@ -83,7 +91,10 @@ scratch/
 !model_profiles.json
 !project_template.json
 !*.bat
-!work/*.py
+!work/run_overnight_v3.py
+!work/ui/
+!work/ui/**
+**/__pycache__/**
 
 # Keep character reference sheets & primary anchor images
 !projects/*/references/

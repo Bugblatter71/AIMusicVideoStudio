@@ -198,9 +198,10 @@
       "start": 20.4,
       "end": 27.2,
       "mode": "male_solo",
-      "anchor": "A04_Meta_Studio_ChartCollaboration.jpg",
+      "anchor": "A04 - 2Man_singing_to_woman_in_0e61c834_2K.jpg",
       "seed": 8204,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. On the left side inside his sapphire-blue floor circle, {MALE_STUDIO_DESC} at the brass microphone sings emotionally toward the woman on the right with open eyes, natural hand and head movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A"
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. On the left side inside his sapphire-blue floor circle, {MALE_STUDIO_DESC} at the brass microphone sings emotionally toward the woman on the right with open eyes, natural hand and head movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. \nOn the left side inside his large sapphire-blue circle, {MALE_STUDIO_DESC} pours his heart into the studio microphone facing right toward her, with animated upper-body movement, open eyes locked on her, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A"
     },
     {
       "id": "S05",
@@ -239,10 +240,10 @@
       "end": 57.2,
       "mode": "gva_male_left_silent_right",
       "split_x": 0.48,
-      "anchor": "A03_Meta_Studio_HeSings_SheProduces.jpg",
+      "anchor": "A03 - 2Man_singing_and_woman_listening_90de80da_2K.jpg",
       "seed_m": 8208,
       "seed_f": 8308,
-      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage with unified wooden flooring. On the left side inside his large sapphire-blue circle, {MALE_STUDIO_DESC} pours his heart into the studio microphone facing right toward her, with animated upper-body movement, open eyes locked on her, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. \nOn the left side inside his large sapphire-blue circle, {MALE_STUDIO_DESC} pours his heart into the studio microphone facing right toward her, with animated upper-body movement, open eyes locked on her, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
       "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage with unified wooden flooring. On the right side inside her three intersecting warm golden Venn floor circles by the mixing console, {FEMALE_STUDIO_DESC} keeps her mouth completely closed and her eyes open as she marks the arrangement on her music stand and looks back at him with deep emotion.\noverall_soundscape: Quiet studio room tone, no speech.\nnon_diegetic_music: N/A",
       "stem_m": "male",
       "stem_f": "silent"
@@ -300,8 +301,8 @@
       "anchor": "A08 - 2Duet_vocal_recording_in_studio_a164bc0d_2K.jpg",
       "seed_m": 8214,
       "seed_f": 8314,
-      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the left half , {MALE_STUDIO_DESC} in three-quarter profile at his brass microphone sings directly to the woman on the right with his eyes clearly open, natural head movement, and synchronized lip movements, while the woman on the right stands with her mouth closed.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
-      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the right half, {FEMALE_STUDIO_DESC} in three-quarter profile at her brass microphone sings her counter-melody directly to the man on the left with her eyes clearly open, expressive emotion, and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A",
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. On the left half ,  {MALE_STUDIO_DESC} in three-quarter profile at his brass microphone sings directly to the woman on the right with his eyes clearly open, natural head movement, and synchronized lip movements, while the woman on the right stands with her mouth closed.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. On the right half, {FEMALE_STUDIO_DESC} in three-quarter profile at her brass microphone sings her counter-melody directly to the man on the left with her eyes clearly open, expressive emotion, and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A",
       "stem_m": "male",
       "stem_f": "female"
     },
@@ -312,7 +313,7 @@
       "end": 117.4,
       "mode": "duet_method_b",
       "split_x": 0.5,
-      "anchor": "A09_Duet_Stage_FacingEachOther_Venn.jpg",
+      "anchor": "A09 - 2Man_and_woman_singing_into_dc656dec_2K.jpg",
       "seed_m": 8215,
       "seed_f": 8315,
       "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. On the left half of the Venn soundstage inside his giant sapphire-blue floor circle, {MALE_STUDIO_DESC} at his stand microphone faces right toward the woman and sings directly to her with open eyes, natural body sway, and synchronized lip movements.\noverall_soundscape: Stage room tone and male vocal.\nnon_diegetic_music: N/A",
@@ -330,8 +331,8 @@
       "anchor": "A08 - 2Duet_vocal_recording_in_studio_a164bc0d_2K.jpg",
       "seed_m": 8216,
       "seed_f": 8316,
-      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Inside the studio, {MALE_STUDIO_DESC} on the left faces right toward the woman and sings passionately to her with open eyes locked on hers, natural upper-body movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
-      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Inside the studio, {FEMALE_STUDIO_DESC} on the right faces left toward the man and sings her counter-lyric ('You want to build a home') directly to him with open eyes locked on his and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A",
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. Inside the studio, {MALE_STUDIO_DESC} on the left faces right toward the woman and sings passionately to her with open eyes locked on hers, natural upper-body movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "prompt_f": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. Inside the studio, {FEMALE_STUDIO_DESC} on the right faces left toward the man and sings her counter-lyric ('You want to build a home') directly to him with open eyes locked on his and synchronized lip movements.\noverall_soundscape: Studio room tone and female vocal.\nnon_diegetic_music: N/A",
       "stem_m": "male",
       "stem_f": "female"
     },
