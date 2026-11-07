@@ -53,6 +53,14 @@ echo (If prompted, log into GitHub in the browser/window that appears)
 echo.
 git push -u origin main
 
+if not %ERRORLEVEL%==0 (
+    echo.
+    echo [INFO] Remote repository contains initial files. Merging remote history...
+    git fetch origin
+    git merge origin/main --allow-unrelated-histories -X theirs -m "Merge remote repository initialization"
+    git push -u origin main
+)
+
 if %ERRORLEVEL%==0 (
     echo.
     echo ============================================================================
