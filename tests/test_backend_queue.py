@@ -127,30 +127,118 @@ class TestRenderQueueBackend(unittest.TestCase):
 
     def test_06_anchor_change_detection(self):
         """Verify modifying an anchor image file triggers automatic re-render detection for dependent scenes."""
-        # 1. Check all_or_nothing detection for modified anchor A07 (affects S12b)
-        q_aon = server.compute_fast_project_queue("all_or_nothing", force_recheck=True)
-        queued_scenes = {x["scene_id"]: x for x in q_aon if x["status"] == "queued"}
-        self.assertIn("S12b", queued_scenes, "S12b (uses A07) must be queued when A07 anchor is updated")
-        self.assertTrue(queued_scenes["S12b"]["needs_render"])
-        self.assertIn("A07", queued_scenes["S12b"]["reason"])
-
-        # 2. Dynamic anchor touch on all_or_nothing A01
         aon_anchors = WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "anchors_v3"
         a01_files = list(aon_anchors.glob("A01*"))
-        if a01_files:
-            a01 = a01_files[0]
-            orig_mtime = a01.stat().st_mtime
-            try:
-                now = time.time()
-                # Set anchor mtime into future so it is newer than the rendered MP4
-                os.utime(a01, (now + 100, now + 100))
-                q_test = server.compute_fast_project_queue("all_or_nothing", force_recheck=True)
-                queued_map = {x["scene_id"]: x for x in q_test if x["status"] == "queued"}
-                self.assertIn("S01", queued_map, "S01 must be queued when A01 is newer on disk")
-                self.assertTrue(queued_map["S01"]["needs_render"])
-                self.assertIn("A01", queued_map["S01"]["reason"])
-            finally:
-                os.utime(a01, (orig_mtime, orig_mtime))
+        self.assertTrue(len(a01_files) > 0, "A01 anchor must exist")
+        a01 = a01_files[0]
+        orig_mtime = a01.stat().st_mtime
+        try:
+            now = time.time()
+            # Touch anchor to future so it is newer than the rendered MP4
+            os.utime(a01, (now + 100, now + 100))
+            q_test = server.compute_fast_project_queue("all_or_nothing", force_recheck=True)
+            queued_map = {x["scene_id"]: x for x in q_test if x["status"] == "queued"}
+            self.assertIn("S01", queued_map, "S01 must be queued when A01 is newer on disk")
+            self.assertTrue(queued_map["S01"]["needs_render"])
+            self.assertIn("A01", queued_map["S01"]["reason"])
+        finally:
+            os.utime(a01, (orig_mtime, orig_mtime))
+
+    def test_07_exact_scene_id_disambiguation(self):
+        """Verify targeted scene selection exact matching (e.g. S1 matches only S01, never S10, S11, S12a; S2 matches only S02, never S22)."""
+        # Predicate matching verification
+        self.assertTrue(server.is_scene_match("S01", "S01_male_solo", "S1"))
+        self.assertTrue(server.is_scene_match("S01", "S01_male_solo", "S01"))
+        self.assertFalse(server.is_scene_match("S10", "S10_solo", "S1"))
+        self.assertFalse(server.is_scene_match("S11", "S11_solo", "S1"))
+        self.assertFalse(server.is_scene_match("S12a", "S12a_solo", "S1"))
+        self.assertFalse(server.is_scene_match("S12b", "S12b_solo", "S1"))
+        self.assertTrue(server.is_scene_match("S02", "S02_Pass1", "S2"))
+        self.assertTrue(server.is_scene_match("S02", "S02_Pass1", "S02"))
+        self.assertFalse(server.is_scene_match("S22", "S22_solo", "S2"))
+        self.assertTrue(server.is_scene_match("S12a", "S12a_solo", "S12a"))
+        self.assertFalse(server.is_scene_match("S12b", "S12b_solo", "S12a"))
+
+        # Queue targeting verification
+        matched = server.prepare_targeted_queue_items(self.project_slug, "S1")
+        self.assertTrue(len(matched) > 0)
+        for m in matched:
+            self.assertEqual(m["scene_id"], "S01")
+
+    def test_08_two_pass_specific_pass_targeting(self):
+        """Verify targeting specific pass (S02:p1 or S02:p2) enqueues only that specific pass."""
+        # 1. Target only Pass 1
+        p1_matches = server.prepare_targeted_queue_items(self.project_slug, "S02:p1")
+        self.assertEqual(len(p1_matches), 1, f"Expected exactly 1 item for S02:p1, got {len(p1_matches)}")
+        self.assertEqual(p1_matches[0]["pass"], 1)
+        self.assertIn("Pass1", p1_matches[0]["output_filename"])
+
+        # 2. Target only Pass 2
+        p2_matches = server.prepare_targeted_queue_items(self.project_slug, "S02:p2")
+        self.assertEqual(len(p2_matches), 1, f"Expected exactly 1 item for S02:p2, got {len(p2_matches)}")
+        self.assertEqual(p2_matches[0]["pass"], 2)
+        self.assertIn("Pass2", p2_matches[0]["output_filename"])
+
+        # 3. Target whole scene S02 (both passes)
+        both_matches = server.prepare_targeted_queue_items(self.project_slug, "S02")
+        self.assertEqual(len(both_matches), 2, f"Expected 2 passes for S02, got {len(both_matches)}")
+        passes = {m["pass"] for m in both_matches}
+        self.assertEqual(passes, {1, 2})
+
+    def test_09_prompt_edit_change_detection(self):
+        """Verify modifying prompt in scene configuration flags task as EDITED requiring render."""
+        # Backup original test_project.json
+        server.backup_project_json(self.json_path)
+        orig_text = self.json_path.read_text(encoding="utf-8")
+        orig_data = json.loads(orig_text)
+
+        try:
+            # Modify S01 prompt
+            mod_data = json.loads(orig_text)
+            for sc in mod_data.get("scenes", []):
+                if sc.get("id") == "S01":
+                    sc["prompt"] = f"MODIFIED TEST PROMPT {time.time()}"
+                    break
+            self.json_path.write_text(json.dumps(mod_data, indent=2), encoding="utf-8")
+
+            # Invalidate hashes cache
+            hashes_file = self.proj_dir / "work" / "jobs_v3" / "state_hashes.json"
+            if hashes_file.exists():
+                hashes_file.unlink()
+
+            q = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+            s01_item = next((x for x in q if x.get("scene_id") == "S01"), None)
+            self.assertIsNotNone(s01_item, "S01 must exist in computed queue")
+            self.assertTrue(s01_item["needs_render"])
+            self.assertEqual(s01_item["status"], "queued")
+        finally:
+            self.json_path.write_text(orig_text, encoding="utf-8")
+
+    def test_10_queue_worker_no_clobber(self):
+        """Verify targeted render with --no-queue-sync preserves UI queue without clobbering with SKIPPED."""
+        # Setup initial queue
+        initial_queue = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+        self.assertEqual(len(initial_queue), 4)
+
+        # Run single scene render with --no-queue-sync
+        cmd = [
+            sys.executable,
+            str(WORKSPACE_ROOT / "work" / "run_overnight_v3.py"),
+            str(self.json_path),
+            "S01",
+            "--dummy",
+            "--no-queue-sync",
+            "--no-stitch",
+            "--skip-anchors",
+        ]
+        res = subprocess.run(cmd, cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Render failed: {res.stderr}\n{res.stdout}")
+
+        # Verify v3_queue.json still has 4 items and was NOT clobbered
+        q_disk = json.loads(self.queue_file.read_text(encoding="utf-8"))
+        self.assertEqual(len(q_disk), 4, f"Queue was clobbered! Expected 4 items, found {len(q_disk)}")
+        skipped_count = sum(1 for itm in q_disk if itm.get("status") == "skipped")
+        self.assertLess(skipped_count, 4, "Queue should not have all items marked skipped")
 
 
 if __name__ == "__main__":

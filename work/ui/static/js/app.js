@@ -2762,6 +2762,8 @@ async function triggerRender(args = []) {
     alert(`Failed to start render: ${err}`);
   }
 }
+window.triggerRender = triggerRender;
+window.loadProjectQueue = loadProjectQueue;
 
 document.getElementById("btnConsoleQueue")?.addEventListener("click", () => setConsoleView("queue"));
 document.getElementById("btnConsoleLogs")?.addEventListener("click", () => setConsoleView("logs"));

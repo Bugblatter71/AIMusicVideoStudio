@@ -162,6 +162,8 @@ def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
             active_process = proc
 
         while True:
+            if not queue_worker_active and render_status.get("running") is False:
+                break
             try:
                 line = proc.stdout.readline()
                 if not line:
@@ -329,7 +331,7 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                         break
 
                 if not next_task:
-                    if rendered_any:
+                    if rendered_any and queue_worker_active:
                         broadcast_log("[Studio UI Queue] All queued passes completed! Restitching master video...")
                         run_stitch_worker(config_path, project_slug)
                         broadcast_log("[Studio UI Queue] Queue finished. Master video updated.")
@@ -354,6 +356,8 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                 # 4. Submit single render task to engine
                 cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
                 code = execute_single_render(cmd_args, project_slug)
+                if not queue_worker_active:
+                    break
 
                 # 5. Reload queue file fresh to respect any user reordering/deletions done during render
                 try:
@@ -630,6 +634,153 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
         pass
 
     return queue
+
+
+def is_scene_match(sid: str, out_fn: str, target_base: str) -> bool:
+    """Checks whether a scene ID or output filename matches the target scene string.
+    Normalizes single-digit scene prefixes (e.g. 'S1' matches 'S01', 'S2' matches 'S02'),
+    while strictly preventing false positives (e.g. 'S1' will NEVER match 'S10', 'S11', 'S12a')."""
+    if not target_base:
+        return False
+    target_base = target_base.strip().upper()
+    sid_clean = (sid or "").strip().upper()
+    out_clean = (out_fn or "").strip().upper()
+
+    # Exact matches
+    if sid_clean == target_base or out_clean == target_base:
+        return True
+    if out_clean.startswith(f"{target_base}_"):
+        return True
+
+    # Normalized zero-padded match: e.g. S1 <-> S01
+    m_tgt = re.match(r"^S0*(\d+)([A-Z]?)$", target_base)
+    if m_tgt:
+        tgt_num = int(m_tgt.group(1))
+        tgt_sub = m_tgt.group(2)
+        m_sid = re.match(r"^S0*(\d+)([A-Z]?)$", sid_clean)
+        if m_sid:
+            sid_num = int(m_sid.group(1))
+            sid_sub = m_sid.group(2)
+            if tgt_num == sid_num and tgt_sub == sid_sub:
+                return True
+        out_prefix = out_clean.split("_")[0]
+        m_out = re.match(r"^S0*(\d+)([A-Z]?)$", out_prefix)
+        if m_out:
+            out_num = int(m_out.group(1))
+            out_sub = m_out.group(2)
+            if tgt_num == out_num and tgt_sub == out_sub:
+                return True
+
+    return False
+
+
+def prepare_targeted_queue_items(slug: str, target_sid: str) -> list[dict]:
+    """Ensures targeted scene and its pass items are enqueued and positioned at the top of the queue."""
+    target_sid = str(target_sid).strip().upper()
+    target_base = target_sid.split(":")[0].strip()
+    target_pass = None
+    if ":" in target_sid:
+        p_tok = target_sid.split(":")[1].lower().replace("p", "").strip()
+        if p_tok.isdigit():
+            target_pass = int(p_tok)
+
+    proj_dir = PROJECTS_DIR / slug
+    queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+    jsons = sorted(proj_dir.glob("*.json"))
+    config_file = jsons[-1] if jsons else None
+
+    if not queue_file.is_file():
+        compute_fast_project_queue(slug)
+
+    items = []
+    if queue_file.is_file():
+        try:
+            items = json.loads(queue_file.read_text(encoding="utf-8"))
+        except Exception:
+            items = []
+
+    matched_items = []
+    for item in items:
+        out_fn = item.get("output_filename", "")
+        sid = item.get("scene_id") or derive_scene_id(out_fn)
+        item["scene_id"] = sid
+        if not item.get("target_arg"):
+            item["target_arg"] = derive_target_arg(out_fn)
+
+        pass_num = item.get("pass")
+        if pass_num is None:
+            if "Pass1" in out_fn:
+                pass_num = 1
+            elif "Pass2" in out_fn:
+                pass_num = 2
+            item["pass"] = pass_num
+
+        is_match = is_scene_match(sid, out_fn, target_base)
+        if is_match and target_pass is not None:
+            is_match = (pass_num == target_pass)
+
+        if is_match:
+            item["status"] = "queued"
+            item["needs_render"] = True
+            item["reason"] = f"TARGETED ({target_sid})"
+            matched_items.append(item)
+        elif item.get("status") == "rendering" and not (active_process and active_process.poll() is None):
+            item["status"] = "queued" if item.get("needs_render") else "skipped"
+            item["reason"] = "INTERRUPTED"
+
+    # If targeted scene was not found in existing queue, generate it from project config
+    if not matched_items and config_file and config_file.is_file():
+        try:
+            cfg_data = json.loads(config_file.read_text(encoding="utf-8"))
+            sc = next((s for s in cfg_data.get("scenes", []) if is_scene_match(s.get("id", ""), "", target_base)), None)
+            if sc:
+                res_str = resolve_project_resolution(cfg_data)
+                sid = sc.get("id", target_base)
+                mode = sc.get("mode", "solo")
+                is_two_pass = mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
+                if is_two_pass:
+                    targets = [
+                        (f"{sid}_Pass1_Left_{res_str}", f"{sid}:p1", 1),
+                        (f"{sid}_Pass2_Final_{res_str}", f"{sid}:p2", 2),
+                    ]
+                else:
+                    raw_name = sc.get("output_name", f"{sid}_{mode}")
+                    out_fn = f"{raw_name}_{res_str}" if res_str not in raw_name else raw_name
+                    targets = [(out_fn, sid, None)]
+
+                for out_fn, tgt_arg, p_num in targets:
+                    if target_pass is not None and p_num != target_pass:
+                        continue
+                    new_item = {
+                        "idx": len(items) + 1,
+                        "id": out_fn,
+                        "scene_id": sid,
+                        "target_arg": tgt_arg,
+                        "pass": p_num,
+                        "filename": f"{out_fn}.mp4",
+                        "output_filename": out_fn,
+                        "status": "queued",
+                        "reason": f"TARGETED ({target_sid})",
+                        "needs_render": True,
+                        "model_type": "minimax_h3_fl2va_pruned_pdd",
+                        "resolution": res_str,
+                    }
+                    items.insert(0, new_item)
+                    matched_items.append(new_item)
+        except Exception as ge:
+            broadcast_log(f"[Studio UI Warning] Could not dynamically generate queue item for {target_sid}: {ge}")
+
+    # Move matched items to the top of the queued list
+    if matched_items:
+        for m in reversed(matched_items):
+            if m in items:
+                items.remove(m)
+            items.insert(0, m)
+        for i, itm in enumerate(items, 1):
+            itm["idx"] = i
+
+    queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    return matched_items
 
 
 class StudioRequestHandler(BaseHTTPRequestHandler):
@@ -933,100 +1084,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             # Targeted scene render (e.g. clicking "Render Scene")
             if args:
                 target_sid = str(args[0]).strip().upper()
-                target_base = target_sid.split(":")[0].strip()
-                target_pass = None
-                if ":" in target_sid:
-                    p_tok = target_sid.split(":")[1].lower().replace("p", "").strip()
-                    if p_tok.isdigit():
-                        target_pass = int(p_tok)
-
                 try:
-                    items = json.loads(queue_file.read_text(encoding="utf-8"))
-                    matched_items = []
-
-                    for item in items:
-                        out_fn = item.get("output_filename", "")
-                        sid = item.get("scene_id") or derive_scene_id(out_fn)
-                        item["scene_id"] = sid
-                        if not item.get("target_arg"):
-                            item["target_arg"] = derive_target_arg(out_fn)
-
-                        pass_num = item.get("pass")
-                        if pass_num is None:
-                            if "Pass1" in out_fn:
-                                pass_num = 1
-                            elif "Pass2" in out_fn:
-                                pass_num = 2
-                            item["pass"] = pass_num
-
-                        is_match = (
-                            sid.upper() == target_base
-                            or out_fn.upper().startswith(f"{target_base}_")
-                            or out_fn.upper() == target_base
-                        )
-                        if is_match and target_pass is not None:
-                            is_match = (pass_num == target_pass)
-
-                        if is_match:
-                            item["status"] = "queued"
-                            item["needs_render"] = True
-                            item["reason"] = f"TARGETED ({target_sid})"
-                            matched_items.append(item)
-                        elif item.get("status") == "rendering" and not (active_process and active_process.poll() is None):
-                            item["status"] = "queued" if item.get("needs_render") else "skipped"
-                            item["reason"] = "INTERRUPTED"
-
-                    # If targeted scene was not found in existing queue, generate it from project config
-                    if not matched_items:
-                        try:
-                            cfg_data = json.loads(config_file.read_text(encoding="utf-8"))
-                            sc = next((s for s in cfg_data.get("scenes", []) if s.get("id", "").upper() == target_base), None)
-                            if sc:
-                                res_str = resolve_project_resolution(cfg_data)
-                                sid = sc.get("id", target_base)
-                                mode = sc.get("mode", "solo")
-                                is_two_pass = mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
-                                if is_two_pass:
-                                    targets = [
-                                        (f"{sid}_Pass1_Left_{res_str}", f"{sid}:p1", 1),
-                                        (f"{sid}_Pass2_Final_{res_str}", f"{sid}:p2", 2),
-                                    ]
-                                else:
-                                    raw_name = sc.get("output_name", f"{sid}_{mode}")
-                                    out_fn = f"{raw_name}_{res_str}" if res_str not in raw_name else raw_name
-                                    targets = [(out_fn, sid, None)]
-
-                                for out_fn, tgt_arg, p_num in targets:
-                                    if target_pass is not None and p_num != target_pass:
-                                        continue
-                                    new_item = {
-                                        "idx": len(items) + 1,
-                                        "id": out_fn,
-                                        "scene_id": sid,
-                                        "target_arg": tgt_arg,
-                                        "pass": p_num,
-                                        "filename": f"{out_fn}.mp4",
-                                        "output_filename": out_fn,
-                                        "status": "queued",
-                                        "reason": f"TARGETED ({target_sid})",
-                                        "needs_render": True,
-                                        "model_type": "minimax_h3_fl2va_pruned_pdd",
-                                        "resolution": res_str,
-                                    }
-                                    items.insert(0, new_item)
-                                    matched_items.append(new_item)
-                        except Exception as ge:
-                            broadcast_log(f"[Studio UI Warning] Could not dynamically generate queue item for {target_sid}: {ge}")
-
-                    # Move matched items to the top of the queued list
-                    if matched_items:
-                        for m in reversed(matched_items):
-                            if m in items:
-                                items.remove(m)
-                            items.insert(0, m)
-                        for i, itm in enumerate(items, 1):
-                            itm["idx"] = i
-                    queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
+                    prepare_targeted_queue_items(slug, target_sid)
                 except Exception as e:
                     broadcast_log(f"[Studio UI Error] Failed preparing queue for scene {target_sid}: {e}")
             else:

@@ -363,22 +363,34 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await page.locator('#btnConsoleQueue').click();
 
     // 2. Clear queue
-    await page.locator('#btnClearQueue').click();
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/queue/clear') && resp.status() === 200),
+      page.locator('#btnClearQueue').click(),
+    ]);
 
     // 3. Enqueue only S03 (last row)
     const rows = page.locator('#queueTableBody tr');
     await expect(rows).toHaveCount(4, { timeout: 8000 });
-    await rows.nth(3).locator('button[title="Add to Queue"]').click();
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/queue/enqueue') && resp.status() === 200),
+      rows.nth(3).locator('button[title="Add to Queue"]').click(),
+    ]);
     await expect(rows.nth(3)).toContainText('Queued', { timeout: 5000 });
 
     // 4. Also enqueue S01 (first row) so we have two queued items to reorder
-    await rows.nth(0).locator('button[title="Add to Queue"]').click();
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/queue/enqueue') && resp.status() === 200),
+      rows.nth(0).locator('button[title="Add to Queue"]').click(),
+    ]);
     await expect(rows.nth(0)).toContainText('Queued', { timeout: 5000 });
 
     // 5. Move S03 up using Move Up button
     const upBtn = rows.nth(3).locator('button[title="Move Up"]');
     if (await upBtn.isEnabled()) {
-      await upBtn.click();
+      await Promise.all([
+        page.waitForResponse((resp) => resp.url().includes('/api/queue/move') && resp.status() === 200),
+        upBtn.click(),
+      ]);
     }
 
     // 6. Trigger "Render Missing / Changed"
@@ -388,24 +400,185 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     const statusText = page.locator('#renderStatusText');
     await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
 
-    // 8. Clean up: click stop button
-    await page.locator('#btnStopRender').click();
+    // 8. Clean up: click stop button and wait for termination
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
+      page.locator('#btnStopRender').click(),
+    ]);
     await expect(statusText).toContainText(/Stopped|Ready|Idle|Finished/i, { timeout: 8000 });
   });
 
   test('12. Anchor image edits dynamically queue dependent scenes with ANCHOR reason', async ({ page }) => {
-    // Navigate to all_or_nothing project where A05 and A07 were updated
-    await page.goto('/?project=all_or_nothing');
-    await expect(page.locator('#projectSelect')).toHaveValue(/all_or_nothing/, { timeout: 10000 });
+    const fs = require('fs');
+    const path = require('path');
+    const anchorsDir = path.resolve(__dirname, '../projects/all_or_nothing/work/anchors_v3');
+    const a01Files = fs.readdirSync(anchorsDir).filter((f) => f.startsWith('A01'));
+    expect(a01Files.length).toBeGreaterThan(0);
+    const a01Path = path.join(anchorsDir, a01Files[0]);
+    const origStat = fs.statSync(a01Path);
 
-    // Switch to Render Console tab & Queue View
+    try {
+      // Touch anchor into future so it is newer than the rendered MP4
+      const future = new Date(Date.now() + 100000);
+      fs.utimesSync(a01Path, future, future);
+
+      // Navigate to all_or_nothing project
+      await page.goto('/?project=all_or_nothing');
+      await expect(page.locator('#projectSelect')).toHaveValue(/all_or_nothing/, { timeout: 10000 });
+
+      // Switch to Render Console tab & Queue View
+      await page.locator('button[data-tab="console"]').click();
+      await page.locator('#btnConsoleQueue').click();
+
+      // Verify queue displays S01 as Queued with anchor reason
+      const s01Row = page.locator('#queueTableBody tr', { hasText: 'S01' });
+      await expect(s01Row).toBeVisible({ timeout: 10000 });
+      await expect(s01Row).toContainText('Queued', { timeout: 10000 });
+      await expect(s01Row).toContainText(/ANCHOR A01/i);
+    } finally {
+      fs.utimesSync(a01Path, origStat.atime, origStat.mtime);
+    }
+  });
+
+  test('13. Target specific pass S02:p1 renders only Pass 1 and preserves Pass 2', async ({ page }) => {
+    // 1. Ensure dummy mode is checked
+    await page.locator('button[data-tab="console"]').click();
+    const dummyChk = page.locator('#chkDummyRenderMode');
+    if (!(await dummyChk.isChecked())) {
+      await dummyChk.check();
+    }
+    await page.locator('#btnConsoleQueue').click();
+
+    // 2. Trigger render for specific pass S02:p1 via triggerRender
+    await page.evaluate(async () => {
+      // @ts-ignore
+      await window.triggerRender(['S02:p1']);
+    });
+
+    // 3. Verify top row in queue is S02_Pass1_Left
+    const rows = page.locator('#queueTableBody tr');
+    await expect(rows.nth(0)).toContainText('S02_Pass1_Left', { timeout: 8000 });
+
+    // 4. Verify S02:p1 is targeted and active
+    const statusText = page.locator('#renderStatusText');
+    await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
+
+    // 5. Clean up: stop render and wait for server to acknowledge termination
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
+      page.locator('#btnStopRender').click(),
+    ]);
+  });
+
+  test('14. Render Two-Pass Duet scene queues and executes Pass 1 followed by Pass 2', async ({ page }) => {
+    // 1. Ensure dummy mode is on
+    await page.locator('button[data-tab="console"]').click();
+    const dummyChk = page.locator('#chkDummyRenderMode');
+    if (!(await dummyChk.isChecked())) {
+      await dummyChk.check();
+    }
+
+    // 2. Trigger render for Two-Pass Duet scene S02
+    await page.evaluate(async () => {
+      // @ts-ignore
+      await window.triggerRender(['S02']);
+    });
+
+    // 3. Switch to Queue View and verify Pass 1 is at index 0 and Pass 2 is at index 1
+    await page.locator('#btnConsoleQueue').click();
+    const rows = page.locator('#queueTableBody tr');
+    await expect(rows.nth(0)).toContainText('S02_Pass1_Left', { timeout: 8000 });
+    await expect(rows.nth(1)).toContainText('S02_Pass2_Final', { timeout: 8000 });
+
+    // 4. Stop render and wait for server to acknowledge termination
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
+      page.locator('#btnStopRender').click(),
+    ]);
+  });
+
+  test('15. Dynamic queueing during active render: Add scene while another is actively rendering', async ({ page }) => {
+    // 1. Ensure dummy mode is on
+    await page.locator('button[data-tab="console"]').click();
+    const dummyChk = page.locator('#chkDummyRenderMode');
+    if (!(await dummyChk.isChecked())) {
+      await dummyChk.check();
+    }
+    await page.locator('#btnConsoleQueue').click();
+
+    // 2. Clear queue so all items are skipped
+    await page.locator('#btnClearQueue').click();
+    const rows = page.locator('#queueTableBody tr');
+    await expect(rows).toHaveCount(4, { timeout: 8000 });
+
+    // 3. Enqueue only S01 (row 0)
+    await rows.nth(0).locator('button[title="Add to Queue"]').click();
+    await expect(rows.nth(0)).toContainText('Queued', { timeout: 5000 });
+
+    // 4. Trigger render on S01
+    await page.locator('#btnRenderAll').click();
+    const statusText = page.locator('#renderStatusText');
+    await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
+
+    // 5. Dynamically add S03 (row 3) to queue while engine is active
+    const addBtnS03 = rows.nth(3).locator('button[title="Add to Queue"]');
+    if (await addBtnS03.isVisible()) {
+      await addBtnS03.click();
+      await expect(rows.nth(3)).toContainText('Queued', { timeout: 5000 });
+    }
+
+    // 6. Stop render and wait for server to acknowledge termination
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
+      page.locator('#btnStopRender').click(),
+    ]);
+  });
+
+  test('16. Scene prompt edit in UI transitions badge to needs render and queues under Render Missing/Changed', async ({ page }) => {
+    // 1. Select scene S01 (index 0)
+    await page.evaluate(() => {
+      // @ts-ignore
+      window.selectScene(0);
+    });
+
+    // 2. Edit prompt in Scene Inspector
+    const promptArea = page.locator('#scenePrompt');
+    await expect(promptArea).toBeVisible({ timeout: 5000 });
+    const originalPrompt = await promptArea.inputValue();
+    const modifiedPrompt = `${originalPrompt} - UI test prompt modifier`;
+
+    await promptArea.fill(modifiedPrompt);
+
+    // 3. Save Changes via Save button
+    const saveBtn = page.locator('#btnSaveProject');
+    await expect(saveBtn).toContainText('Save Changes *', { timeout: 5000 });
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/project/') && resp.status() === 200),
+      saveBtn.click(),
+    ]);
+    await expect(saveBtn).not.toContainText('*', { timeout: 8000 });
+
+    // 4. Switch to Render Console and Queue View
     await page.locator('button[data-tab="console"]').click();
     await page.locator('#btnConsoleQueue').click();
 
-    // Verify queue displays S12b (uses modified A07) as Queued with anchor reason
-    const s12bRow = page.locator('#queueTableBody tr', { hasText: 'S12b_silent' });
-    await expect(s12bRow).toBeVisible({ timeout: 10000 });
-    await expect(s12bRow).toContainText('Queued');
-    await expect(s12bRow).toContainText(/ANCHOR A07/i);
+    // 5. Trigger Queue All / Render Missing & Changed to refresh evaluation
+    await page.locator('#btnQueueAll').click();
+    const s01Row = page.locator('#queueTableBody tr', { hasText: 'S01' });
+    await expect(s01Row).toBeVisible({ timeout: 8000 });
+    await expect(s01Row).toContainText('Queued', { timeout: 8000 });
+
+    // 6. Restore original prompt to keep test project pristine
+    await page.locator('button[data-tab="timeline"]').click();
+    await page.evaluate(() => {
+      // @ts-ignore
+      window.selectScene(0);
+    });
+    await promptArea.fill(originalPrompt);
+    await Promise.all([
+      page.waitForResponse((resp) => resp.url().includes('/api/project/') && resp.status() === 200),
+      saveBtn.click(),
+    ]);
+    await expect(saveBtn).not.toContainText('*', { timeout: 8000 });
   });
 });

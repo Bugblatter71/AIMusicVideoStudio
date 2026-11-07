@@ -253,7 +253,7 @@
       "start": 57.2,
       "end": 66.3,
       "mode": "male_solo",
-      "anchor": "A01_Male_Orchestra_CloseMic.jpg",
+      "anchor": "A01 - 2Man_singing_into_microphone_ed7b66b4_2K.jpg",
       "seed": 8209,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Close-up at the vintage brass microphone as {MALE_STUDIO_DESC} delivers the final lines of the first chorus with open eyes, natural chest and head movement, and synchronized lip movements, then gently closes his mouth and exhales at the end as the strings take over.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
     },
@@ -261,21 +261,11 @@
       "id": "S10",
       "renderer": null,
       "start": 66.3,
-      "end": 79,
+      "end": 92.5,
       "mode": "silent_locked",
       "anchor": "A05 - 2Man_and_woman_looking_at_8410e52f_2K.jpg",
       "seed": 8210,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection, the light glows softly.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
-    },
-    {
-      "id": "S11",
-      "renderer": null,
-      "start": 79,
-      "end": 92.5,
-      "mode": "silent_locked",
-      "anchor": "A07 - Orchestra_and_band_playing_on_cc899f16_2K.jpg",
-      "seed": 8211,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
     },
     {
       "id": "S12a",
@@ -293,10 +283,10 @@
       "renderer": null,
       "start": 99,
       "end": 104.4,
-      "mode": "silent_locked",
+      "mode": "solo",
       "anchor": "A07 - Orchestra_and_band_playing_on_cc899f16_2K.jpg",
       "seed": 8213,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing. the camera slowly pushes towards {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar in time with the audio track. Her mouth is completely closed and her eyes are open. \noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A"
     },
     {
       "id": "S13",
