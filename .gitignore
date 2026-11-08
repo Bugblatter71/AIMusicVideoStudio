@@ -34,6 +34,15 @@
 temp_audio.*
 temp_stem.*
 
+# --- User Source Audio & Copyrighted Stems (Do NOT distribute or commit) ---
+projects/all_or_nothing/audio/
+**/projects/*/audio/*.mp3
+**/projects/*/audio/*.wav
+**/projects/*/audio/*.flac
+**/projects/*/audio/*.m4a
+**/projects/*/audio/*.ogg
+**/projects/*/audio/*.txt
+
 # --- Diagnostic Analysis & Temporary Extracted Frames ---
 work/*.jpg
 work/*.png

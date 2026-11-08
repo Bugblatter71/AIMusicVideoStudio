@@ -743,12 +743,17 @@ select:focus, input:focus, textarea:focus {
 }
 
 /* Custom Visual Anchor Dropdown */
+#anchorPickerGroup {
+  min-width: 260px;
+}
+
 .custom-anchor-dropdown-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
   width: 100%;
-  padding: 6px 10px;
+  min-height: 56px;
+  padding: 6px 12px;
   background-color: var(--bg-card);
   border: 1px solid var(--border-color);
   border-radius: 6px;
@@ -765,31 +770,46 @@ select:focus, input:focus, textarea:focus {
   position: absolute;
   top: 100%;
   left: 0;
-  right: 0;
-  margin-top: 4px;
-  max-height: 290px;
+  margin-top: 6px;
+  min-width: 540px;
+  width: max(100%, 600px);
+  max-width: min(94vw, 720px);
+  max-height: 560px;
   overflow-y: auto;
   background-color: #0b1120;
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.7);
-  z-index: 200;
-  padding: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.9);
+  z-index: 250;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  box-sizing: border-box;
+}
+.custom-anchor-dropdown-menu.open {
+  display: grid;
 }
 .anchor-dropdown-item {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(15, 23, 42, 0.65);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-sizing: border-box;
   cursor: pointer;
-  transition: background-color 0.1s;
+  transition: transform 0.12s ease, border-color 0.12s ease, background-color 0.12s ease;
 }
 .anchor-dropdown-item:hover {
-  background-color: rgba(56, 189, 248, 0.12);
+  background-color: rgba(56, 189, 248, 0.15);
+  border-color: var(--primary);
+  transform: translateY(-2px);
 }
 .anchor-dropdown-item.selected {
-  background-color: rgba(56, 189, 248, 0.18);
-  border: 1px solid rgba(56, 189, 248, 0.35);
+  background-color: rgba(56, 189, 248, 0.25);
+  border: 2px solid var(--primary);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
 }
 
