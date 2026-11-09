@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Music Video Generation Studio</title>
-  <link rel="stylesheet" href="css/studio.css?v=20">
+  <link rel="stylesheet" href="css/studio.css?v=23">
 </head>
 <body>
 
@@ -17,7 +17,8 @@
 
     <div class="nav-tabs">
       <button class="tab-btn active" data-tab="timeline">🎬 Timeline</button>
-      <button class="tab-btn" data-tab="anchors">🎨 Anchors</button>
+      <button class="tab-btn" data-tab="characters">👤 Characters & Refs</button>
+      <button class="tab-btn" data-tab="anchors">🖼️ Scene Anchors</button>
       <button class="tab-btn" data-tab="settings">⚙️ Project & Models</button>
       <button class="tab-btn" data-tab="console">🚀 Render Console</button>
       <button class="tab-btn" data-tab="master">📺 Master Video</button>
@@ -28,6 +29,7 @@
       <button class="btn" id="btnRefreshProject" title="Reload project assets and thumbnails from disk">🔄 Refresh</button>
       <button class="btn" id="btnNewProject">+ New Project</button>
       <button class="btn btn-primary" id="btnSaveProject">💾 Save Changes</button>
+      <button class="btn" id="btnDiscardChanges" style="display: none; color: #ef4444; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08);" title="Discard all unsaved changes since last save">✕ Discard</button>
     </div>
   </header>
 
@@ -45,9 +47,14 @@
           <span id="activeSceneBadge" style="font-size: 12px; color: var(--primary); font-weight: 600;"></span>
         </div>
 
-        <div style="display: flex; align-items: center; gap: 12px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <div style="display: flex; gap: 4px;">
+            <button class="btn btn-sm" id="btnUndo" title="Undo change (Ctrl+Z)" disabled style="padding: 4px 8px; font-size: 11px;">↶ Undo</button>
+            <button class="btn btn-sm" id="btnRedo" title="Redo change (Ctrl+Y)" disabled style="padding: 4px 8px; font-size: 11px;">↷ Redo</button>
+            <button class="btn btn-sm" id="btnCheckpointsModal" title="Project Checkpoints & Rollback Vault" style="padding: 4px 8px; font-size: 11px; color: #a78bfa; border-color: rgba(167, 139, 250, 0.4);">🏛️ Vault</button>
+          </div>
           <label style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Zoom:</label>
-          <input type="range" id="timelineZoom" min="0" max="4.25" value="0" step="0.25" style="width: 100px;">
+          <input type="range" id="timelineZoom" min="1.0" max="3.5" value="1.0" step="0.25" autocomplete="off" style="width: 100px;">
           <button class="btn" id="btnAddMarker" title="Add Timeline Marker at playhead (Hotkey: M)" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);">🚩 Add Marker (M)</button>
           <button class="btn" id="btnAddScene">+ Add Scene</button>
           <button class="btn" id="btnSplitSceneHeader" title="Split current scene at playhead (Hotkey: S)">✂️ Split (S)</button>
@@ -67,16 +74,15 @@
             <h3 id="inspectorSceneId" style="font-size: 16px; color: var(--primary);">Select a Scene</h3>
             <div id="inspectorActions" style="display: flex; gap: 8px; display: none;">
               <button type="button" class="btn btn-accent" id="btnPlaySceneAudio">🔊 Play Scene Audio</button>
-              <button type="button" class="btn btn-primary" id="btnRenderSceneSingle">⚡ Render Scene</button>
-              <button type="button" class="btn" id="btnSplitScene" title="Split this scene into two parts">✂️ Split Scene</button>
               <button type="button" class="btn" id="btnDeleteScene" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08);" title="Delete this scene from the timeline">🗑️ Delete</button>
             </div>
           </div>
 
           <div id="inspectorForm" style="display: none;">
-            <div class="form-grid">
-              <div class="form-group">
-                <label>Mode</label>
+            <!-- Row 1: Identity & Visual Anchors & Model -->
+            <div class="inspector-controls-row inspector-row-visuals">
+              <div class="form-group form-group-mode">
+                <label for="sceneMode">Mode</label>
                 <select id="sceneMode">
                   <option value="solo">Solo Performance (single_pass)</option>
                   <option value="male_solo">Male Solo</option>
@@ -88,61 +94,105 @@
                 </select>
               </div>
 
-              <div class="form-group" style="position: relative;" id="anchorPickerGroup">
-                <label>Linked Anchor Image</label>
+              <div class="form-group form-group-anchor" style="position: relative;" id="anchorPickerGroup">
+                <label>Start Anchor Image</label>
                 <!-- Native select (kept for programmatic state sync) -->
                 <select id="sceneAnchor" style="display: none;"></select>
 
                 <!-- Custom Visual Anchor Dropdown Trigger Button -->
                 <button type="button" id="btnAnchorDropdownTrigger" class="custom-anchor-dropdown-btn">
-                  <img id="anchorTriggerThumb" src="" alt="" style="width: 88px; height: 50px; object-fit: cover; border-radius: 5px; border: 1px solid var(--border-color); box-shadow: 0 2px 6px rgba(0, 0, 0, 0.5); background: #000; display: none; flex-shrink: 0;">
-                  <div style="flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-                    <span id="anchorTriggerAid" style="font-weight: 700; color: #f59e0b; margin-right: 8px; font-size: 13px;">[A01]</span>
-                    <span id="anchorTriggerName" style="color: var(--text-main); font-size: 12px; font-weight: 500;">Select Anchor...</span>
+                  <img id="anchorTriggerThumb" src="" alt="" class="anchor-trigger-thumb" style="display: none;">
+                  <div class="anchor-trigger-text">
+                    <span id="anchorTriggerAid" class="anchor-trigger-aid">[A01]</span>
+                    <span id="anchorTriggerName" class="anchor-trigger-name">Select Anchor...</span>
                   </div>
-                  <span style="color: var(--text-muted); font-size: 12px; margin-left: 8px;">▼</span>
+                  <span class="anchor-trigger-caret">▼</span>
                 </button>
 
                 <!-- Visual Dropdown Panel (Pop-down menu with thumbnails + filenames) -->
                 <div id="anchorDropdownMenu" class="custom-anchor-dropdown-menu" style="display: none;"></div>
               </div>
 
-              <div class="form-group">
-                <label>Start (s)</label>
-                <div style="display: flex; gap: 4px;">
-                  <input type="number" id="sceneStart" step="0.1" style="flex: 1; min-width: 60px;">
-                  <button type="button" class="btn-mini" id="btnNudgeStartDown">-0.1</button>
-                  <button type="button" class="btn-mini" id="btnNudgeStartUp">+0.1</button>
-                  <button type="button" class="btn-mini" id="btnSnapStartMarker" title="Snap Start to nearest Timeline Marker" style="color: #f59e0b;">🧲</button>
+              <div class="form-group form-group-end-anchor" style="position: relative;" id="endAnchorPickerGroup">
+                <div class="form-label-row">
+                  <label for="sceneAnchorEnd">End Anchor <span style="font-size: 10px; color: var(--text-muted); font-weight: normal;">(Seamless Blend)</span></label>
+                  <span class="label-actions" style="display: flex; gap: 8px; align-items: center;">
+                    <span id="btnMatchNextAnchor" title="Set End Anchor to match the next scene's Start Anchor for a seamless cut" style="font-size: 11px; color: #60a5fa; cursor: pointer; display: none;">🔗 Match Next</span>
+                    <span id="btnClearEndAnchor" style="font-size: 11px; color: #ef4444; cursor: pointer; display: none;">Clear</span>
+                  </span>
+                </div>
+                <!-- Native select (kept for programmatic state sync) -->
+                <select id="sceneAnchorEnd" style="display: none;"></select>
+
+                <!-- Custom Visual End Anchor Dropdown Trigger Button -->
+                <button type="button" id="btnEndAnchorDropdownTrigger" class="custom-anchor-dropdown-btn">
+                  <img id="endAnchorTriggerThumb" src="" alt="" class="anchor-trigger-thumb" style="display: none;">
+                  <div id="endAnchorTriggerPlaceholder" class="anchor-trigger-none">None</div>
+                  <div class="anchor-trigger-text">
+                    <span id="endAnchorTriggerAid" class="anchor-trigger-aid"></span>
+                    <span id="endAnchorTriggerName" class="anchor-trigger-name">(None / Single Anchor)</span>
+                  </div>
+                  <span class="anchor-trigger-caret">▼</span>
+                </button>
+
+                <!-- Visual Dropdown Panel for End Anchor -->
+                <div id="endAnchorDropdownMenu" class="custom-anchor-dropdown-menu" style="display: none;"></div>
+              </div>
+
+              <div class="form-group form-group-model" id="videoRendererGroup">
+                <div class="form-label-row">
+                  <label for="sceneVideoRenderer">Video Generation Model</label>
+                  <span id="sceneRendererBadge" style="display: none; font-size: 10px; background: rgba(59, 130, 246, 0.2); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: 600;">Custom Override</span>
+                </div>
+                <select id="sceneVideoRenderer"></select>
+              </div>
+            </div>
+
+            <!-- Row 2: Timing, Lip-Sync Padding & Synthesis Audio/Seed -->
+            <div class="inspector-controls-row inspector-row-timing">
+              <div class="form-group form-group-timing">
+                <label for="sceneStart">Start (s)</label>
+                <input type="number" id="sceneStart" step="0.1" min="0" class="timing-spinner" title="Scene start timecode in seconds">
+              </div>
+
+              <div class="form-group form-group-timing">
+                <label for="sceneEnd">End (s)</label>
+                <input type="number" id="sceneEnd" step="0.1" min="0" class="timing-spinner" title="Scene end timecode in seconds">
+              </div>
+
+              <div class="form-group form-group-padding" id="sceneRenderPaddingGroup">
+                <div class="form-label-row">
+                  <label title="Render extra pre-roll/post-roll audio handles so vocal lip-sync latches cleanly across cuts. Trimmed automatically in master assembly.">Render Padding (Handles)</label>
+                  <span id="btnResetScenePadding" style="font-size: 11px; color: #ef4444; cursor: pointer; display: none;">Clear</span>
+                </div>
+                <div class="padding-input-group">
+                  <div class="padding-subgroup">
+                    <span class="sub-label">Pre (Head)</span>
+                    <input type="number" id="scenePadStart" step="0.1" min="0" max="10" placeholder="Def (0s)" class="padding-input" title="Seconds to render BEFORE Scene Start (pre-roll handle)">
+                  </div>
+                  <div class="padding-subgroup">
+                    <span class="sub-label">Post (Tail)</span>
+                    <input type="number" id="scenePadEnd" step="0.1" min="0" max="10" placeholder="Def (0s)" class="padding-input" title="Seconds to render AFTER Scene End (post-roll handle)">
+                  </div>
                 </div>
               </div>
 
-              <div class="form-group">
-                <label>End (s)</label>
-                <div style="display: flex; gap: 4px;">
-                  <input type="number" id="sceneEnd" step="0.1" style="flex: 1; min-width: 60px;">
-                  <button type="button" class="btn-mini" id="btnNudgeEndDown">-0.1</button>
-                  <button type="button" class="btn-mini" id="btnNudgeEndUp">+0.1</button>
-                  <button type="button" class="btn-mini" id="btnSnapEndMarker" title="Snap End to nearest Timeline Marker" style="color: #f59e0b;">🧲</button>
-                </div>
-              </div>
-
-              <div id="singleSeedGroup" class="form-group">
-                <label>Seed</label>
-                <div style="display: flex; gap: 4px;">
-                  <input type="number" id="sceneSeed" style="flex: 1; min-width: 60px;">
-                  <button type="button" class="btn-mini" id="btnRandomSeed" title="Generate Random Seed">🎲</button>
-                </div>
-              </div>
-
-              <div id="singleStemGroup" class="form-group">
-                <label>Audio Stem</label>
+              <div id="singleStemGroup" class="form-group form-group-stem">
+                <label for="sceneStem">Audio Stem</label>
                 <select id="sceneStem">
-                  <option value="male">male</option>
-                  <option value="female">female</option>
+                  <option value="male">male (vocal)</option>
+                  <option value="female">female (vocal)</option>
                   <option value="master">full audio (master)</option>
                   <option value="silent">silent (no lip sync)</option>
                 </select>
+              </div>
+
+              <div id="singleSeedGroup" class="form-group form-group-seed">
+                <label for="sceneSeed">Seed</label>
+                <div style="display: flex; gap: 4px;">
+                  <input type="number" id="sceneSeed" style="flex: 1; min-width: 65px; font-family: monospace;">
+                  <button type="button" class="btn-mini" id="btnRandomSeed" title="Generate Random Seed">🎲</button>
+                </div>
               </div>
             </div>
 
@@ -161,20 +211,14 @@
                 <span id="promptMarkerInsertHelp" style="font-size: 10px; color: var(--text-muted);">Use <code>&lt;marker name&gt;</code> for relative timing</span>
               </div>
               <textarea id="scenePrompt" rows="6" style="font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 140px; overflow-y: hidden; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
+              <div id="refTraySingle" class="ref-chip-tray" style="margin-top: 6px;"></div>
             </div>
 
             <!-- Two Pass prompts & settings (visible in two-pass/duet mode) -->
-            <div id="duetPromptsGroup" style="display: none; margin-top: 8px;">
-              <div class="form-grid" style="margin-bottom: 8px;">
-                <div class="form-group">
-                  <label>Pass 1 Seed (Left)</label>
-                  <div style="display: flex; gap: 4px;">
-                    <input type="number" id="sceneSeedM" style="flex: 1; min-width: 60px;">
-                    <button type="button" class="btn-mini" id="btnRandomSeedM" title="Generate Random Seed">🎲</button>
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label>Pass 1 Audio Stem (Left)</label>
+            <div id="duetPromptsGroup" style="display: none; margin-top: 10px;">
+              <div class="inspector-controls-row duet-controls-row" style="margin-bottom: 10px;">
+                <div class="form-group form-group-duet-col">
+                  <label for="sceneStemM">Pass 1 Audio Stem (Left)</label>
                   <select id="sceneStemM">
                     <option value="male">male</option>
                     <option value="female">female</option>
@@ -182,15 +226,15 @@
                     <option value="silent">silent (no lip sync)</option>
                   </select>
                 </div>
-                <div class="form-group">
-                  <label>Pass 2 Seed (Right)</label>
+                <div class="form-group form-group-duet-seed">
+                  <label for="sceneSeedM">Pass 1 Seed</label>
                   <div style="display: flex; gap: 4px;">
-                    <input type="number" id="sceneSeedF" style="flex: 1; min-width: 60px;">
-                    <button type="button" class="btn-mini" id="btnRandomSeedF" title="Generate Random Seed">🎲</button>
+                    <input type="number" id="sceneSeedM" style="flex: 1; min-width: 65px; font-family: monospace;">
+                    <button type="button" class="btn-mini" id="btnRandomSeedM" title="Generate Random Seed">🎲</button>
                   </div>
                 </div>
-                <div class="form-group">
-                  <label>Pass 2 Audio Stem (Right)</label>
+                <div class="form-group form-group-duet-col">
+                  <label for="sceneStemF">Pass 2 Audio Stem (Right)</label>
                   <select id="sceneStemF">
                     <option value="female">female</option>
                     <option value="male">male</option>
@@ -198,9 +242,22 @@
                     <option value="silent">silent (no lip sync)</option>
                   </select>
                 </div>
-                <div class="form-group">
-                  <label>Split X Position</label>
-                  <input type="number" id="sceneSplitX" step="0.01" min="0.1" max="0.9" placeholder="0.50">
+                <div class="form-group form-group-duet-seed">
+                  <label for="sceneSeedF">Pass 2 Seed</label>
+                  <div style="display: flex; gap: 4px;">
+                    <input type="number" id="sceneSeedF" style="flex: 1; min-width: 65px; font-family: monospace;">
+                    <button type="button" class="btn-mini" id="btnRandomSeedF" title="Generate Random Seed">🎲</button>
+                  </div>
+                </div>
+                <div class="form-group form-group-duet-split">
+                  <div class="form-label-row">
+                    <label for="sceneSplitX" style="margin: 0;">Split Boundary X</label>
+                    <span id="sceneSplitXVal" style="font-size: 11px; font-family: monospace; color: #38bdf8;">0.48</span>
+                  </div>
+                  <div style="display: flex; gap: 6px; align-items: center;">
+                    <input type="range" id="sceneSplitXRange" min="0.10" max="0.90" step="0.01" value="0.48" style="flex: 1; accent-color: #38bdf8; cursor: pointer;">
+                    <input type="number" id="sceneSplitX" step="0.01" min="0.1" max="0.9" placeholder="0.50" style="width: 58px; font-family: monospace; text-align: center;">
+                  </div>
                 </div>
               </div>
 
@@ -211,6 +268,7 @@
                     <span style="font-size: 10px; color: var(--text-muted);">Use <code>&lt;marker&gt;</code></span>
                   </div>
                   <textarea id="scenePromptM" rows="6" style="font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 140px; overflow-y: hidden; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
+                  <div id="refTrayPass1" class="ref-chip-tray" style="margin-top: 6px;"></div>
                 </div>
                 <div class="form-group">
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
@@ -218,8 +276,24 @@
                     <span style="font-size: 10px; color: var(--text-muted);">Use <code>&lt;marker&gt;</code></span>
                   </div>
                   <textarea id="scenePromptF" rows="6" style="font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 140px; overflow-y: hidden; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
+                  <div id="refTrayPass2" class="ref-chip-tray" style="margin-top: 6px;"></div>
                 </div>
               </div>
+            </div>
+
+            <!-- Scene Takes Tray (Historical Render Versions) -->
+            <div class="takes-tray" id="sceneTakesTray" style="display: none; margin-top: 14px; margin-bottom: 12px; padding: 12px 14px; background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(167, 139, 250, 0.35); border-radius: 6px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 11px; font-weight: 700; color: #c4b5fd; text-transform: uppercase; letter-spacing: 0.5px;">🎬 Scene Takes Vault</span>
+                  <span id="takesCountBadge" style="font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: rgba(167, 139, 250, 0.2); color: #c4b5fd;">0 takes</span>
+                </div>
+                <button type="button" class="btn btn-primary" id="btnRestoreTake" style="display: none; padding: 3px 10px; font-size: 11px; background: #8b5cf6; border-color: #8b5cf6;">↺ Restore Take as Active</button>
+              </div>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <select id="sceneTakeSelect" style="flex: 1; font-size: 12px; padding: 5px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;"></select>
+              </div>
+              <div id="takeDiffSummary" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;"></div>
             </div>
 
             <!-- Rendered Clip Preview Player (integrated below prompts) -->
@@ -257,6 +331,23 @@
         <button id="btnSidePaneClose" class="side-pane-close" title="Close panel and return to full-width Timeline">&times;</button>
       </div>
       <div class="side-pane-body">
+
+        <!-- 1b. CHARACTERS & REFS STUDIO TAB -->
+        <div id="tab-characters" class="tab-pane" style="padding: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+            <div>
+              <h2 style="font-size: 18px; color: var(--text-main);">Characters & Reference Library</h2>
+              <p style="font-size: 12px; color: var(--text-muted);">Manage character identities, wardrobe looks, and multi-subject reference sheets for @mention prompt injection.</p>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="btn btn-primary" id="btnNewCharacter">+ New Character / Group</button>
+            </div>
+          </div>
+          <div id="charactersStudioLayout" style="display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start;">
+            <div id="characterRosterList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            <div id="characterDetailPane" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;"></div>
+          </div>
+        </div>
 
         <!-- 2. ANCHOR STUDIO TAB -->
         <div id="tab-anchors" class="tab-pane" style="padding: 16px;">
@@ -326,9 +417,7 @@
         <!-- 4. RENDER CONSOLE TAB -->
         <div id="tab-console" class="tab-pane console-view">
           <div class="console-actions" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 10px; border-bottom: 1px solid var(--border);">
-            <button class="btn btn-primary" id="btnRenderAll">🚀 Render Missing / Changed</button>
-            <button class="btn btn-accent" id="btnStitchMaster">🎬 Restitch Master MP4</button>
-            <button class="btn btn-danger" id="btnStopRender">⏹ Stop</button>
+            <button class="btn btn-primary" id="btnRenderAll" style="min-width: 96px;" title="Run pending items in the render queue">▶ Run</button>
             
             <label id="dummyModeContainer" style="display: none; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #38bdf8; cursor: pointer; user-select: none; margin-left: 6px;" title="Developer/Mock render engine (fast FFmpeg simulation without GPU)">
               <input type="checkbox" id="chkDummyRenderMode" style="cursor: pointer; width: 15px; height: 15px; accent-color: #38bdf8;">
@@ -342,8 +431,6 @@
               <button type="button" class="btn active" id="btnConsoleQueue" style="font-size: 11px; padding: 4px 10px; border-radius: 4px;">📋 Queue & Status</button>
               <button type="button" class="btn" id="btnConsoleLogs" style="font-size: 11px; padding: 4px 10px; border-radius: 4px;">📜 Live Logs</button>
             </div>
-            
-            <span id="renderStatusText" style="font-size: 12px; font-weight: 600; color: var(--text-muted); margin-left: 4px;">Idle</span>
           </div>
 
           <div class="console-content-split" style="margin-top: 10px;">
@@ -382,31 +469,33 @@
                   <div style="display: flex; gap: 4px; align-items: center;">
                     <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); margin-right: 4px;">QUEUE:</span>
                     <button type="button" class="btn btn-filter active" data-filter="all" id="btnFilterAll" style="padding: 2px 8px; font-size: 11px;">All (<span id="countAll">0</span>)</button>
-                    <button type="button" class="btn btn-filter" data-filter="queued" id="btnFilterQueued" style="padding: 2px 8px; font-size: 11px; color: #f59e0b;">Queued (<span id="countQueued">0</span>)</button>
+                    <button type="button" class="btn btn-filter" data-filter="queued" id="btnFilterQueued" style="padding: 2px 8px; font-size: 11px; color: #f59e0b;"><span id="lblQueuedTab">Pending</span> (<span id="countQueued">0</span>)</button>
                     <button type="button" class="btn btn-filter" data-filter="completed" id="btnFilterDone" style="padding: 2px 8px; font-size: 11px; color: #10b981;">Done (<span id="countDone">0</span>)</button>
                     <button type="button" class="btn btn-filter" data-filter="skipped" id="btnFilterSkipped" style="padding: 2px 8px; font-size: 11px; color: var(--text-muted);">Skipped (<span id="countSkipped">0</span>)</button>
                   </div>
                   <div style="display: flex; gap: 6px; align-items: center;">
-                    <button type="button" class="btn btn-accent" id="btnQueueAll" title="Queue all unrendered or changed scenes" style="font-size: 11px; padding: 2px 10px;">➕ Queue All</button>
+                    <button type="button" class="btn btn-accent" id="btnQueueAll" title="Queue all unrendered or changed scenes" style="font-size: 11px; padding: 2px 10px;">➕ Queue Missing / Changed</button>
                     <button type="button" class="btn" id="btnClearQueue" title="Clear all queued items" style="font-size: 11px; padding: 2px 8px; color: var(--text-muted);">🧹 Clear</button>
-                    <button type="button" class="btn" id="btnReloadQueue" title="Reload queue from project status" style="font-size: 11px; padding: 2px 8px;">🔄 Refresh</button>
                   </div>
                 </div>
 
                 <!-- Scrollable Queue Table -->
-                <div id="queueTableContainer" style="flex: 1; min-height: 280px; overflow-y: auto; background: #030712; border: 1px solid var(--border); border-radius: 8px;">
-                  <table style="width: 100%; border-collapse: collapse; font-size: 11px; text-align: left;">
-                    <thead style="position: sticky; top: 0; background: #0f172a; border-bottom: 1px solid #1e293b; z-index: 2;">
+                <div id="queueTableContainer" style="flex: 1; min-height: 280px; overflow: auto; background: #030712; border: 1px solid var(--border); border-radius: 8px;">
+                  <table style="width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; text-align: left;">
+                    <thead id="queueTableHead" style="position: sticky; top: 0; background: #0f172a; border-bottom: 1px solid #1e293b; z-index: 2;">
                       <tr>
-                        <th style="padding: 6px 10px; width: 45px; color: var(--text-muted);">#</th>
                         <th style="padding: 6px 10px; color: var(--text-muted);">File to Render</th>
-                        <th style="padding: 6px 10px; width: 130px; color: var(--text-muted);">Status</th>
+                        <th style="padding: 6px 10px; width: 58px; color: var(--text-muted);">Length</th>
+                        <th style="padding: 6px 10px; width: 95px; color: var(--text-muted);">Status</th>
+                        <th style="padding: 6px 10px; width: 140px; color: var(--text-muted);">Completed</th>
+                        <th style="padding: 6px 10px; width: 85px; color: var(--text-muted);">Time Taken</th>
                         <th style="padding: 6px 10px; color: var(--text-muted);">Reason</th>
-                        <th style="padding: 6px 10px; width: 95px; text-align: center; color: var(--text-muted);">Actions</th>
+                        <th style="padding: 6px 10px; width: 90px; text-align: center; color: var(--text-muted);">Actions</th>
+                        <th style="width: auto;"></th>
                       </tr>
                     </thead>
                     <tbody id="queueTableBody">
-                      <tr><td colspan="5" style="padding: 16px; text-align: center; color: var(--text-muted);">Loading render queue...</td></tr>
+                      <tr><td colspan="8" style="padding: 16px; text-align: center; color: var(--text-muted);">Loading render queue...</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -492,17 +581,39 @@
   <!-- Toast Notification -->
   <div class="toast" id="toastMessage"></div>
 
+  <!-- Checkpoints & Rollback Vault Modal -->
+  <div id="checkpointsModal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 9999; align-items: center; justify-content: center; backdrop-filter: blur(3px);">
+    <div style="background: #1e293b; border: 1px solid #475569; border-radius: 8px; width: 640px; max-width: 90vw; max-height: 85vh; display: flex; flex-direction: column; padding: 20px; box-shadow: 0 15px 40px rgba(0,0,0,0.8);">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid #334155; padding-bottom: 10px;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <h4 style="margin: 0; color: #a78bfa; font-size: 16px; font-weight: 700;">🏛️ Project Checkpoints & Rollback Vault</h4>
+        </div>
+        <button id="btnCloseCheckpointsModal" style="background: transparent; border: none; color: #94a3b8; font-size: 22px; cursor: pointer; line-height: 1;">&times;</button>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 11px; color: var(--text-muted);">
+        <div id="vaultStatsDisplay">Loading vault stats...</div>
+        <button type="button" class="btn btn-sm btn-primary" id="btnCreateCheckpoint" style="padding: 4px 12px; font-size: 11px;">+ Create Checkpoint</button>
+      </div>
+      <div id="checkpointsList" style="flex: 1; overflow-y: auto; max-height: 50vh; padding-right: 4px;"></div>
+      <div style="margin-top: 14px; border-top: 1px solid #334155; padding-top: 10px; text-align: right;">
+        <button type="button" class="btn" onclick="document.getElementById('checkpointsModal').style.display='none'">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Hidden Audio Player for Waveform Playback -->
   <audio id="audioElement" preload="auto"></audio>
 
   <!-- Application Scripts (Modularized) -->
-  <script src="js/state_and_utils.js?v=26"></script>
-  <script src="js/timeline_and_playback.js?v=26"></script>
-  <script src="js/scene_inspector.js?v=26"></script>
-  <script src="js/markers_and_prompts.js?v=26"></script>
-  <script src="js/anchors_and_settings.js?v=26"></script>
-  <script src="js/queue_and_console.js?v=26"></script>
-  <script src="js/master_and_export.js?v=26"></script>
+  <script src="js/state_and_utils.js?v=42"></script>
+  <script src="js/timeline_and_playback.js?v=42"></script>
+  <script src="js/scene_inspector.js?v=42"></script>
+  <script src="js/takes_and_history.js?v=42"></script>
+  <script src="js/characters_studio.js?v=42"></script>
+  <script src="js/markers_and_prompts.js?v=42"></script>
+  <script src="js/anchors_and_settings.js?v=42"></script>
+  <script src="js/queue_and_console.js?v=42"></script>
+  <script src="js/master_and_export.js?v=42"></script>
 </body>
 </html>
 

@@ -23,6 +23,15 @@ def _srv():
         return server
 
 
+try:
+    from pipeline.takes import create_project_checkpoint
+except ImportError:
+    try:
+        from work.pipeline.takes import create_project_checkpoint
+    except ImportError:
+        create_project_checkpoint = None
+
+
 stitch_lock = threading.Lock()
 stitch_in_progress = False
 
@@ -45,7 +54,7 @@ def derive_target_arg(out_name: str) -> str:
     return sid
 
 
-def kill_active_render():
+def kill_active_render(target_slug: str | None = None):
     """Signals graceful Wan2GP cancellation via cancel_request.json and terminates the render process tree."""
     srv = _srv()
     with srv.render_lock:
@@ -53,7 +62,7 @@ def kill_active_render():
         srv.current_worker_id += 1
         srv.render_job_queue.clear()
         proc = srv.active_process
-        active_proj = srv.render_status.get("current_project")
+        active_proj = srv.render_status.get("current_project") or target_slug
 
     # 1. Write graceful cancel_request.json so Wan2GP's job.cancel() / _interrupt triggers cleanly
     cancel_files: list[Path] = []
@@ -167,6 +176,30 @@ def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
                 except Exception:
                     pass
 
+        if create_project_checkpoint:
+            try:
+                p_dir = srv.PROJECTS_DIR / project_slug
+                c_file = None
+                for a in cmd_args:
+                    if str(a).endswith(".json") and Path(a).is_file():
+                        c_file = Path(a)
+                        break
+                if not c_file and p_dir.is_dir():
+                    js = [j for j in sorted(p_dir.glob("*.json")) if not j.name.startswith("state_hashes")]
+                    if js:
+                        c_file = js[-1]
+                if p_dir.is_dir() and c_file and c_file.is_file():
+                    tgt = "batch"
+                    if "--scene" in cmd_args:
+                        idx = cmd_args.index("--scene")
+                        if idx + 1 < len(cmd_args):
+                            tgt = cmd_args[idx + 1]
+                    elif len(cmd_args) > 1 and not cmd_args[1].startswith("-"):
+                        tgt = cmd_args[1]
+                    create_project_checkpoint(p_dir, c_file, name=f"Auto: Pre-render ({tgt})", trigger="pre_render")
+            except Exception:
+                pass
+
     srv.broadcast_log(f"[Studio UI] Executing: {' '.join(cmd_args)}")
 
     py_exec = srv.resolve_engine_python()
@@ -279,6 +312,8 @@ def run_stitch_worker(config_path: str, project_slug: str):
             bufsize=1,
             env=env,
         )
+        stitch_succeeded = False
+        lock_error_msg = None
         while True:
             line = proc.stdout.readline()
             if not line:
@@ -286,13 +321,21 @@ def run_stitch_worker(config_path: str, project_slug: str):
             clean_line = line.rstrip("\r\n")
             if clean_line:
                 srv.broadcast_log(f"[Stitch] {clean_line}")
+                if "is currently open in a player" in clean_line or "MASTER_FILE_LOCKED" in clean_line:
+                    lock_error_msg = clean_line
+                if "[Progressive Master Updated]" in clean_line:
+                    stitch_succeeded = True
         proc.wait(timeout=60)
         code = proc.returncode
-        if code == 0:
+        if code == 0 and stitch_succeeded:
             srv.broadcast_log("[Studio UI Stitch] ✅ Master video restitched successfully!")
             srv.broadcast_log("[MASTER_UPDATED]")
+        elif lock_error_msg:
+            srv.broadcast_log("[Studio UI Stitch Error] ⚠️ Master video file is locked by a video player or external program. Please close your media player and try again.")
+            srv.broadcast_log(f"[MASTER_LOCKED] {json.dumps({'error': lock_error_msg})}")
         else:
             srv.broadcast_log(f"[Studio UI Stitch] ❌ Master restitch exited with code {code}")
+            srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'code': code})}")
     except Exception as e:
         srv.broadcast_log(f"[Studio UI Stitch Error] {e}")
     finally:
@@ -402,8 +445,11 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                 srv_w.broadcast_log(f"[Studio UI Queue] >>> Starting single render [{next_idx + 1}/{len(items)}]: {out_fn} ({target_arg})")
 
                 # 4. Submit single render task to engine
+                t_single_start = time.time()
                 cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
                 code = execute_single_render(cmd_args, project_slug)
+                t_single_elapsed = round(time.time() - t_single_start, 1)
+                t_single_completed = round(time.time(), 3)
                 if not getattr(srv_w, "queue_worker_active", False) or srv_w.current_worker_id != my_worker_id:
                     break
 
@@ -419,6 +465,8 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                             item["status"] = "completed"
                             item["needs_render"] = False
                             item["reason"] = "COMPLETED"
+                            item["completed_at"] = t_single_completed
+                            item["elapsed"] = t_single_elapsed
                             item.pop("user_skipped_hash", None)
                             rendered_any = True
                         else:
@@ -429,6 +477,14 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                     queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
                 except Exception:
                     pass
+
+                # 6. Auto-restitch progressive master video after completing a final scene video pass
+                if code == 0 and "_Pass1_Left" not in out_fn:
+                    srv_w.broadcast_log(f"[Studio UI Queue] 🎬 Auto-restitching progressive master video after completing {out_fn}...")
+                    try:
+                        srv_w.run_stitch_worker(config_path, project_slug)
+                    except Exception as e:
+                        srv_w.broadcast_log(f"[Studio UI Queue Warning] Auto-stitch error: {e}")
 
                 if code != 0:
                     last_exit_code = code

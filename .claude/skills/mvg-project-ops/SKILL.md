@@ -19,7 +19,7 @@ python .agents/skills/mvg-project-ops/scripts/project_tool.py list
 ```
 
 ### 1.2 Summary of a Project
-Prints high-level stats: duration, FPS, resolution, anchor count, scene count, marker count, models:
+Prints high-level stats: duration, FPS, resolution, anchor count, scene count, marker count, models, recorded vault takes, checkpoints, and character tags:
 ```bash
 python .agents/skills/mvg-project-ops/scripts/project_tool.py summary all_or_nothing
 ```

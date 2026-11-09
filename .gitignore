@@ -53,6 +53,7 @@ work/test_trimmed_exact/
 
 # --- State Hashes & Runtime Job Manifests ---
 state_hashes.json
+takes_manifest.json
 **/work/jobs/
 **/work/jobs_*/
 *.log
@@ -60,6 +61,8 @@ state_hashes.json
 # --- Project Backups & Machine-Local Configs ---
 backup/
 **/Backup/
+checkpoints/
+**/checkpoints/
 local_config.json
 config.local.json
 config.local.bat

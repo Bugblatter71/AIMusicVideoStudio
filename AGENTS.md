@@ -44,18 +44,21 @@ MusicVideoGeneration/
 │   ├── run_overnight_v3.py        # 67-line backward-compatible pipeline facade
 │   ├── pipeline/                  # Modular backend generation engine
 │   │   ├── cli.py                 # CLI argument parsing, init_new_project, main
+│   │   ├── characters.py          # Character Studio, multi-reference sheets & prompt compilation
 │   │   ├── context.py             # ProjectContext, task dictionary generation
 │   │   ├── media_utils.py         # File hashing, ffprobe helpers, path resolution
-│   │   ├── prompts.py             # Anchor IDs, relative cue marker expansion
+│   │   ├── prompts.py             # Anchor IDs, relative cue marker expansion, image refs
 │   │   ├── stage1_anchors.py      # Stage 1 character anchor image generation
 │   │   ├── stage2_scenes.py       # Stage 2 scene video generation, multi-pass duet
 │   │   ├── stage3_master.py       # Stage 3 audio-synced master video assembly
+│   │   ├── takes.py               # Render Vault, takes manifest, cache-hit auto-promotion, checkpoints
 │   │   └── wgp_bridge.py          # WanGPSession lifecycle, engine status, cancellation
 │   └── ui/
 │       ├── server.py              # Shared server state & backward-compatible facade
+│       ├── server_media.py        # High-performance Range video/audio/strip streaming & take preview
 │       ├── server_workers.py      # Background render worker thread & subprocess tree
-│       ├── server_queue.py        # Fast queue evaluation, scene matching, reordering
-│       ├── server_routes.py       # StudioRequestHandler HTTP routes & SSE streaming
+│       ├── server_queue.py        # Fast queue evaluation, scene matching, vault cache hits
+│       ├── server_routes.py       # StudioRequestHandler HTTP routes, takes & checkpoints APIs, SSE
 │       └── static/
 │           ├── index.html         # Web UI layout
 │           └── js/
@@ -65,9 +68,12 @@ MusicVideoGeneration/
 │               ├── scene_inspector.js       # Scene property editing, timing nudges
 │               ├── markers_and_prompts.js   # Cue markers modal & prompt previews
 │               ├── anchors_and_settings.js  # Anchor studio & model profile presets
+│               ├── characters_studio.js     # Character Studio modal & multi-reference management
+│               ├── takes_and_history.js     # Undo/Redo (Ctrl+Z/Y), takes tray, checkpoints modal
 │               └── queue_and_console.js     # Queue list, SSE logs, render controls
 ├── tests/
-│   ├── test_backend_queue.py      # 25 backend unit & user journey tests
+│   ├── test_backend_queue.py      # 55 backend unit & user journey tests
+│   ├── test_takes_and_rollback.py # 15 unit & user journey tests for vault, takes & rollback
 │   └── test_wan2gp_integration.py # 14 Wan2GP engine integration tests
 └── .agents/skills/ (and .claude/skills/)
     ├── mvg-architecture-map/      # Codebase symbols indexer & state contracts

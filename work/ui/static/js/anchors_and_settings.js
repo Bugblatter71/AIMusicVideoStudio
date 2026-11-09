@@ -70,11 +70,90 @@ window.handleAnchorImgError = function (imgEl, slug, aid) {
   }
 };
 
+function buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, onSelect) {
+  const item = document.createElement("div");
+  item.className = "anchor-dropdown-item";
+  item.dataset.value = a.filename;
+  item.dataset.aid = aid;
+
+  const img = document.createElement("img");
+  img.src = thumbUrl;
+  img.alt = aid;
+  img.style.width = "100%";
+  img.style.height = "120px";
+  img.style.objectFit = "cover";
+  img.style.borderRadius = "6px";
+  img.style.border = "1px solid var(--border-color)";
+  img.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.5)";
+  img.style.backgroundColor = "#000";
+  img.style.display = "block";
+  img.onerror = () => { img.style.display = "none"; };
+
+  const textDiv = document.createElement("div");
+  textDiv.style.width = "100%";
+  textDiv.style.boxSizing = "border-box";
+  textDiv.style.overflow = "hidden";
+
+  const topRow = document.createElement("div");
+  topRow.style.display = "flex";
+  topRow.style.alignItems = "center";
+  topRow.style.justifyContent = "space-between";
+  topRow.style.marginBottom = "3px";
+
+  const aidSpan = document.createElement("span");
+  aidSpan.style.fontWeight = "700";
+  aidSpan.style.color = "#f59e0b";
+  aidSpan.style.fontSize = "13px";
+  aidSpan.textContent = `[${aid}]`;
+  topRow.appendChild(aidSpan);
+
+  const nameSpan = document.createElement("div");
+  nameSpan.style.color = "var(--text-main)";
+  nameSpan.style.fontSize = "12px";
+  nameSpan.style.fontWeight = "500";
+  nameSpan.style.lineHeight = "1.35";
+  nameSpan.style.wordBreak = "break-word";
+  nameSpan.textContent = resolvedName;
+
+  textDiv.appendChild(topRow);
+  textDiv.appendChild(nameSpan);
+
+  item.appendChild(img);
+  item.appendChild(textDiv);
+  item.addEventListener("click", onSelect);
+  return item;
+}
+
 function updateInspectorAnchorsDropdown() {
   const sel = document.getElementById("sceneAnchor");
+  const selEnd = document.getElementById("sceneAnchorEnd");
   const menu = document.getElementById("anchorDropdownMenu");
+  const menuEnd = document.getElementById("endAnchorDropdownMenu");
   if (sel) sel.innerHTML = "";
+  if (selEnd) selEnd.innerHTML = '<option value="">(None / Single Anchor)</option>';
   if (menu) menu.innerHTML = "";
+  if (menuEnd) {
+    menuEnd.innerHTML = "";
+    const noneItem = document.createElement("div");
+    noneItem.className = "anchor-dropdown-item";
+    noneItem.dataset.value = "";
+    noneItem.style.gridColumn = "1 / -1";
+    noneItem.innerHTML = `
+      <div style="height: 48px; display: flex; align-items: center; justify-content: center; gap: 8px; border-radius: 6px; border: 1px dashed var(--border-color); background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 13px; font-weight: 500;">
+        <span style="font-size: 16px;">🚫</span> (None / Single Anchor Mode)
+      </div>
+    `;
+    noneItem.addEventListener("click", () => {
+      if (selEnd) {
+        selEnd.value = "";
+        selEnd.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      if (typeof window.updateSceneEndAnchorPreview === "function") window.updateSceneEndAnchorPreview("");
+      menuEnd.style.display = "none";
+      menuEnd.classList.remove("open");
+    });
+    menuEnd.appendChild(noneItem);
+  }
 
   const anchors = state.projectData?.anchors || [];
   const diskAnchors = state.assets?.anchors || {};
@@ -86,7 +165,7 @@ function updateInspectorAnchorsDropdown() {
     const anchorMtime = diskInfo?.mtime || "";
     const thumbUrl = `/media/${state.currentSlug}/anchor/${encodeURIComponent(resolvedName)}${anchorMtime ? `?t=${anchorMtime}` : ""}`;
 
-    // 1. Populate native select
+    // 1. Populate native selects
     if (sel) {
       const opt = document.createElement("option");
       opt.value = a.filename;
@@ -94,74 +173,28 @@ function updateInspectorAnchorsDropdown() {
       opt.textContent = `[${aid}] ${resolvedName}`;
       sel.appendChild(opt);
     }
+    if (selEnd) {
+      const optEnd = document.createElement("option");
+      optEnd.value = a.filename;
+      optEnd.dataset.aid = aid;
+      optEnd.textContent = `[${aid}] ${resolvedName}`;
+      selEnd.appendChild(optEnd);
+    }
 
-    // 2. Populate visual custom dropdown menu item (2-column layout, doubled size)
+    // 2. Populate visual custom dropdown menus
     if (menu) {
-      const item = document.createElement("div");
-      item.className = "anchor-dropdown-item";
-      item.dataset.value = a.filename;
-      item.dataset.aid = aid;
-
-      // Thumbnail (High-res preview, doubled size ~240px x 120px in 2 columns)
-      const img = document.createElement("img");
-      img.src = thumbUrl;
-      img.alt = aid;
-      img.style.width = "100%";
-      img.style.height = "120px";
-      img.style.objectFit = "cover";
-      img.style.borderRadius = "6px";
-      img.style.border = "1px solid var(--border-color)";
-      img.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.5)";
-      img.style.backgroundColor = "#000";
-      img.style.display = "block";
-      img.onerror = () => {
-        img.style.display = "none";
-      };
-
-      // Label container
-      const textDiv = document.createElement("div");
-      textDiv.style.width = "100%";
-      textDiv.style.boxSizing = "border-box";
-      textDiv.style.overflow = "hidden";
-
-      const topRow = document.createElement("div");
-      topRow.style.display = "flex";
-      topRow.style.alignItems = "center";
-      topRow.style.justifyContent = "space-between";
-      topRow.style.marginBottom = "3px";
-
-      const aidSpan = document.createElement("span");
-      aidSpan.style.fontWeight = "700";
-      aidSpan.style.color = "#f59e0b";
-      aidSpan.style.fontSize = "13px";
-      aidSpan.textContent = `[${aid}]`;
-      topRow.appendChild(aidSpan);
-
-      const nameSpan = document.createElement("div");
-      nameSpan.style.color = "var(--text-main)";
-      nameSpan.style.fontSize = "12px";
-      nameSpan.style.fontWeight = "500";
-      nameSpan.style.lineHeight = "1.35";
-      nameSpan.style.wordBreak = "break-word";
-      nameSpan.textContent = resolvedName;
-
-      textDiv.appendChild(topRow);
-      textDiv.appendChild(nameSpan);
-
-      item.appendChild(img);
-      item.appendChild(textDiv);
-
-      item.addEventListener("click", () => {
-        if (sel) {
-          sel.value = a.filename;
-          sel.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        updateSceneAnchorPreview(a.filename);
-        menu.style.display = "none";
-        menu.classList.remove("open");
-      });
-
-      menu.appendChild(item);
+      menu.appendChild(buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, () => {
+        if (sel) { sel.value = a.filename; sel.dispatchEvent(new Event("change", { bubbles: true })); }
+        if (typeof updateSceneAnchorPreview === "function") updateSceneAnchorPreview(a.filename);
+        menu.style.display = "none"; menu.classList.remove("open");
+      }));
+    }
+    if (menuEnd) {
+      menuEnd.appendChild(buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, () => {
+        if (selEnd) { selEnd.value = a.filename; selEnd.dispatchEvent(new Event("change", { bubbles: true })); }
+        if (typeof window.updateSceneEndAnchorPreview === "function") window.updateSceneEndAnchorPreview(a.filename);
+        menuEnd.style.display = "none"; menuEnd.classList.remove("open");
+      }));
     }
   });
 
@@ -169,47 +202,53 @@ function updateInspectorAnchorsDropdown() {
   if (state.selectedSceneIdx !== null && state.projectData?.scenes) {
     const sc = state.projectData.scenes[state.selectedSceneIdx];
     if (sc) {
-      updateSceneAnchorPreview(sc.anchor);
+      if (typeof updateSceneAnchorPreview === "function") updateSceneAnchorPreview(sc.anchor);
+      if (typeof window.updateSceneEndAnchorPreview === "function") window.updateSceneEndAnchorPreview(sc.anchor_end || "");
     }
   }
+  initAnchorDropdownTrigger();
 }
 
 function initAnchorDropdownTrigger() {
-  const btn = document.getElementById("btnAnchorDropdownTrigger");
-  const menu = document.getElementById("anchorDropdownMenu");
-  const group = document.getElementById("anchorPickerGroup");
+  function bindTrigger(btnId, menuId, groupId) {
+    const btn = document.getElementById(btnId);
+    const menu = document.getElementById(menuId);
+    const group = document.getElementById(groupId);
+    if (!btn || !menu || btn.dataset.bound) return;
+    btn.dataset.bound = "1";
 
-  if (!btn || !menu) return;
-
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    const isShown = menu.style.display === "grid" || menu.classList.contains("open");
-    if (isShown) {
-      menu.style.display = "none";
-      menu.classList.remove("open");
-    } else {
-      menu.style.display = "grid";
-      menu.classList.add("open");
-      const selected = menu.querySelector(".anchor-dropdown-item.selected");
-      if (selected) {
-        selected.scrollIntoView({ block: "nearest" });
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = !menu.classList.contains("open") && menu.style.display !== "grid";
+      document.querySelectorAll(".custom-anchor-dropdown-menu").forEach((m) => {
+        m.style.display = "none";
+        m.classList.remove("open");
+      });
+      if (willOpen) {
+        menu.style.display = "grid";
+        menu.classList.add("open");
+        const selected = menu.querySelector(".anchor-dropdown-item.selected");
+        if (selected) selected.scrollIntoView({ block: "nearest" });
       }
-    }
-  });
+    });
 
-  document.addEventListener("click", (e) => {
-    if (group && !group.contains(e.target)) {
-      menu.style.display = "none";
-      menu.classList.remove("open");
-    }
-  });
+    document.addEventListener("click", (e) => {
+      if (group && !group.contains(e.target)) {
+        menu.style.display = "none";
+        menu.classList.remove("open");
+      }
+    });
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      menu.style.display = "none";
-      menu.classList.remove("open");
-    }
-  });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        menu.style.display = "none";
+        menu.classList.remove("open");
+      }
+    });
+  }
+
+  bindTrigger("btnAnchorDropdownTrigger", "anchorDropdownMenu", "anchorPickerGroup");
+  bindTrigger("btnEndAnchorDropdownTrigger", "endAnchorDropdownMenu", "endAnchorPickerGroup");
 }
 
 if (document.readyState === "loading") {
@@ -366,27 +405,77 @@ function renderResolutionCards(activeRes) {
       state.projectData.models.default_video_resolution = parseInt(k);
       markProjectDirty();
       renderResolutionCards(k);
+      if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
+        window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
+      }
+      if (typeof window.recordHistorySnapshot === "function") {
+        window.recordHistorySnapshot(`Select Resolution Option #${k}`);
+      }
       showToast(`Selected Resolution Option #${k} (${r.width}x${r.height})`);
     });
     container.appendChild(card);
   });
 }
 
-// Mark project dirty when any Project Settings field is edited
-[
-  "cfgProjectName",
-  "cfgMasterAudio",
-  "cfgFps",
-  "cfgFadeOut",
-  "cfgRenderOverlap",
-  "cfgDefaultAnchorRenderer",
-  "cfgDefaultVideoRenderer",
-  "cfgNegativePrompt",
-].forEach((id) => {
+function syncSettingsFormToState(id) {
+  if (!state.projectData) return;
+  const p = state.projectData.project || (state.projectData.project = {});
+  const m = state.projectData.models || (state.projectData.models = {});
   const el = document.getElementById(id);
-  if (el) {
-    el.addEventListener("input", () => markProjectDirty());
-    el.addEventListener("change", () => markProjectDirty());
+  if (!el) return;
+  const val = el.value;
+  if (id === "cfgProjectName") p.name = val;
+  else if (id === "cfgMasterAudio") p.master_audio = val;
+  else if (id === "cfgFps") p.fps = parseInt(val) || 24;
+  else if (id === "cfgFadeOut") p.fade_out_last_scene_seconds = parseFloat(val) || 2.0;
+  else if (id === "cfgRenderOverlap") p.render_overlap_seconds = parseFloat(val) ?? 1.0;
+  else if (id === "cfgDefaultAnchorRenderer") m.default_anchor_renderer = parseInt(val) || 3;
+  else if (id === "cfgDefaultVideoRenderer") m.default_video_renderer = parseInt(val) || 1;
+  else if (id === "cfgNegativePrompt") {
+    m.video_shared_settings = m.video_shared_settings || {};
+    m.video_shared_settings.negative_prompt = val;
+  }
+  if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
+    window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
+  }
+}
+
+// Mark project dirty when any Project Settings field is edited
+const settingsFieldIds = [
+  "cfgProjectName", "cfgMasterAudio", "cfgFps", "cfgFadeOut", "cfgRenderOverlap",
+  "cfgDefaultAnchorRenderer", "cfgDefaultVideoRenderer", "cfgNegativePrompt",
+];
+
+settingsFieldIds.forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const label = id.replace("cfg", "");
+  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+    el.addEventListener("focus", () => {
+      if (typeof window.beginEditSession === "function") {
+        window.beginEditSession(`settings:${id}`, `Edit Settings ${label}`);
+      }
+    });
+    el.addEventListener("input", () => {
+      if (typeof window.beginEditSession === "function") {
+        window.beginEditSession(`settings:${id}`, `Edit Settings ${label}`);
+      }
+      syncSettingsFormToState(id);
+      markProjectDirty();
+    });
+    el.addEventListener("blur", () => {
+      if (typeof window.commitEditSession === "function") {
+        window.commitEditSession();
+      }
+    });
+  } else if (el.tagName === "SELECT") {
+    el.addEventListener("change", () => {
+      syncSettingsFormToState(id);
+      markProjectDirty();
+      if (typeof window.recordHistorySnapshot === "function") {
+        window.recordHistorySnapshot(`Change Settings ${label}`);
+      }
+    });
   }
 });
 
@@ -394,28 +483,9 @@ function renderResolutionCards(activeRes) {
 async function saveProjectData(showNotice = true) {
   if (!state.currentSlug || !state.projectData) return false;
   // Sync form values into state safely
-  const p = state.projectData.project || (state.projectData.project = {});
-  const m = state.projectData.models || (state.projectData.models = {});
-
-  const cfgName = document.getElementById("cfgProjectName");
-  if (cfgName) p.name = cfgName.value;
-  const cfgAudio = document.getElementById("cfgMasterAudio");
-  if (cfgAudio) p.master_audio = cfgAudio.value;
-  const cfgFps = document.getElementById("cfgFps");
-  if (cfgFps) p.fps = parseInt(cfgFps.value) || 24;
-  const cfgFade = document.getElementById("cfgFadeOut");
-  if (cfgFade) p.fade_out_last_scene_seconds = parseFloat(cfgFade.value) || 2.0;
-  const cfgOverlap = document.getElementById("cfgRenderOverlap");
-  if (cfgOverlap) p.render_overlap_seconds = parseFloat(cfgOverlap.value) ?? 1.0;
-
-  const cfgAnchor = document.getElementById("cfgDefaultAnchorRenderer");
-  if (cfgAnchor) m.default_anchor_renderer = parseInt(cfgAnchor.value) || 3;
-  const cfgVideo = document.getElementById("cfgDefaultVideoRenderer");
-  if (cfgVideo) m.default_video_renderer = parseInt(cfgVideo.value) || 1;
-  const cfgNeg = document.getElementById("cfgNegativePrompt");
-  if (cfgNeg) {
-    m.video_shared_settings = m.video_shared_settings || {};
-    m.video_shared_settings.negative_prompt = cfgNeg.value;
+  settingsFieldIds.forEach(syncSettingsFormToState);
+  if (state.charactersData && Object.keys(state.charactersData).length > 0) {
+    state.projectData.characters = state.charactersData;
   }
 
   state._savingProject = true;
@@ -427,6 +497,9 @@ async function saveProjectData(showNotice = true) {
     });
     const json = await res.json();
     if (json.success) {
+      if (typeof window.markHistorySaved === "function") {
+        window.markHistorySaved();
+      }
       markProjectDirty(false);
       state._savingProject = false;
       loadProjectQueue(state.currentSlug);

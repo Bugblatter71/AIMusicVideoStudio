@@ -18,8 +18,8 @@ from .wgp_bridge import (
 
 def match_anchor_id(token: str, filename: str) -> bool:
     t = token.strip().upper()
-    aid_t = extract_anchor_id(t)
-    aid_fn = extract_anchor_id(filename)
+    aid_t = extract_anchor_id(t).upper()
+    aid_fn = extract_anchor_id(filename).upper()
     return (
         t in ("ALL", "ALL-ANCHORS")
         or aid_t == aid_fn

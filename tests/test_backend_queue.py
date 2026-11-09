@@ -287,7 +287,7 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertIsNotNone(s01_item, "S01 must exist in queue")
             self.assertTrue(s01_item["needs_render"], "S01 must need render because timeline exceeds render bounds")
             self.assertEqual(s01_item["status"], "queued")
-            self.assertIn("TIMELINE EXCEEDS RENDER", s01_item["reason"])
+            self.assertIn("TIMELINE", s01_item["reason"])
         finally:
             h_data["scene_renders"] = orig_scene_renders
             hashes_file.write_text(json.dumps(h_data, indent=2), encoding="utf-8")
@@ -903,6 +903,9 @@ class TestRenderQueueBackend(unittest.TestCase):
             def read_json_body(self):
                 return server.StudioRequestHandler.read_json_body(self)
 
+            def handle_media_stream(self, subpath):
+                return server.StudioRequestHandler.handle_media_stream(self, subpath)
+
         orig_text = self.json_path.read_text(encoding="utf-8")
         try:
             # 1. Valid split request (S01 is 0.0 to 4.0s, split at 2.0s)
@@ -1144,6 +1147,9 @@ class TestRenderQueueBackend(unittest.TestCase):
 
             def read_json_body(self):
                 return server.StudioRequestHandler.read_json_body(self)
+
+            def handle_media_stream(self, subpath):
+                return server.StudioRequestHandler.handle_media_stream(self, subpath)
 
         orig_text = self.json_path.read_text(encoding="utf-8")
         try:
@@ -1521,14 +1527,17 @@ class TestRenderQueueBackend(unittest.TestCase):
         timeline_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "timeline_and_playback.js").read_text(encoding="utf-8")
         queue_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
 
-        # 1. Slider starts at zero with 0.25 notches and capped at 4.25 (removing failing 4.75 and 5.0)
+        # 1. Slider starts at far left with smallest size 1.0 (notch 4) and capped safely at 3.5
         self.assertIn('id="timelineZoom"', index_html)
-        self.assertIn('min="0"', index_html)
-        self.assertIn('value="0"', index_html)
-        self.assertIn('max="4.25"', index_html)
+        self.assertIn('min="1.0"', index_html)
+        self.assertIn('value="1.0"', index_html)
+        self.assertIn('max="3.5"', index_html)
         self.assertIn('step="0.25"', index_html)
+        self.assertIn('autocomplete="off"', index_html)
         self.assertNotIn('id="timelineZoomVal"', index_html)
         self.assertNotIn('id="btnZoomFit"', index_html)
+        self.assertIn('zoomSlider.min = "1.0"', timeline_js)
+        self.assertIn('zoomSlider.value = String(state.zoom || 1.0)', timeline_js)
 
         # 2. Maximum safe canvas width guard (prevents Chromium white canvas texture limit bug)
         self.assertIn('maxSafeWidth', timeline_js)
@@ -1541,6 +1550,18 @@ class TestRenderQueueBackend(unittest.TestCase):
         # 4. Multi-window active phase label alignment and continuous engine polling
         self.assertIn('isMultiWin && task.window_pct !== undefined', queue_js)
         self.assertIn('fetch("/api/render/status")', queue_js)
+
+        # 5. Right-click drag panning across timeline canvas & container
+        self.assertIn('isRightClickDragging', timeline_js)
+        self.assertIn('scrollContainer.scrollLeft = rightClickStartScrollLeft - dx', timeline_js)
+        self.assertIn('scrollContainer.addEventListener("contextmenu", (e) => e.preventDefault())', timeline_js)
+        self.assertIn('canvas.addEventListener("contextmenu", (e) => e.preventDefault())', timeline_js)
+
+        # 6. Sticky scene name label while scrolling timeline until boundary/badge limit
+        self.assertIn('const labelX = Math.max(sx + 6, curScrollLeft + 6)', timeline_js)
+        self.assertIn('scrollContainer.addEventListener("scroll"', timeline_js)
+        self.assertIn('requestAnimationFrame', timeline_js)
+        self.assertIn('labelX + fullW <= rightLimit', timeline_js)
 
     def test_48_filmstrip_dynamic_thumbnails_scale_with_duration(self):
         """Regression test verifying that filmstrip thumbnail count scales with scene duration:
@@ -1557,9 +1578,666 @@ class TestRenderQueueBackend(unittest.TestCase):
         # 2. Legacy strip regeneration detection
         self.assertIn('cur_n != target_n', server_media_py)
 
-        # 3. Dynamic frame count and separator line rendering in timeline_and_playback.js
+        # 3. Dynamic frame count, 16:9 aspect ratio and separator line rendering in timeline_and_playback.js
         self.assertIn('numFrames = Math.max(1, Math.round(frameAspect / (16 / 9)))', timeline_js)
-        self.assertIn('for (let f = 1; f < numFrames; f++)', timeline_js)
+        self.assertIn('thumbAspect = 16 / 9', timeline_js)
+        self.assertIn('thumbW = Math.max(20, trackHeight * thumbAspect)', timeline_js)
+
+    def test_49_queue_clip_duration_column_and_short_reason(self):
+        """Regression test verifying the queue UI Length column and concise Reason formatting:
+        1. index.html defines the Length column header and table rows.
+        2. server_queue.py computes and includes duration on queue items.
+        3. queue_and_console.js contains formatQueueReason and renders the clip length cell."""
+        index_html = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+        queue_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+
+        # 1. Header and table colspans
+        self.assertIn('>Length</th>', index_html)
+        self.assertIn('colspan="8"', index_html)
+        self.assertTrue('colCount' in queue_js or 'isDoneFilter ? 8 : 6' in queue_js or 'colspan="8"' in queue_js)
+
+        # 2. Duration in queue items
+        q = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+        self.assertTrue(len(q) > 0)
+        for itm in q:
+            self.assertIn("duration", itm)
+            self.assertIsInstance(itm["duration"], (int, float))
+
+        # 3. Reason formatting and length rendering in frontend
+        self.assertIn('formatQueueReason', queue_js)
+        self.assertIn('lenStr', queue_js)
+        self.assertIn('Timeline changed', queue_js)
+
+    def test_50_done_list_sorted_descending_and_completed_columns(self):
+        """Regression test verifying:
+        1. Done list in queue_and_console.js is sorted descending by completion timestamp.
+        2. index.html has Completed and Time Taken column headers.
+        3. state_and_utils.js has formatCompletedAt and formatElapsed helpers.
+        4. server_queue.py attaches completed_at timestamps to completed passes."""
+        index_html = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+        queue_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+        utils_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "state_and_utils.js").read_text(encoding="utf-8")
+
+        # 1. Table headers
+        self.assertIn('>Completed</th>', index_html)
+        self.assertIn('>Time Taken</th>', index_html)
+
+        # 2. Utility formatting functions
+        self.assertIn('formatCompletedAt', utils_js)
+        self.assertIn('formatElapsed', utils_js)
+
+        # 3. Descending sort by completed_at in Done filter
+        self.assertIn('filter === "completed"', queue_js)
+        self.assertIn('timeB - timeA', queue_js)
+
+        # 4. Server queue populates completed_at
+        q = server.compute_fast_project_queue("all_or_nothing", force_recheck=True)
+        completed_items = [itm for itm in q if itm.get("status") == "completed"]
+        self.assertTrue(len(completed_items) > 0)
+        has_completed_at = any(itm.get("completed_at") is not None for itm in completed_items)
+        self.assertTrue(has_completed_at, "At least one completed queue item must have completed_at timestamp populated")
+
+    def test_51_stitch_locking_detection_and_auto_stitch(self):
+        """Regression test verifying:
+        1. server_workers.py triggers auto-restitch after scene render passes.
+        2. stage3_master.py detects PermissionError and outputs [MASTER_FILE_LOCKED].
+        3. server_workers.py broadcasts [MASTER_LOCKED] and [MASTER_ERROR] on failure.
+        4. queue_and_console.js handles [MASTER_LOCKED] and [MASTER_ERROR] to alert user."""
+        server_workers_py = (self.proj_dir.parent.parent / "work" / "ui" / "server_workers.py").read_text(encoding="utf-8")
+        stage3_py = (self.proj_dir.parent.parent / "work" / "pipeline" / "stage3_master.py").read_text(encoding="utf-8")
+        queue_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+
+        # 1. Auto-restitch in queue runner
+        self.assertIn('srv_w.run_stitch_worker(config_path, project_slug)', server_workers_py)
+        self.assertIn('"_Pass1_Left" not in out_fn', server_workers_py)
+
+        # 2. Stage 3 lock detection
+        self.assertIn('[MASTER_FILE_LOCKED]', stage3_py)
+        self.assertIn('return False', stage3_py)
+
+        # 3. Server workers broadcasts error events
+        self.assertIn('[MASTER_LOCKED]', server_workers_py)
+        self.assertIn('[MASTER_ERROR]', server_workers_py)
+
+        # 4. Frontend user reporting
+        self.assertIn('[MASTER_LOCKED]', queue_js)
+        self.assertIn('[MASTER_ERROR]', queue_js)
+
+    def test_52_done_filter_includes_completed_columns_other_lists_omit(self):
+        """Regression test verifying:
+        1. index.html defines queueTableHead.
+        2. queue_and_console.js includes Completed and Time Taken columns for done filter only.
+        3. queue_and_console.js dynamically omits Completed column for all other lists."""
+        index_html = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+        queue_js = (self.proj_dir.parent.parent / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="queueTableHead"', index_html)
+        self.assertIn('isDoneFilter', queue_js)
+        self.assertIn('isDoneFilter ? \'<th style="padding: 6px 10px; width: 140px; color: var(--text-muted);">Completed</th>', queue_js)
+        self.assertIn('isDoneFilter ?', queue_js)
+
+    def test_53_stitch_head_offset_trimmed_when_scene_start_nudged_later(self):
+        """Regression test verifying:
+        1. When a scene's start is nudged later in project JSON, assemble_progressive_master resolves
+           the physical render_start from scene_renders for existing clips.
+        2. head_offset_s = max(0.0, sc_start - render_start) + ctx.trim_first_frame_s trims the beginning
+           of the clip rather than starting at 0.0.
+        3. trim_sig records the positive head_offset_s (e.g. 1.670s) so re-encoding is triggered.
+        4. cli.py stitch_only synchronizes scene_meta with ctx.scenes and scene_renders."""
+        # 1. Pipeline stage3_master source checks
+        stage3_py = (self.proj_dir.parent.parent / "work" / "pipeline" / "stage3_master.py").read_text(encoding="utf-8")
+        self.assertIn('src_clip.exists() and r_info and "render_start" in r_info', stage3_py)
+        self.assertIn('max(0.0, sc_start - render_start) + ctx.trim_first_frame_s', stage3_py)
+        self.assertIn('project_scenes_by_id = {', stage3_py)
+
+        # 2. Pipeline cli.py stitch_only synchronization checks
+        cli_py = (self.proj_dir.parent.parent / "work" / "pipeline" / "cli.py").read_text(encoding="utf-8")
+        self.assertIn('project_scenes_by_id = {s["id"]: s for s in ctx.scenes', cli_py)
+        self.assertIn('if r_info and "render_start" in r_info:', cli_py)
+
+        # 3. Functional behavior check with ProjectContext and mock state
+        ctx = ProjectContext(self.json_path)
+        state = ctx.load_state_hashes()
+        scene_renders = state.setdefault("scene_renders", {})
+        clip_stem = "S18_solo_1344x768"
+        scene_renders[clip_stem] = {
+            "render_start": 136.80,
+            "render_end": 152.59,
+            "frames": 379,
+        }
+        sc_meta = {
+            "id": "S18",
+            "start": 138.47,
+            "end": 152.10,
+            "dur": 13.63,
+            "clip": f"{clip_stem}.mp4",
+            "render_start": 138.47,
+        }
+        r_info = scene_renders.get(clip_stem)
+        resolved_render_start = float(r_info["render_start"])
+        head_offset = max(0.0, float(sc_meta["start"]) - resolved_render_start) + ctx.trim_first_frame_s
+        self.assertAlmostEqual(head_offset, 1.670, places=3)
+        self.assertGreater(head_offset, 0.5)
+
+    def test_54_ref2va_identity_references_and_scene_model_selector(self):
+        """Regression test verifying:
+        1. Pure prompt functions: find_ref_tags, strip_dangling_ref_tags, resolve_scene_refs, build_ref2va_prompt.
+        2. make_video_task with FL2VA (Model 1) strips dangling tags and leaves video_prompt_type free of 'I'.
+        3. make_video_task with Ref2VA (Model 12) adds 'I' to video_prompt_type and populates image_refs.
+        4. Scene Inspector UI contains #sceneVideoRenderer and #sceneRendererBadge.
+        5. Existing all_or_nothing scenes with default model (FL2VA) remain UP-TO-DATE without hash changes."""
+        from pipeline.prompts import (
+            find_ref_tags,
+            strip_dangling_ref_tags,
+            resolve_scene_refs,
+            build_ref2va_prompt,
+        )
+
+        # 1. Prompt helpers
+        sample_prompt = (
+            "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n"
+            "integrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. "
+            "The male singer from <image1> and <image2> sings to the woman from <image3> and <image4>.\n"
+            "overall_soundscape: Quiet party ambience.\n"
+            "non_diegetic_music: N/A"
+        )
+        tags = find_ref_tags(sample_prompt)
+        self.assertEqual(tags, [1, 2, 3, 4])
+
+        stripped = strip_dangling_ref_tags("male singer from <image1> and <image2> (neat beard)")
+        self.assertEqual(stripped, "male singer (neat beard)")
+
+        ref_files = [
+            WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "ref_sheets" / "male_angle1_front34.jpg",
+            WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "ref_sheets" / "male_angle3_profile.jpg",
+            WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "ref_sheets" / "female_angle1_front34.jpg",
+            WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "ref_sheets" / "female_angle3_profile.jpg",
+        ]
+        sel_refs, tag_map = resolve_scene_refs(sample_prompt, ref_files)
+        self.assertEqual(len(sel_refs), 4)
+        self.assertEqual(tag_map, {1: 2, 2: 3, 3: 4, 4: 5})
+
+        ref2va_prompt = build_ref2va_prompt(sample_prompt, tag_map)
+        self.assertIn("subject_definitions:", ref2va_prompt)
+        self.assertIn("<Subject 1> is the male lead from <Picture 2> and <Picture 3>", ref2va_prompt)
+        self.assertIn("<Subject 2> is the female lead from <Picture 4> and <Picture 5>", ref2va_prompt)
+        self.assertIn("attribute_transfer", ref2va_prompt)
+        # Ensure zero blank lines inside prompt
+        self.assertNotIn("\n\n", ref2va_prompt)
+
+        # 2. FL2VA task compilation (Model 1)
+        ctx = ProjectContext(self.json_path)
+        m1_rspec = ctx.video_renderers["1"]
+        anchor_p = self.proj_dir / "work" / "anchors_v3" / "A01.jpg"
+        audio_p = self.proj_dir / "work" / "audio_v3" / "S01_male.wav"
+        fl2va_task = ctx.make_video_task(
+            output_filename="test_fl2va",
+            prompt=sample_prompt,
+            video_length=96,
+            seed=1001,
+            image_start=anchor_p,
+            audio_path=audio_p,
+            rspec=m1_rspec,
+            image_refs=ref_files,
+        )
+        self.assertNotIn("image_refs", fl2va_task)
+        self.assertNotIn("I", fl2va_task.get("video_prompt_type", ""))
+        self.assertNotIn("<image1>", fl2va_task["prompt"])
+
+        # 3. Ref2VA task compilation (Model 12)
+        m12_rspec = ctx.video_renderers["12"]
+        ref2va_task = ctx.make_video_task(
+            output_filename="test_ref2va",
+            prompt=sample_prompt,
+            video_length=96,
+            seed=1001,
+            image_start=anchor_p,
+            audio_path=audio_p,
+            rspec=m12_rspec,
+            image_refs=ref_files,
+        )
+        self.assertIn("image_refs", ref2va_task)
+        self.assertEqual(len(ref2va_task["image_refs"]), 4)
+        self.assertIn("I", ref2va_task["video_prompt_type"])
+        self.assertIn("subject_definitions:", ref2va_task["prompt"])
+
+        # 4. UI elements
+        index_html = (WORKSPACE_ROOT / "work" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+        inspector_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "scene_inspector.js").read_text(encoding="utf-8")
+        self.assertIn('id="sceneVideoRenderer"', index_html)
+        self.assertIn('id="sceneRendererBadge"', index_html)
+        self.assertIn('populateSceneVideoRenderer', inspector_js)
+        self.assertIn('"sceneVideoRenderer"', inspector_js)
+
+        # 5. Invariance check for all_or_nothing
+        aon_cfg = WORKSPACE_ROOT / "projects" / "all_or_nothing" / "all_or_nothing_v4.json"
+        if aon_cfg.exists():
+            aon_ctx = ProjectContext(aon_cfg)
+            from pipeline.stage2_scenes import compute_project_task_hashes
+            hashes = compute_project_task_hashes(aon_ctx)
+            self.assertIn("S01_male_solo_1344x768", hashes)
+            # Baseline hash remains stable
+            state = aon_ctx.load_state_hashes()
+            prev_s01 = state.get("tasks", {}).get("S01_male_solo_1344x768")
+            if prev_s01:
+                self.assertIn(prev_s01, hashes["S01_male_solo_1344x768"])
+
+    def test_55_character_studio_and_multi_reference_compilation(self):
+        """Regression test verifying Character Management Studio & Multi-Reference System (v2 spec)."""
+        import io
+        import base64
+        from http import HTTPStatus
+
+        # 1. Default Synthesis & Zero-Invalidation
+        aon_cfg = WORKSPACE_ROOT / "projects" / "all_or_nothing" / "all_or_nothing_v4.json"
+        if aon_cfg.exists():
+            aon_ctx = ProjectContext(aon_cfg)
+            self.assertIn("marcus", aon_ctx.characters, "Default synthesis must produce marcus entity")
+            self.assertIn("elena", aon_ctx.characters, "Default synthesis must produce elena entity")
+            self.assertIn("@male_studio", aon_ctx.tag_lookup, "tag_lookup must include @male_studio")
+            self.assertIn("@female_studio", aon_ctx.tag_lookup, "tag_lookup must include @female_studio")
+
+            from pipeline.stage2_scenes import compute_project_task_hashes
+            hashes = compute_project_task_hashes(aon_ctx)
+            state = aon_ctx.load_state_hashes()
+            tasks = state.get("tasks", {})
+            for t_name in [
+                "S01_male_solo_1344x768",
+                "S02_Pass1_Left_1344x768",
+                "S02_Pass2_Final_1344x768",
+                "S06_male_solo_1344x768",
+                "S18_solo_1344x768",
+                "S26a_male_solo_1344x768",
+            ]:
+                if t_name in tasks and t_name in hashes:
+                    self.assertIn(tasks[t_name], hashes[t_name], f"Task hash for {t_name} invalidated after character synthesis!")
+
+            q_aon = server.compute_fast_project_queue("all_or_nothing")
+            completed_aon = [x for x in q_aon if not x.get("needs_render")]
+            self.assertGreaterEqual(len(completed_aon), 32, "All completed passes in all_or_nothing must remain UP-TO-DATE")
+
+        # 2. Dual-Mode Prompt Compilation (@male_studio)
+        ctx = ProjectContext(self.json_path)
+        m1_rspec = ctx.video_renderers["1"]
+        m12_rspec = ctx.video_renderers["12"]
+        anchor_p = self.proj_dir / "work" / "anchors_v3" / "A01.jpg"
+        audio_p = self.proj_dir / "work" / "audio_v3" / "S01_male.wav"
+
+        # FL2VA Model 1 (preserves <Picture 1> first-frame token while stripping <imageN> and <Picture 2..10>):
+        fl2va_task = ctx.make_video_task(
+            output_filename="test_fl2va_char",
+            prompt="For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\ndetailed_description:\n[Shot 1] Continue directly from <Picture 1>. Performance with @male_studio singing into vintage mic from <Picture 2>.",
+            video_length=96,
+            seed=1001,
+            image_start=anchor_p,
+            audio_path=audio_p,
+            rspec=m1_rspec,
+        )
+        self.assertNotIn("image_refs", fl2va_task)
+        self.assertNotIn("<image", fl2va_task["prompt"])
+        self.assertNotIn("<Picture 2>", fl2va_task["prompt"])
+        self.assertIn("<Picture 1>", fl2va_task["prompt"])
+        self.assertIn("the exact 30-year-old Black male singer", fl2va_task["prompt"])
+
+        # Ref2VA Model 12:
+        ref2va_task = ctx.make_video_task(
+            output_filename="test_ref2va_char",
+            prompt="Performance with @male_studio singing into vintage mic",
+            video_length=96,
+            seed=1001,
+            image_start=anchor_p,
+            audio_path=audio_p,
+            rspec=m12_rspec,
+        )
+        self.assertIn("image_refs", ref2va_task)
+        self.assertGreaterEqual(len(ref2va_task["image_refs"]), 1)
+        self.assertIn("I", ref2va_task["video_prompt_type"])
+        self.assertIn("subject_definitions:", ref2va_task["prompt"])
+        self.assertIn("<Subject 1>", ref2va_task["prompt"])
+        self.assertIn("attribute_transfer", ref2va_task["prompt"])
+        self.assertIn("fully_preserved", ref2va_task["prompt"])
+
+        # 3. Multi-Subject Ensemble Compilation (S10 Orchestra) & Mixed {VAR} + @tag
+        orch_prompt = "Camera pans across soundstage showing @strings, @pianist, @brass, @woodwinds, and {FEMALE_STUDIO_DESC}."
+        orch_task = ctx.make_video_task(
+            output_filename="test_orch_ref2va",
+            prompt=orch_prompt,
+            video_length=96,
+            seed=1001,
+            image_start=anchor_p,
+            audio_path=audio_p,
+            rspec=m12_rspec,
+        )
+        self.assertIn("subject_appearance_reference", orch_task["prompt"])
+        self.assertIn("attribute_transfer", orch_task["prompt"])
+        self.assertIn("environment_and_style_reference", orch_task["prompt"])
+        self.assertIn("<Subject 5>", orch_task["prompt"])
+
+        # 3b. Hash preservation on @tag migration vs hash invalidation on description edit
+        from pipeline.characters import expand_prompt_with_characters
+        canon_unmod, leg_unmod = expand_prompt_with_characters(
+            "Marcus @male_studio sings", ctx.variables, ctx.tag_lookup
+        )
+        self.assertIsNotNone(leg_unmod, "Unmodified @male_studio should also return legacy expanded prompt for hash continuity")
+        self.assertIn("from <image1> and <image2>", leg_unmod)
+        self.assertNotIn("<image1>", canon_unmod)
+
+        # Edit Marcus description and verify legacy hash fallback is disabled and canonical changes
+        mod_chars = json.loads(json.dumps(ctx.characters))
+        mod_chars["marcus"]["looks"]["studio"]["description"] = "wearing a neon cyberpunk jacket"
+        from pipeline.characters import build_tag_lookup
+        mod_lookup = build_tag_lookup(mod_chars, self.proj_dir)
+        canon_mod, leg_mod = expand_prompt_with_characters(
+            "Marcus @male_studio sings", ctx.variables, mod_lookup
+        )
+        self.assertIsNone(leg_mod, "Modified look description must not match legacy hash")
+        self.assertIn("wearing a neon cyberpunk jacket", canon_mod)
+        self.assertNotEqual(canon_unmod, canon_mod)
+
+        # 4. REST Endpoints & Media Streaming (with clean teardown)
+        orig_json_bytes = self.json_path.read_bytes()
+        uploaded_file = self.proj_dir / "references" / "marcus" / "unit_test_upload.jpg"
+        try:
+            class DummyHandler:
+                def __init__(self, method, path, body_dict=None):
+                    self.command = method
+                    self.path = path
+                    body_bytes = json.dumps(body_dict).encode("utf-8") if body_dict else b""
+                    self.headers = {"Content-Length": str(len(body_bytes)), "Content-Type": "application/json"}
+                    self.rfile = io.BytesIO(body_bytes)
+                    self.wfile = io.BytesIO()
+                    self.response_status = None
+                    self.response_headers = {}
+
+                def send_response(self, status):
+                    self.response_status = status
+
+                def send_header(self, k, v):
+                    self.response_headers[k] = v
+
+                def end_headers(self):
+                    pass
+
+                def send_json(self, data, status=HTTPStatus.OK):
+                    server.StudioRequestHandler.send_json(self, data, status)
+
+                def send_error_json(self, msg, status=HTTPStatus.BAD_REQUEST):
+                    server.StudioRequestHandler.send_error_json(self, msg, status)
+
+                def read_json_body(self):
+                    return server.StudioRequestHandler.read_json_body(self)
+
+                def handle_media_stream(self, subpath):
+                    return server.StudioRequestHandler.handle_media_stream(self, subpath)
+
+            # GET /api/project/test_project/characters
+            h_get = DummyHandler("GET", f"/api/project/{self.project_slug}/characters")
+            server.StudioRequestHandler.do_GET(h_get)
+            self.assertEqual(h_get.response_status, 200)
+            res_get = json.loads(h_get.wfile.getvalue().decode("utf-8"))
+            self.assertTrue(res_get.get("success"))
+            self.assertIn("characters", res_get)
+            self.assertIn("autocomplete", res_get)
+            self.assertIn("scene_usage", res_get)
+
+            # POST /api/project/characters/save
+            h_save = DummyHandler("POST", "/api/project/characters/save", {
+                "slug": self.project_slug,
+                "characters": res_get["characters"],
+            })
+            server.StudioRequestHandler.do_POST(h_save)
+            self.assertEqual(h_save.response_status, 200)
+
+            # POST /api/project/characters/upload-image
+            dummy_data_url = "data:image/jpeg;base64," + base64.b64encode(b"dummy image bytes").decode("ascii")
+            h_upload = DummyHandler("POST", "/api/project/characters/upload-image", {
+                "slug": self.project_slug,
+                "entity_id": "marcus",
+                "look_id": "studio",
+                "filename": "unit_test_upload.jpg",
+                "data_url": dummy_data_url,
+            })
+            server.StudioRequestHandler.do_POST(h_upload)
+            self.assertEqual(h_upload.response_status, 200)
+            res_up = json.loads(h_upload.wfile.getvalue().decode("utf-8"))
+            self.assertTrue(res_up.get("success"))
+            self.assertIn("references/marcus/unit_test_upload.jpg", res_up.get("rel_path", ""))
+
+            # GET /media/<slug>/ref/references/marcus/unit_test_upload.jpg
+            h_media = DummyHandler("GET", f"/media/{self.project_slug}/ref/references/marcus/unit_test_upload.jpg")
+            server.StudioRequestHandler.do_GET(h_media)
+            self.assertEqual(h_media.response_status, 200)
+        finally:
+            self.json_path.write_bytes(orig_json_bytes)
+            if uploaded_file.exists():
+                uploaded_file.unlink()
+
+        # 5. Frontend JS Sanity & Module Line Counts (< 850 lines)
+        js_char_file = WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "characters_studio.js"
+        js_text = js_char_file.read_text(encoding="utf-8")
+        self.assertNotIn("jsonStringifySafe", js_text)
+        self.assertNotIn("state.modelProfiles", js_text)
+        self.assertNotIn("state.projectAssets", js_text)
+
+        files_to_check = [
+            WORKSPACE_ROOT / "work" / "pipeline" / "characters.py",
+            WORKSPACE_ROOT / "work" / "pipeline" / "prompts.py",
+            WORKSPACE_ROOT / "work" / "pipeline" / "context.py",
+            WORKSPACE_ROOT / "work" / "ui" / "server_routes.py",
+            js_char_file,
+        ]
+        for f in files_to_check:
+            self.assertTrue(f.exists(), f"File {f.name} must exist")
+            line_count = len(f.read_text(encoding="utf-8").splitlines())
+            self.assertLess(
+                line_count,
+                850,
+                f"Module {f.name} exceeds 850 lines limit (currently {line_count} lines)!",
+            )
+
+    def test_56_estimator_quantization_and_padding(self):
+        """Verify 17k+5 and 8k+1 frame quantization, quantum ceiling headroom, and padding impact."""
+        from pipeline.media_utils import quantize_video_frames, format_duration_estimate, estimate_scene_render_time
+
+        # 5.79s * 24 + 2 = 141 -> 17k+5 = 141 frames (max sec = 5.79s)
+        f141, max_s141 = quantize_video_frames(5.79, frames_formula="h3", fps=24.0)
+        self.assertEqual(f141, 141)
+        self.assertAlmostEqual(max_s141, 5.79, places=2)
+
+        # Adding 0.25s padding pushes 5.79s -> 6.04s -> crosses 5.79s quantum into 158 frames (6.50s ceiling)
+        f158, max_s158 = quantize_video_frames(6.04, frames_formula="h3", fps=24.0)
+        self.assertEqual(f158, 158)
+        self.assertAlmostEqual(max_s158, 6.50, places=2)
+
+        # ltx2 (8k+1) formula check
+        f_ltx2, _ = quantize_video_frames(4.0, frames_formula="ltx2", fps=24.0)
+        self.assertEqual((f_ltx2 - 1) % 8, 0)
+
+        # Formatting checks
+        self.assertEqual(format_duration_estimate(45.2), "45s")
+        self.assertEqual(format_duration_estimate(665.0), "11.1m")
+        self.assertEqual(format_duration_estimate(5580.0), "1h 33m")
+
+        # Scene padding integration
+        sc_no_pad = {"id": "S01", "start": 10.0, "end": 15.79, "mode": "male_solo"}
+        sc_with_pad = {"id": "S01", "start": 10.0, "end": 15.79, "mode": "male_solo", "render_pad_start": 0.25, "render_pad_end": 0.25}
+        est_no_pad = estimate_scene_render_time(sc_no_pad)
+        est_with_pad = estimate_scene_render_time(sc_with_pad)
+        self.assertEqual(est_no_pad["frames"], 141)
+        self.assertEqual(est_with_pad["frames"], 158)
+        self.assertGreater(est_with_pad["estimated_seconds"], est_no_pad["estimated_seconds"])
+
+    def test_57_estimator_model_and_end_anchor_offsets(self):
+        """Verify conditioning token frame offsets for End Anchor (+7f), Ref2VA (+14f/+26f), and FL2VA Pass 2 (-10f)."""
+        from pipeline.media_utils import estimate_pass_render_time
+
+        # 1. End anchor adds +7 effective frames on Solo / Pass 1, but NOT on Pass 2
+        p1_single = estimate_pass_render_time(175, model_id="1", pass_num=1, has_end_anchor=False)
+        p1_dual = estimate_pass_render_time(175, model_id="1", pass_num=1, has_end_anchor=True)
+        self.assertGreater(p1_dual["estimated_seconds"], p1_single["estimated_seconds"])
+        self.assertAlmostEqual(p1_single["estimated_seconds"], 775.6, delta=15.0)
+        self.assertAlmostEqual(p1_dual["estimated_seconds"], 822.2, delta=15.0)
+
+        # 2. FL2VA Pass 2 is faster than FL2VA Pass 1 (-10f grouped_rows speedup)
+        p2_fl2va = estimate_pass_render_time(175, model_id="1", pass_num=2, has_end_anchor=True)
+        self.assertLess(p2_fl2va["estimated_seconds"], p1_single["estimated_seconds"])
+
+        # 3. Ref2VA (#12) is slower than FL2VA (#1), and Ref2VA Pass 2 is slower than Ref2VA Pass 1
+        p1_ref2va = estimate_pass_render_time(175, model_id="12", pass_num=1, has_end_anchor=False)
+        p2_ref2va = estimate_pass_render_time(175, model_id="12", pass_num=2, has_end_anchor=False)
+        self.assertGreater(p1_ref2va["estimated_seconds"], p1_single["estimated_seconds"])
+        self.assertGreater(p2_ref2va["estimated_seconds"], p1_ref2va["estimated_seconds"])
+        self.assertAlmostEqual(p1_ref2va["estimated_seconds"], 870.0, delta=15.0)
+        self.assertAlmostEqual(p2_ref2va["estimated_seconds"], 954.8, delta=15.0)
+
+    def test_58_estimator_vram_spill_and_split_window_cliff(self):
+        """Verify the 3 non-linear VRAM / Split-Window regimes: fast_vram (<=226f), vram_spill (227..362f), split_window (>362f)."""
+        from pipeline.media_utils import estimate_pass_render_time
+
+        # Regime 1: fast_vram (<= 226 frames)
+        r_fast = estimate_pass_render_time(226, model_id="1")
+        self.assertEqual(r_fast["regime"], "fast_vram")
+        self.assertEqual(r_fast["window_count"], 1)
+        self.assertFalse(r_fast["is_split_window"])
+        self.assertAlmostEqual(r_fast["estimated_seconds"], 1142.7, delta=25.0)
+
+        # Regime 2: vram_spill (345 frames -> ~5574s / 92.9m empirical S11 take)
+        r_spill = estimate_pass_render_time(345, model_id="1", has_end_anchor=True)
+        self.assertEqual(r_spill["regime"], "vram_spill")
+        self.assertEqual(r_spill["window_count"], 1)
+        self.assertTrue(r_spill["is_split_window"])
+        self.assertAlmostEqual(r_spill["estimated_seconds"], 5574.4, delta=150.0)
+        self.assertGreater(r_spill["rate_per_frame"], r_fast["rate_per_frame"] * 2.5)
+
+        # Regime 3: split_window (600 frames > 362 window size -> 2 windows, ~10547s / 175.8m empirical S10 take)
+        r_split = estimate_pass_render_time(600, model_id="1", sliding_window_size=362, sliding_window_overlap=18)
+        self.assertEqual(r_split["regime"], "split_window")
+        self.assertEqual(r_split["window_count"], 2)
+        self.assertTrue(r_split["is_split_window"])
+        self.assertAlmostEqual(r_split["estimated_seconds"], 10547.0, delta=250.0)
+
+    def test_59_estimator_duet_pass_granularity_and_queue_integration(self):
+        """Verify duet per-pass estimation, queue attachment, empirical calibration, and <850 line limits."""
+        from pipeline.media_utils import estimate_scene_render_time, compute_calibration_factor
+
+        # 1. Empirical calibration factor on all_or_nothing should be close to 1.0
+        aon_dir = WORKSPACE_ROOT / "projects" / "all_or_nothing"
+        if aon_dir.exists():
+            alpha = compute_calibration_factor(aon_dir)
+            self.assertGreaterEqual(alpha, 0.85)
+            self.assertLessEqual(alpha, 1.15)
+
+        # 2. Duet scene produces 2 pass estimates & split savings when in VRAM spill / split window
+        duet_sc = {"id": "S02", "start": 5.79, "end": 13.79, "mode": "duet_method_b"}
+        duet_est = estimate_scene_render_time(duet_sc)
+        self.assertTrue(duet_est["is_duet"])
+        self.assertEqual(duet_est["pass_count"], 2)
+        self.assertEqual(len(duet_est["passes"]), 2)
+        self.assertGreater(duet_est["estimated_seconds"], duet_est["passes"][0]["estimated_seconds"])
+        self.assertIn("quantum_headroom_sec", duet_est)
+
+        long_sc = {"id": "S11", "start": 77.41, "end": 91.21, "mode": "male_solo", "anchor_end": "A02"}
+        long_est = estimate_scene_render_time(long_sc)
+        self.assertTrue(long_est["is_split_window"])
+        self.assertGreater(long_est["split_savings_seconds"], 1800.0)
+        self.assertTrue(len(long_est["split_savings_str"]) > 0)
+
+        # 3. Queue items computed by server_queue.py include estimation fields and calibration_alpha
+        q = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+        self.assertGreater(len(q), 0)
+        for itm in q:
+            self.assertIn("estimated_seconds", itm)
+            self.assertIn("estimated_str", itm)
+            self.assertIn("frames", itm)
+            self.assertIn("regime", itm)
+            self.assertIn("is_split_window", itm)
+            self.assertIn("calibration_alpha", itm)
+            self.assertIn("next_quantum_max_sec", itm)
+
+        # 4. Enforce < 850 lines across all modified backend & frontend modules
+        for rel in (
+            "work/pipeline/media_utils.py",
+            "work/ui/server_queue.py",
+            "work/ui/static/js/state_and_utils.js",
+            "work/ui/static/js/scene_inspector.js",
+            "work/ui/static/js/anchors_and_settings.js",
+            "work/ui/static/js/queue_and_console.js",
+        ):
+            p = WORKSPACE_ROOT / rel
+            lines = len(p.read_text(encoding="utf-8").splitlines())
+            self.assertLess(lines, 850, f"{rel} exceeds 850 lines ({lines} lines)!")
+
+    def test_60_action_buttons_consolidation_contracts(self):
+        """Verify the consolidated action-button layout: stateful Run/Stop toggle, removed duplicates,
+        renamed Queue Missing / Changed, characters flowing through the global Save, and line ceilings."""
+        ui = WORKSPACE_ROOT / "work" / "ui" / "static"
+        html = (ui / "index.html").read_text(encoding="utf-8")
+        queue_js = (ui / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+        chars_js = (ui / "js" / "characters_studio.js").read_text(encoding="utf-8")
+        inspector_js = (ui / "js" / "scene_inspector.js").read_text(encoding="utf-8")
+        master_js = (ui / "js" / "master_and_export.js").read_text(encoding="utf-8")
+
+        # 1. Removed duplicate / obsolete controls (exact quoted ids, so e.g. btnSplitSceneHeader is unaffected)
+        all_js = queue_js + chars_js + inspector_js + master_js
+        for dead_id in (
+            "btnStopRender", "btnRenderSceneSingle", "btnSplitScene", "btnStitchMaster",
+            "btnReloadQueue", "btnSaveCharacters", "renderStatusText",
+        ):
+            self.assertNotIn(f'id="{dead_id}"', html, f"{dead_id} must be removed from index.html")
+            self.assertNotIn(f'"{dead_id}"', all_js, f"{dead_id} must have no leftover JS references")
+
+        # 2. Kept controls + renamed labels
+        self.assertIn('id="btnRenderAll"', html)
+        self.assertIn("▶ Run", html)
+        self.assertIn('id="btnSplitSceneHeader"', html)
+        self.assertIn('id="btnStitchMasterFromTab"', html)
+        self.assertIn('id="btnClearQueue"', html)
+        self.assertIn("➕ Queue Missing / Changed", html)
+        self.assertNotIn("Render Missing / Changed", html)
+
+        # 3. Run <-> Stop toggle
+        self.assertIn('"⏹ Stop"', queue_js)
+        self.assertIn('"▶ Run"', queue_js)
+        self.assertIn("stopActiveRender", queue_js)
+        self.assertIn("/api/render/stop", queue_js)
+
+        # 4. Characters edits record history snapshots & sessions and flow through global Save/Undo/Discard
+        history_js = (ui / "js" / "takes_and_history.js").read_text(encoding="utf-8")
+        self.assertIn("syncCharactersDirty", chars_js)
+        self.assertIn("recordHistorySnapshot", chars_js)
+        self.assertIn("beginEditSession", chars_js)
+        self.assertIn("markProjectDirty(true)", chars_js)
+        self.assertIn("window.state.charactersData = window.state.projectData.characters", history_js)
+
+        # 5. Stale engine_status.json cleanup when current_project is None (e.g. after reboot)
+        eng_file = self.proj_dir / "work" / "jobs_v3" / "engine_status.json"
+        eng_file.parent.mkdir(parents=True, exist_ok=True)
+        eng_file.write_text(json.dumps({"state": "running", "filename": "S01_solo_832x480.mp4"}), encoding="utf-8")
+        server.render_status["current_project"] = None
+        server.kill_active_render(target_slug=self.project_slug)
+        eng_after = json.loads(eng_file.read_text(encoding="utf-8"))
+        self.assertEqual(eng_after.get("state"), "cancelled")
+        eng_file.unlink(missing_ok=True)
+
+        # 6. No stale copy referencing removed buttons
+        self.assertNotIn("⚡ Render Scene", inspector_js)
+        self.assertNotIn("Render Missing / Changed", inspector_js)
+
+        # 7. Cache-buster bumped
+        self.assertIn("js/queue_and_console.js?v=42", html)
+
+        # 8. Line ceilings
+        for rel in (
+            "work/ui/static/js/queue_and_console.js",
+            "work/ui/static/js/scene_inspector.js",
+            "work/ui/static/js/characters_studio.js",
+            "work/ui/static/js/takes_and_history.js",
+            "work/ui/static/js/master_and_export.js",
+            "work/ui/server_routes.py",
+            "work/ui/server_workers.py",
+        ):
+            n = len((WORKSPACE_ROOT / rel).read_text(encoding="utf-8").splitlines())
+            self.assertLess(n, 850, f"{rel} exceeds 850 lines ({n})")
 
     @classmethod
     def tearDownClass(cls):

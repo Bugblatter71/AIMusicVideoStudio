@@ -15,6 +15,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+try:
+    from pipeline.takes import handle_takes_api
+except ImportError:
+    try:
+        from work.pipeline.takes import handle_takes_api
+    except ImportError:
+        handle_takes_api = None
+
 
 def _srv():
     mod = sys.modules.get("work.ui.server") or sys.modules.get("server")
@@ -73,6 +81,16 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             self.handle_get_project_queue(slug)
             return
 
+        # 2b. API: Project Characters
+        if path.startswith("/api/project/") and path.endswith("/characters"):
+            slug = unquote(path[len("/api/project/"): -len("/characters")].strip("/"))
+            try:
+                from pipeline.characters import handle_characters_api
+            except ImportError:
+                from work.pipeline.characters import handle_characters_api
+            handle_characters_api(self, "get_characters", slug=slug)
+            return
+
         if path.startswith("/api/project/"):
             slug = unquote(path[len("/api/project/"):].strip("/"))
             config_name = parse_qs(parsed.query).get("config", [None])[0]
@@ -89,12 +107,39 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             self.send_json({"success": True, "dummy_render": getattr(srv, "dummy_render_mode", False)})
             return
 
+        # 3c. API: Takes & Checkpoints
+        if path.startswith("/api/takes/"):
+            if handle_takes_api:
+                handle_takes_api(self, "get_takes", path=path)
+            return
+        if path.startswith("/api/checkpoints/"):
+            if handle_takes_api:
+                handle_takes_api(self, "get_checkpoints", path=path)
+            return
+        if path.startswith("/api/vault/stats/"):
+            if handle_takes_api:
+                handle_takes_api(self, "get_vault_stats", path=path)
+            return
+
         # 4. API: Render Status
         if path == "/api/render/status":
             with srv.render_lock:
                 st = dict(srv.render_status)
                 st["history_count"] = len(srv.log_history)
-            st["engine_status"] = srv.read_project_engine_status(st.get("current_project"))
+            curr_proj = st.get("current_project")
+            eng_status = srv.read_project_engine_status(curr_proj)
+            if not eng_status and srv.PROJECTS_DIR.is_dir():
+                for d in srv.PROJECTS_DIR.iterdir():
+                    if d.is_dir():
+                        cand = srv.read_project_engine_status(d.name)
+                        if cand and cand.get("state") == "rendering":
+                            eng_status = cand
+                            curr_proj = d.name
+                            break
+            st["current_project"] = curr_proj
+            st["engine_status"] = eng_status
+            if eng_status and eng_status.get("state") == "rendering":
+                st["running"] = True
             self.send_json(st)
             return
 
@@ -147,6 +192,23 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             srv.dummy_render_mode = val
             srv.broadcast_log(f"[Studio UI Settings] Dummy render mode {'ENABLED' if srv.dummy_render_mode else 'DISABLED'}")
             self.send_json({"success": True, "dummy_render": srv.dummy_render_mode})
+            return
+
+        # Characters API Actions
+        if "/characters/" in path:
+            action = path.split("/characters/")[-1]
+            try:
+                from pipeline.characters import handle_characters_api
+            except ImportError:
+                from work.pipeline.characters import handle_characters_api
+            handle_characters_api(self, action, body=body)
+            return
+
+        # Takes & Checkpoints Actions
+        if path in ("/api/takes/activate", "/api/checkpoints/create", "/api/checkpoints/rollback"):
+            if handle_takes_api:
+                action = path.split("/")[-1]
+                handle_takes_api(self, action, body=body)
             return
 
         # Queue management: Move item up/down
@@ -272,7 +334,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     srv.broadcast_log(f"[Studio UI Error] Failed preparing queue for scene {target_sid}: {e}")
             else:
-                # "Render Missing / Changed": evaluate queue while preserving user ordering, FORCED items, and SKIPPED BY USER items
+                # "Run": evaluate queue while preserving user ordering, FORCED items, and SKIPPED BY USER items
                 try:
                     items = srv.compute_fast_project_queue(slug, force_recheck=False)
                     has_any_queued = any(x.get("status") == "queued" and x.get("needs_render") for x in items)
@@ -281,7 +343,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         self.send_json({"success": True, "queued": False, "message": "All passes up-to-date. Nothing to render."})
                         return
                 except Exception as e:
-                    srv.broadcast_log(f"[Studio UI Error] Failed preparing queue for Render Missing / Changed: {e}")
+                    srv.broadcast_log(f"[Studio UI Error] Failed preparing render queue: {e}")
 
             # Start single-render queue worker (never killing an in-progress GPU render)
             srv.run_queue_worker(slug, force_restart=False)
@@ -290,7 +352,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
         # Cancel active render
         if path == "/api/render/stop":
-            srv.kill_active_render()
+            stop_slug = (body or {}).get("slug") if isinstance(body, dict) else None
+            srv.kill_active_render(target_slug=stop_slug)
             self.send_json({"success": True, "stopped": True})
             return
 

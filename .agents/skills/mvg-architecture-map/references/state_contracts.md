@@ -186,3 +186,97 @@ Written by `wgp_bridge.py` during render jobs and polled by the UI via `/api/ren
 - `completed`: Successfully finished.
 - `cancelled`: Cancelled via `cancel_request.json`.
 - `failed`: Terminated with an error.
+
+---
+
+## 5. Render Vault Manifest JSON (`work/takes_manifest.json`)
+
+Maintained by `takes.py` to record every rendered take per scene, active take mappings, and creative parameter snapshots for instant restoration.
+
+```json
+{
+  "version": 1,
+  "scenes": {
+    "S01": {
+      "active_takes": {
+        "default": "take_346baa9b6437"
+      },
+      "active_take_id": "take_346baa9b6437",
+      "takes": [
+        {
+          "take_id": "take_346baa9b6437",
+          "take_number": 1,
+          "out_name": "S01_male_solo_1344x768",
+          "pass_num": null,
+          "task_hash": "346baa9b6437ea5e",
+          "created_at": 1731000500.0,
+          "vault_rel_mp4": "takes/S01/S01_male_solo_1344x768__346baa9b6437.mp4",
+          "vault_rel_strip": "takes/S01/S01_male_solo_1344x768__346baa9b6437_strip.jpg",
+          "render_start": 0.0,
+          "render_end": 8.5,
+          "frames": 204,
+          "elapsed_s": 45.2,
+          "size_bytes": 1048576,
+          "resolution": "1344x768",
+          "scene_snapshot": {
+            "id": "S01",
+            "prompt": "Solo vocalist singing intro",
+            "seed": 1001
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+---
+
+## 6. Project Checkpoints (`checkpoints/`)
+
+Maintained by `takes.py` to support zero-GPU full-project rollbacks.
+- `checkpoints/index.json`: Chronological checkpoint registry.
+- `checkpoints/<ckpt_id>/`:
+  - `project.json`: Snapshot of project config.
+  - `state_hashes.json`: Snapshot of queue state hashes.
+  - `active_takes.json`: Map of scene ID -> active take IDs.
+
+```json
+{
+  "version": 1,
+  "checkpoints": [
+    {
+      "id": "ckpt_20261108_193000_manual",
+      "name": "Act I Rough Cut",
+      "trigger": "manual",
+      "note": "All intro scenes finalized",
+      "timestamp": 1731000600.0,
+      "proj_hash": "a1b2c3d4e5f67890"
+    }
+  ]
+}
+```
+
+---
+
+## 7. Character Reference Catalog (`projects/<slug>/characters.json`)
+
+Maintained by `characters.py` for multi-reference identity sheets and prompt tag compilation.
+
+```json
+{
+  "version": 1,
+  "characters": [
+    {
+      "tag": "{MARCUS}",
+      "name": "Marcus Kane",
+      "gender": "male",
+      "appearance_prompt": "tall athletic black man, short fade haircut, stubble beard",
+      "reference_images": [
+        "references/marcus_front.jpg",
+        "references/marcus_side.jpg"
+      ]
+    }
+  ]
+}
+```

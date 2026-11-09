@@ -34,13 +34,28 @@ python .agents/skills/mvg-queue-and-wan2gp/scripts/diagnose_queue_state.py all_o
 3. **Missing File**: If rendered `.mp4` does not exist on disk (>50 KB), flagged as `queued` (`MISSING FILE`).
 4. **Two-Pass Dependency**: For two-pass GVA / duet scenes, Pass 2 depends on Pass 1. If Pass 1 needs re-render or Pass 1 MP4 is newer on disk than Pass 2 MP4, Pass 2 is marked `queued`.
 5. **Timeline Bounds Coverage**: If timeline was expanded beyond previously rendered bounds (`render_start <= scene_start + 0.05` and `render_end >= scene_end - 0.05`), flagged as `queued` (`TIMELINE EXCEEDS RENDER`).
-6. **Anchor Modifications**: If anchor image file modification time is newer than rendered video or SHA-256 hash differs from `state_hashes.json`, flagged as `queued` (`ANCHOR EDITED`).
-7. **Prompt / Stem / Settings Changes**: If SHA-256 task hash differs from `state_hashes.json`, flagged as `queued` (`PROMPT/SEED/SETTINGS EDITED`).
+6. **Anchor & Reference Modifications**:
+   - If anchor portrait modification time is newer than rendered video or SHA-256 hash differs from `state_hashes.json`, flagged as `queued` (`ANCHOR EDITED`).
+   - If character reference images (`characters.json` / `references/`) are newer on disk than the clip, flagged as `queued` (`REF <filename> NEWER ON DISK`).
+7. **Prompt / Stem / Settings Changes & Render Vault Cache-Hit**:
+   - If SHA-256 task hash differs from `state_hashes.json`, `server_queue.py` invokes `try_auto_promote_vault_hit` in `work/pipeline/takes.py`.
+   - **Vault Match Found**: If an earlier take matches the reverted hash, it is auto-promoted to active in `<50ms` -> `completed` (`UP-TO-DATE (VAULT HIT)`). 0 GPU work needed!
+   - **No Vault Match**: Flagged as `queued` (`PROMPT/SEED/SETTINGS EDITED`).
 8. **Up to Date**: All conditions met -> `completed` (`UP-TO-DATE`).
 
 ---
 
-## 3. Wan2GP Engine Profile Validation (`validate_wgp_profile.py`)
+## 3. Cancellation & Failure Recovery
+
+During stage 2 video generation, `before_scene_render` unlinks the active `.mp4` before Wan2GP writes fresh bytes to avoid corrupting vaulted inodes.
+
+If rendering is aborted (via `cancel_request.json`) or the engine encounters an exception:
+- `restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)` automatically re-establishes the hardlink from the vault to the active clip.
+- The user is never left with an empty or broken video file on the timeline.
+
+---
+
+## 4. Wan2GP Engine Profile Validation (`validate_wgp_profile.py`)
 
 Validate all profiles in `model_profiles.json` against Wan2GP's expected parameters:
 

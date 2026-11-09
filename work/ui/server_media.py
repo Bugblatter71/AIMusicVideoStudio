@@ -11,7 +11,7 @@ import subprocess
 import sys
 from http import HTTPStatus
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse, parse_qs
 
 
 def _srv():
@@ -99,13 +99,78 @@ def handle_media_stream(handler, subpath: str):
     target_file: Path | None = None
     category = parts[1]
 
-    if category == "audio" and len(parts) >= 3:
+    parsed_url = urlparse(getattr(handler, "path", ""))
+    qs = parse_qs(parsed_url.query)
+    req_take_id = qs.get("take", [None])[0]
+
+    if req_take_id and category in ("clip", "strip"):
+        manifest_file = proj_dir / "work" / "takes_manifest.json"
+        if manifest_file.is_file():
+            try:
+                m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                for s_data in m_data.get("scenes", {}).values():
+                    for t in s_data.get("takes", []):
+                        if t.get("take_id") == req_take_id:
+                            rel_val = t.get("file_path" if category == "clip" else "strip_path")
+                            if rel_val:
+                                cand = proj_dir / rel_val
+                                if cand.is_file():
+                                    target_file = cand
+                                    break
+                            v_rel = t.get("vault_rel_mp4" if category == "clip" else "vault_rel_strip")
+                            if v_rel:
+                                cand = proj_dir / "work" / "renders_v3" / v_rel
+                                if cand.is_file():
+                                    target_file = cand
+                                    break
+                    if target_file is not None:
+                        break
+            except Exception:
+                pass
+        if target_file is None:
+            takes_root = proj_dir / "work" / "renders_v3" / "takes"
+            if takes_root.is_dir():
+                cand_name = f"{req_take_id}.mp4" if category == "clip" else f"{req_take_id}_strip.jpg"
+                for cand in takes_root.rglob(cand_name):
+                    if cand.is_file():
+                        target_file = cand
+                        break
+
+    if target_file is not None:
+        pass
+    elif category == "audio" and len(parts) >= 3:
         rel = "/".join(parts[2:])
         target_file = proj_dir / "audio" / rel
         if not target_file.exists():
             target_file = proj_dir / rel
+    elif category == "ref" and len(parts) >= 3:
+        rel_target = "/".join(parts[2:])
+        cand = (proj_dir / rel_target).resolve()
+        try:
+            cand.relative_to(proj_dir.resolve())
+            if cand.is_file():
+                target_file = cand
+        except ValueError:
+            pass
+        if target_file is None:
+            for bdir in [proj_dir / "references", proj_dir / "work" / "ref_sheets", proj_dir]:
+                c2 = (bdir / rel_target).resolve()
+                try:
+                    c2.relative_to(proj_dir.resolve())
+                    if c2.is_file():
+                        target_file = c2
+                        break
+                except ValueError:
+                    pass
     elif category == "anchor" and len(parts) >= 3:
         raw_target = "/".join(parts[2:])
+        rel_cand = (proj_dir / raw_target).resolve()
+        try:
+            rel_cand.relative_to(proj_dir.resolve())
+            if rel_cand.is_file():
+                target_file = rel_cand
+        except ValueError:
+            pass
         filename = Path(raw_target).name
         aid = srv.extract_anchor_id(filename)
 

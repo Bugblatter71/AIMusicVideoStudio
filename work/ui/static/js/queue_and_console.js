@@ -19,30 +19,35 @@ function setConsoleView(mode) {
 
 function formatActivePhaseLabel(task) {
   if (!task) return "Starting...";
-  const winPrefix =
-    task.window_count && Number(task.window_count) > 1 && task.window_index
-      ? `Window ${task.window_index}/${task.window_count} • `
-      : "";
-  const phaseLabel = task.raw_phase || task.phase || "Starting...";
   const isMultiWin = task.window_count && Number(task.window_count) > 1;
-  const pctVal =
-    isMultiWin && task.window_pct !== undefined && task.window_pct !== null
-      ? `${task.window_pct}%`
-      : task.pct !== undefined && task.pct !== null
-      ? `${task.pct}%`
-      : "0%";
+  const winPrefix = isMultiWin && task.window_index ? `Window ${task.window_index}/${task.window_count} • ` : "";
+  const phaseLabel = task.raw_phase || task.phase || "Starting...";
+  const pctVal = isMultiWin && task.window_pct !== undefined && task.window_pct !== null ? `${task.window_pct}%` : task.pct != null ? `${task.pct}%` : "0%";
   if (task.total_steps && Number(task.total_steps) > 0) {
     return `[${winPrefix}${phaseLabel}] Step ${task.step || 0}/${task.total_steps} (${pctVal})`;
   }
   return `[${winPrefix}${phaseLabel}] (${pctVal})`;
 }
 
+function formatQueueReason(reason) {
+  if (!reason) return "";
+  const r = String(reason).trim();
+  if (/^PASS 1 RE-RENDERED/i.test(r)) return "Pass 1 re-rendered";
+  if (/TIMELINE EXCEEDS RENDER|TIMELINE CHANGED/i.test(r)) return "Timeline changed";
+  if (/UP-TO-DATE/i.test(r)) return "Up-to-date";
+  if (/MISSING FILE/i.test(r)) return "Missing file";
+  if (/PROMPT\/SEED\/SETTINGS/i.test(r)) return "Prompt/settings edited";
+  if (/ANCHOR (\w+) EDITED/i.test(r)) return r.replace(/ANCHOR (\w+) EDITED/i, "Anchor $1 edited");
+  if (/ANCHOR (\w+) NEWER/i.test(r)) return r.replace(/ANCHOR (\w+) NEWER ON DISK/i, "Anchor $1 newer");
+  if (/^EDITED$/i.test(r)) return "Edited";
+  if (/SKIPPED/i.test(r)) return "Skipped by user";
+  if (/STOPPED/i.test(r)) return "Stopped by user";
+  if (/FORCED/i.test(r)) return "Forced";
+  return r.replace(/\s*\(\[\d+\.?\d*,\s*\d+\.?\d*\]\s*not covered by\s*\[\d+\.?\d*,\s*\d+\.?\d*\]\)/gi, "").trim();
+}
+
 async function loadProjectQueue(slug = state.currentSlug) {
   if (!slug) return;
-  if (state.isDirty && !state._savingProject) {
-    await saveProjectData(false);
-    return;
-  }
   try {
     const [qRes, stRes] = await Promise.all([
       fetch(`/api/project/${encodeURIComponent(slug)}/queue`),
@@ -50,16 +55,33 @@ async function loadProjectQueue(slug = state.currentSlug) {
     ]);
     const json = await qRes.json();
     const st = stRes ? await stRes.json().catch(() => null) : null;
-    const isRunning = Boolean(st && st.running);
     const engStatus = (st && st.engine_status) || json.engine_status || null;
+    const isRunning = Boolean((st && st.running) || (engStatus && engStatus.state === "rendering"));
+    state.isEngineRunning = isRunning;
 
     if (json.success && json.queue) {
       if (!state.sseTaskStatuses) state.sseTaskStatuses = new Map();
 
       // If engine is not running, clear stale SSE overrides so server queue state is authoritative
       if (!isRunning) {
+        state.isEngineRunning = false;
         state.activeRenderTask = null;
         state.sseTaskStatuses.clear();
+      }
+
+      // Reconcile with active engine status if present
+      if (engStatus && engStatus.state === "rendering" && engStatus.filename) {
+        const engFn = engStatus.filename;
+        json.queue.forEach((t) => {
+          if (t.filename === engFn || t.output_filename === engFn || (t.filename && t.filename.startsWith(engFn.replace(/\.mp4$/i, "")))) {
+            t.status = "rendering";
+            t.pct = engStatus.pct ?? t.pct ?? 0;
+            t.step = engStatus.step ?? t.step ?? 0;
+            ["phase", "raw_phase", "total_steps", "window_index", "window_count"].forEach((k) => {
+              if (engStatus[k] !== undefined) t[k] = engStatus[k];
+            });
+          }
+        });
       }
 
       // Reconcile with any buffered SSE task events while engine is actively running
@@ -75,11 +97,9 @@ async function loadProjectQueue(slug = state.currentSlug) {
           const tStep = Number(t.step) || 0;
           t.pct = Math.max(tPct, ssePct);
           t.step = Math.max(tStep, sseStep);
-          if (sse.phase !== undefined) t.phase = sse.phase;
-          if (sse.raw_phase !== undefined) t.raw_phase = sse.raw_phase;
-          if (sse.total_steps !== undefined) t.total_steps = sse.total_steps;
-          if (sse.window_index !== undefined) t.window_index = sse.window_index;
-          if (sse.window_count !== undefined) t.window_count = sse.window_count;
+          ["phase", "raw_phase", "total_steps", "window_index", "window_count"].forEach((k) => {
+            if (sse[k] !== undefined) t[k] = sse[k];
+          });
         }
         if (!isRunning && t.status === "rendering") {
           t.status = t.needs_render ? "queued" : "skipped";
@@ -87,15 +107,23 @@ async function loadProjectQueue(slug = state.currentSlug) {
       });
 
       state.renderQueue = json.queue;
+      if (json.queue.length > 0 && json.queue[0].calibration_alpha) {
+        state.calibrationAlpha = Number(json.queue[0].calibration_alpha) || 1.0;
+        if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
+          window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
+        }
+      }
 
       if (isRunning) {
-        const activeItem = state.renderQueue.find((t) => t.status === "rendering");
+        let activeItem = state.renderQueue.find((t) => t.status === "rendering");
+        if (!activeItem && engStatus && engStatus.filename) {
+          activeItem = state.renderQueue.find((t) => t.filename === engStatus.filename || t.output_filename === engStatus.filename);
+          if (activeItem) activeItem.status = "rendering";
+        }
         if (activeItem) {
           state.activeRenderTask = {
-            idx: activeItem.idx,
-            total: activeItem.total || state.renderQueue.length,
-            filename: activeItem.filename,
-            reason: activeItem.reason,
+            idx: activeItem.idx, total: activeItem.total || state.renderQueue.length,
+            filename: activeItem.filename, reason: activeItem.reason,
             model: activeItem.model_type || engStatus?.model,
             frames: activeItem.video_length || engStatus?.frames,
             resolution: activeItem.resolution || engStatus?.resolution,
@@ -121,6 +149,11 @@ async function loadProjectQueue(slug = state.currentSlug) {
     }
   } catch (err) {
     console.warn("Failed to load project queue:", err);
+    const tbody = document.getElementById("queueTableBody");
+    if (tbody && (!state.renderQueue || state.renderQueue.length === 0)) {
+      tbody.innerHTML = '<tr><td colspan="8" style="padding: 16px; text-align: center; color: #f87171;">⚠️ Unable to reach server for render queue. Retrying...</td></tr>';
+    }
+    setTimeout(() => { if (!state.renderQueue || state.renderQueue.length === 0) loadProjectQueue(slug); }, 1500);
   }
 }
 
@@ -130,18 +163,35 @@ function renderQueueUI() {
   if (!tbody) return;
 
   const totalCount = queue.length;
-  const queuedCount = queue.filter((t) => t.status === "queued" || t.status === "rendering").length;
+  const isEngineRunning = Boolean(
+    state.isEngineRunning ||
+    (state.activeRenderTask && state.activeRenderTask.status === "rendering") ||
+    queue.some((t) => t.status === "rendering")
+  );
+  const runBtn = document.getElementById("btnRenderAll");
+  if (runBtn) {
+    runBtn.textContent = isEngineRunning ? "⏹ Stop" : "▶ Run";
+    runBtn.classList.toggle("btn-danger", isEngineRunning);
+    runBtn.classList.toggle("btn-primary", !isEngineRunning);
+    runBtn.title = isEngineRunning ? "Stop active render and pause queue" : "Run pending items in the render queue";
+  }
+  const renderingCount = queue.filter((t) => t.status === "rendering").length;
+  const queuedOnlyCount = queue.filter((t) => t.status === "queued").length;
+  const queuedCount = renderingCount + queuedOnlyCount;
   const doneCount = queue.filter((t) => t.status === "completed").length;
   const skippedCount = queue.filter((t) => t.status === "skipped").length;
+  const pendingEstSec = queue
+    .filter((t) => t.status === "queued" || t.status === "rendering")
+    .reduce((acc, t) => acc + (Number(t.estimated_remaining_seconds ?? t.remaining_seconds ?? t.estimated_seconds) || 0), 0);
+  const pendingEtaStr = pendingEstSec > 0 && typeof formatDurationEstimate === "function"
+    ? ` (Est. ~${formatDurationEstimate(pendingEstSec)}${renderingCount > 0 ? " remaining" : ""})` : "";
 
-  const countAll = document.getElementById("countAll");
-  const countQueued = document.getElementById("countQueued");
-  const countDone = document.getElementById("countDone");
-  const countSkipped = document.getElementById("countSkipped");
-  if (countAll) countAll.textContent = totalCount;
-  if (countQueued) countQueued.textContent = queuedCount;
-  if (countDone) countDone.textContent = doneCount;
-  if (countSkipped) countSkipped.textContent = skippedCount;
+  const lblQueued = document.getElementById("lblQueuedTab");
+  if (lblQueued) lblQueued.textContent = isEngineRunning ? "Queued" : "Pending";
+
+  [["countAll", totalCount], ["countQueued", queuedCount], ["countDone", doneCount], ["countSkipped", skippedCount]].forEach(([id, val]) => {
+    const el = document.getElementById(id); if (el) el.textContent = val;
+  });
 
   // Active Task Hero Card
   const activeTask = state.activeRenderTask;
@@ -157,34 +207,36 @@ function renderQueueUI() {
       headingEl.style.color = "#38bdf8";
     }
     if (titleEl) titleEl.textContent = activeTask.filename;
+    const actQueueItem = queue.find((x) => x.status === "rendering" || x.filename === activeTask.filename);
+    const actRemSec = actQueueItem?.estimated_remaining_seconds ?? actQueueItem?.remaining_seconds ?? actQueueItem?.estimated_seconds;
+    const actEtaBadge = actRemSec && typeof formatDurationEstimate === "function"
+      ? `<span id="activeTaskEtaBadge" style="background: rgba(16,185,129,0.15); color: #34d399; padding: 2px 6px; border-radius: 4px;">⏱ Rem: ~${formatDurationEstimate(actRemSec)}</span>` : "";
+    const queueSummaryBadge = queuedOnlyCount > 0 && pendingEstSec > 0 && typeof formatDurationEstimate === "function"
+      ? `<span style="background: rgba(255,255,255,0.06); color: var(--text-muted); padding: 2px 6px; border-radius: 4px;">+${queuedOnlyCount} Queued (Total ~${formatDurationEstimate(pendingEstSec)})</span>` : "";
     if (detailsEl) {
       detailsEl.innerHTML = `
         <span style="background: rgba(56,189,248,0.15); color: #38bdf8; padding: 2px 6px; border-radius: 4px;">${activeTask.model || "GPU Model"}</span>
         <span style="background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px;">${activeTask.frames ? `${activeTask.frames} frames` : ""}</span>
         <span style="background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 4px;">${activeTask.resolution || ""}</span>
+        ${actEtaBadge}${queueSummaryBadge}
         <span style="background: rgba(245,158,11,0.15); color: #f59e0b; padding: 2px 6px; border-radius: 4px;">Reason: ${activeTask.reason || "QUEUED"}</span>
       `;
     }
     if (timerEl) timerEl.style.display = "inline";
     if (progContainer) progContainer.style.display = "block";
-    const pb = document.getElementById("activeProgressBar");
-    if (pb) pb.style.width = `${activeTask.pct || 0}%`;
-    const pctText = document.getElementById("activeProgressPct");
-    if (pctText) pctText.textContent = `${activeTask.pct || 0}%`;
-    const phaseText = document.getElementById("activeProgressPhase");
-    if (phaseText) phaseText.textContent = formatActivePhaseLabel(activeTask);
+    const pb = document.getElementById("activeProgressBar"); if (pb) pb.style.width = `${activeTask.pct || 0}%`;
+    const pctText = document.getElementById("activeProgressPct"); if (pctText) pctText.textContent = `${activeTask.pct || 0}%`;
+    const phaseText = document.getElementById("activeProgressPhase"); if (phaseText) phaseText.textContent = formatActivePhaseLabel(activeTask);
   } else {
-    if (headingEl) {
-      headingEl.textContent = "CURRENT STATUS";
-      headingEl.style.color = "var(--text-muted)";
-    }
+    if (headingEl) { headingEl.textContent = "CURRENT STATUS"; headingEl.style.color = "var(--text-muted)"; }
     if (titleEl) {
-      titleEl.textContent = queuedCount > 0 ? `${queuedCount} file(s) waiting in queue` : "All files up-to-date";
+      const waitLabel = isEngineRunning ? "waiting in queue" : "pending render";
+      titleEl.textContent = queuedCount > 0 ? `${queuedCount} file(s) ${waitLabel}${pendingEtaStr}` : "All files up-to-date";
     }
     if (detailsEl) {
-      detailsEl.innerHTML = `
-        <span id="queueStatsSummary">${totalCount} Total Passes • ${queuedCount} Queued • ${doneCount} Finished • ${skippedCount} Up-to-date</span>
-      `;
+      const qWord = isEngineRunning ? "Queued" : "Pending";
+      const qBreakdown = renderingCount > 0 ? `${renderingCount} Rendering + ${queuedOnlyCount} Queued` : `${queuedCount} ${qWord}`;
+      detailsEl.innerHTML = `<span id="queueStatsSummary">${totalCount} Total Passes • ${qBreakdown}${pendingEtaStr} • ${doneCount} Finished • ${skippedCount} Up-to-date</span>`;
     }
     if (timerEl) timerEl.style.display = "none";
     if (progContainer) progContainer.style.display = "none";
@@ -192,7 +244,11 @@ function renderQueueUI() {
 
   // Filter items
   const filter = state.queueFilter || "all";
-  const filtered = queue.filter((t) => {
+  const isDoneFilter = filter === "completed";
+  const showActions = filter === "queued" || filter === "skipped";
+  const showReason = filter !== "completed";
+
+  let filtered = queue.filter((t) => {
     if (filter === "all") return true;
     if (filter === "queued") return t.status === "queued" || t.status === "rendering";
     if (filter === "completed") return t.status === "completed";
@@ -200,16 +256,60 @@ function renderQueueUI() {
     return true;
   });
 
+  if (isDoneFilter) {
+    filtered = [...filtered].sort((a, b) => {
+      const timeA = a.completed_at ? Number(a.completed_at) : 0;
+      const timeB = b.completed_at ? Number(b.completed_at) : 0;
+      if (timeB !== timeA) return timeB - timeA;
+      return a.idx - b.idx;
+    });
+  }
+
+  // Calculate filename & reason column widths based on widest elements in list + padding
+  let maxFnWidth = 110, maxReasonWidth = 55;
+  try {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.font = "500 11px monospace";
+      filtered.forEach((t) => { maxFnWidth = Math.max(maxFnWidth, ctx.measureText(t.filename || t.output_filename || "").width); });
+      ctx.font = "10px sans-serif";
+      filtered.forEach((t) => { maxReasonWidth = Math.max(maxReasonWidth, ctx.measureText(formatQueueReason(t.reason)).width); });
+      ctx.font = "11px sans-serif";
+      maxFnWidth = Math.max(maxFnWidth, ctx.measureText("File to Render").width);
+      maxReasonWidth = Math.max(maxReasonWidth, ctx.measureText("Reason").width);
+    }
+  } catch (e) {
+    maxFnWidth = Math.max(...filtered.map((t) => (t.filename || "").length), 14) * 7.5;
+    maxReasonWidth = Math.max(...filtered.map((t) => formatQueueReason(t.reason).length), 6) * 6.5;
+  }
+  const fnColWidth = Math.min(Math.max(Math.ceil(maxFnWidth + 22), 120), 320);
+  const reasonColWidth = Math.max(Math.ceil(maxReasonWidth + 22), 65);
+
+  const lenColWidth = isDoneFilter ? 58 : 94;
+  const thead = document.getElementById("queueTableHead");
+  if (thead) {
+    thead.innerHTML = `<tr>
+      <th style="padding: 6px 10px; width: ${fnColWidth}px; color: var(--text-muted);">File to Render</th>
+      <th style="padding: 6px 10px; width: ${lenColWidth}px; color: var(--text-muted);">Length</th>
+      <th style="padding: 6px 10px; width: 95px; color: var(--text-muted);">Status</th>
+      ${isDoneFilter ? '<th style="padding: 6px 10px; width: 140px; color: var(--text-muted);">Completed</th><th style="padding: 6px 10px; width: 85px; color: var(--text-muted);">Time Taken</th>' : ''}
+      ${showReason ? `<th style="padding: 6px 10px; width: ${reasonColWidth}px; color: var(--text-muted);">Reason</th>` : ''}
+      ${showActions ? '<th style="padding: 6px 10px; width: 90px; text-align: center; color: var(--text-muted);">Actions</th>' : ''}
+      <th style="width: auto;"></th>
+    </tr>`;
+  }
+
   if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="padding: 24px; text-align: center; color: var(--text-muted);">No files match filter "${filter}".</td></tr>`;
+    const filterLabel = (filter === "queued" && !isEngineRunning) ? "pending" : filter;
+    const colCount = (isDoneFilter || showActions) ? 6 : 5;
+    tbody.innerHTML = `<tr><td colspan="${colCount}" style="padding: 24px; text-align: center; color: var(--text-muted);">No files match filter "${filterLabel}".</td></tr>`;
     return;
   }
 
-  const queuedIndices = queue
-    .map((t, i) => (t.status === "queued" ? i : -1))
-    .filter((i) => i !== -1);
-  const firstQueuedIdx = queuedIndices.length > 0 ? queuedIndices[0] : -1;
-  const lastQueuedIdx = queuedIndices.length > 0 ? queuedIndices[queuedIndices.length - 1] : -1;
+  const queuedIndices = queue.map((t, i) => (t.status === "queued" ? i : -1)).filter((i) => i !== -1);
+  const firstQueuedIdx = queuedIndices[0] ?? -1;
+  const lastQueuedIdx = queuedIndices[queuedIndices.length - 1] ?? -1;
 
   tbody.innerHTML = filtered
     .map((t) => {
@@ -222,9 +322,11 @@ function renderQueueUI() {
       if (isRendering) {
         statusBadge = `<span class="active-row-progress-badge" style="background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 2px 8px; border-radius: 4px; font-weight: 600; white-space: nowrap;">⚡ Rendering</span>`;
       } else if (isQueued) {
-        statusBadge = `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 8px; border-radius: 4px; font-weight: 600;">⏳ Queued</span>`;
+        statusBadge = isEngineRunning
+          ? `<span style="background: rgba(245, 158, 11, 0.15); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.3); padding: 2px 8px; border-radius: 4px; font-weight: 600;">⏳ Queued</span>`
+          : `<span style="background: rgba(245, 158, 11, 0.12); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.25); padding: 2px 8px; border-radius: 4px; font-weight: 600;">⏳ Pending</span>`;
       } else if (isCompleted) {
-        statusBadge = `<span style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 2px 8px; border-radius: 4px; font-weight: 600;">✅ Done ${t.elapsed ? `(${t.elapsed}s)` : ""}</span>`;
+        statusBadge = `<span style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 2px 8px; border-radius: 4px; font-weight: 600;">✅ Done</span>`;
       } else if (isFailed) {
         statusBadge = `<span style="background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); padding: 2px 8px; border-radius: 4px; font-weight: 600;">❌ Failed</span>`;
       } else {
@@ -235,23 +337,23 @@ function renderQueueUI() {
         ? "background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8;"
         : "border-bottom: 1px solid rgba(255, 255, 255, 0.04);";
 
-      const idxStr = String(t.idx).padStart(2, "0");
-      const shortReason = (t.reason || "").replace(/UP-TO-DATE \(COVERED BY RENDER\)/i, "UP-TO-DATE");
+      const scMatch = state.projectData?.scenes?.find((s) => s.id === t.scene_id);
+      const durSec = t.duration != null ? Number(t.duration) : (scMatch ? Number(scMatch.end - scMatch.start) : 0);
+      const lenStr = durSec > 0 ? `${durSec.toFixed(1)}s` : "—";
+      const estStr = !isDoneFilter && !isCompleted && (t.estimated_remaining_str || t.estimated_str) ? (t.estimated_remaining_str || t.estimated_str) : "";
+      const estBadge = estStr
+        ? ` <span style="color: ${t.is_split_window ? "#f59e0b" : "#38bdf8"}; font-size: 10px;" title="Est. Render Time: ~${estStr} (${t.frames || t.quantized_frames || ""}f, ${t.regime || "fast_vram"})">(~${estStr}${t.is_split_window ? "⚠️" : ""})</span>`
+        : "";
+      const completedStr = isCompleted ? formatCompletedAt(t.completed_at) : (isRendering ? '<span style="color: #38bdf8;">Rendering...</span>' : "—");
+      const elapsedStr = isCompleted ? formatElapsed(t.elapsed) : (isRendering && t.elapsed ? formatElapsed(t.elapsed) : "—");
+      const shortReason = formatQueueReason(t.reason);
       const targetId = t.filename || t.id || t.output_filename;
 
       const globalIdx = queue.findIndex((x) => (x.filename || x.output_filename) === targetId || x.idx === t.idx);
       const prevQueuedIdx = isQueued ? [...queuedIndices].reverse().find((i) => i < globalIdx) : undefined;
       const nextQueuedIdx = isQueued ? queuedIndices.find((i) => i > globalIdx) : undefined;
-      const blockedUpByPass1 =
-        prevQueuedIdx !== undefined &&
-        t.pass === 2 &&
-        queue[prevQueuedIdx]?.scene_id === t.scene_id &&
-        queue[prevQueuedIdx]?.pass === 1;
-      const blockedDownByPass2 =
-        nextQueuedIdx !== undefined &&
-        t.pass === 1 &&
-        queue[nextQueuedIdx]?.scene_id === t.scene_id &&
-        queue[nextQueuedIdx]?.pass === 2;
+      const blockedUpByPass1 = prevQueuedIdx !== undefined && t.pass === 2 && queue[prevQueuedIdx]?.scene_id === t.scene_id && queue[prevQueuedIdx]?.pass === 1;
+      const blockedDownByPass2 = nextQueuedIdx !== undefined && t.pass === 1 && queue[nextQueuedIdx]?.scene_id === t.scene_id && queue[nextQueuedIdx]?.pass === 2;
       const canUp = isQueued && globalIdx > firstQueuedIdx && !blockedUpByPass1;
       const canDown = isQueued && globalIdx < lastQueuedIdx && !blockedDownByPass2;
 
@@ -259,36 +361,24 @@ function renderQueueUI() {
       if (isRendering) {
         actionsHtml = `<span style="color: #38bdf8; font-size: 10px; font-weight: 600;">Active</span>`;
       } else if (isQueued) {
-        actionsHtml = `
-          <div style="display: flex; gap: 4px; justify-content: center; align-items: center;">
-            <button type="button" class="btn-queue-action btn-queue-up" data-id="${targetId}" title="Move Up" ${canUp ? "" : "disabled"} style="padding: 1px 4px; font-size: 11px; background: transparent; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; opacity: ${canUp ? "1" : "0.3"}; cursor: ${canUp ? "pointer" : "default"};">⬆️</button>
-            <button type="button" class="btn-queue-action btn-queue-down" data-id="${targetId}" title="Move Down" ${canDown ? "" : "disabled"} style="padding: 1px 4px; font-size: 11px; background: transparent; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; opacity: ${canDown ? "1" : "0.3"}; cursor: ${canDown ? "pointer" : "default"};">⬇️</button>
-            <button type="button" class="btn-queue-action btn-queue-del" data-id="${targetId}" title="Remove from Queue" style="padding: 1px 4px; font-size: 11px; background: transparent; border: 1px solid rgba(239,68,68,0.3); border-radius: 3px; cursor: pointer; color: #ef4444;">🗑️</button>
-          </div>
-        `;
+        const upBtn = `<button type="button" class="btn-queue-action btn-queue-up" data-id="${targetId}" title="Move Up" ${canUp ? "" : "disabled"} style="padding: 1px 4px; font-size: 11px; background: transparent; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; opacity: ${canUp ? "1" : "0.3"}; cursor: ${canUp ? "pointer" : "default"};">⬆️</button>`;
+        const downBtn = `<button type="button" class="btn-queue-action btn-queue-down" data-id="${targetId}" title="Move Down" ${canDown ? "" : "disabled"} style="padding: 1px 4px; font-size: 11px; background: transparent; border: 1px solid rgba(255,255,255,0.1); border-radius: 3px; opacity: ${canDown ? "1" : "0.3"}; cursor: ${canDown ? "pointer" : "default"};">⬇️</button>`;
+        const delBtn = `<button type="button" class="btn-queue-action btn-queue-del" data-id="${targetId}" title="Remove from Queue" style="padding: 1px 4px; font-size: 11px; background: transparent; border: 1px solid rgba(239,68,68,0.3); border-radius: 3px; cursor: pointer; color: #ef4444;">🗑️</button>`;
+        actionsHtml = `<div style="display: flex; gap: 4px; justify-content: center; align-items: center;">${upBtn}${downBtn}${delBtn}</div>`;
       } else {
-        actionsHtml = `
-          <div style="display: flex; justify-content: center; align-items: center;">
-            <button type="button" class="btn-queue-action btn-queue-add" data-id="${targetId}" title="Add to Queue" style="padding: 1px 6px; font-size: 10px; cursor: pointer; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 3px; color: var(--text-muted);">➕ Queue</button>
-          </div>
-        `;
+        actionsHtml = `<div style="display: flex; justify-content: center; align-items: center;"><button type="button" class="btn-queue-action btn-queue-add" data-id="${targetId}" title="Add to Queue" style="padding: 1px 6px; font-size: 10px; cursor: pointer; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 3px; color: var(--text-muted);">➕ Queue</button></div>`;
       }
 
-      return `
-        <tr style="${rowStyle}">
-          <td style="padding: 6px 10px; color: var(--text-muted); font-family: monospace;">${idxStr}</td>
-          <td style="padding: 6px 10px; font-weight: 500;">
-            <div style="color: ${isRendering ? "#38bdf8" : isCompleted ? "#10b981" : "var(--text-main)"}; font-family: monospace;">${t.filename}</div>
-          </td>
-          <td style="padding: 6px 10px;">${statusBadge}</td>
-          <td style="padding: 6px 10px; color: var(--text-muted); font-size: 10px;">
-            <span>${shortReason}</span>
-          </td>
-          <td style="padding: 6px 10px; text-align: center;">
-            ${actionsHtml}
-          </td>
-        </tr>
-      `;
+      const timeCols = isDoneFilter ? `<td style="padding: 6px 10px; width: 140px; color: var(--text-muted); font-family: monospace; white-space: nowrap;">${completedStr}</td><td style="padding: 6px 10px; width: 85px; color: var(--text-muted); font-family: monospace; white-space: nowrap;">${elapsedStr}</td>` : "";
+      const reasonCol = showReason ? `<td style="padding: 6px 10px; width: ${reasonColWidth}px; color: var(--text-muted); font-size: 10px; white-space: nowrap;"><span title="${shortReason}">${shortReason}</span></td>` : "";
+      const actionsCol = showActions ? `<td style="padding: 6px 10px; width: 90px; text-align: center; white-space: nowrap;">${actionsHtml}</td>` : "";
+
+      return `<tr style="${rowStyle}">
+        <td style="padding: 6px 10px; width: ${fnColWidth}px; font-weight: 500;"><div style="color: ${isRendering ? "#38bdf8" : isCompleted ? "#10b981" : "var(--text-main)"}; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${t.filename}">${t.filename}</div></td>
+        <td style="padding: 6px 10px; width: ${lenColWidth}px; color: var(--text-muted); font-family: monospace; white-space: nowrap;">${lenStr}${estBadge}</td>
+        <td style="padding: 6px 10px; width: 95px; white-space: nowrap;">${statusBadge}</td>
+        ${timeCols}${reasonCol}${actionsCol}<td style="width: auto;"></td>
+      </tr>`;
     })
     .join("");
 }
@@ -312,6 +402,7 @@ function handleQueueSSEEvent(line) {
       );
 
     if (tag === "[QUEUE_ACTIVE]") {
+      state.isEngineRunning = true;
       state.activeRenderTask = payload;
       state.renderStartTime = Date.now();
       if (!state.renderTimerInterval) {
@@ -330,28 +421,20 @@ function handleQueueSSEEvent(line) {
       renderQueueUI();
     } else if (tag === "[QUEUE_PROGRESS]") {
       if (state.activeRenderTask) {
-        state.activeRenderTask.phase = payload.phase;
-        state.activeRenderTask.raw_phase = payload.raw_phase;
-        state.activeRenderTask.pct = payload.pct;
-        state.activeRenderTask.window_pct = payload.window_pct !== undefined ? payload.window_pct : payload.pct;
-        state.activeRenderTask.step = payload.step;
-        state.activeRenderTask.total_steps = payload.total_steps;
-        state.activeRenderTask.window_index = payload.window_index;
-        state.activeRenderTask.window_count = payload.window_count;
+        Object.assign(state.activeRenderTask, {
+          phase: payload.phase, raw_phase: payload.raw_phase, pct: payload.pct,
+          window_pct: payload.window_pct !== undefined ? payload.window_pct : payload.pct,
+          step: payload.step, total_steps: payload.total_steps,
+          window_index: payload.window_index, window_count: payload.window_count,
+        });
       }
       const activeFn = payload.filename || state.activeRenderTask?.filename || "";
-      if (activeFn) {
-        const existing = state.sseTaskStatuses.get(activeFn);
-        if (existing) {
-          existing.pct = payload.pct;
-          existing.window_pct = payload.window_pct !== undefined ? payload.window_pct : payload.pct;
-          existing.step = payload.step;
-          existing.total_steps = payload.total_steps;
-          existing.phase = payload.phase;
-          existing.raw_phase = payload.raw_phase;
-          existing.window_index = payload.window_index;
-          existing.window_count = payload.window_count;
-        }
+      if (activeFn && state.sseTaskStatuses.has(activeFn)) {
+        Object.assign(state.sseTaskStatuses.get(activeFn), {
+          pct: payload.pct, window_pct: payload.window_pct !== undefined ? payload.window_pct : payload.pct,
+          step: payload.step, total_steps: payload.total_steps, phase: payload.phase,
+          raw_phase: payload.raw_phase, window_index: payload.window_index, window_count: payload.window_count,
+        });
       }
       const match = findQueueItem() || state.renderQueue.find((t) => t.status === "rendering");
       if (match) {
@@ -379,12 +462,14 @@ function handleQueueSSEEvent(line) {
         rowBadge.textContent = "⚡ Rendering";
       }
     } else if (tag === "[QUEUE_CANCEL]") {
+      state.isEngineRunning = false;
       const match = findQueueItem() || state.renderQueue.find((t) => t.status === "rendering");
       if (match) {
         match.status = "queued";
         match.reason = payload.reason || "STOPPED BY USER";
       }
-      state.activeRenderTask = null;
+      state.isEngineRunning = false;
+  state.activeRenderTask = null;
       renderQueueUI();
     } else if (tag === "[QUEUE_DONE]") {
       if (fnKey) state.sseTaskStatuses.set(fnKey, { status: "completed", elapsed: payload.elapsed });
@@ -395,6 +480,7 @@ function handleQueueSSEEvent(line) {
         match.status = "completed";
         match.needs_render = false;
         match.elapsed = payload.elapsed;
+        match.completed_at = payload.completed_at || Math.floor(Date.now() / 1000);
       }
       if (state.activeRenderTask && (!fnKey || state.activeRenderTask.filename === fnKey)) {
         state.activeRenderTask = null;
@@ -439,6 +525,23 @@ async function updateRenderTimer() {
   if (timerEl) {
     timerEl.textContent = `⏱ ${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   }
+  const etaBadgeEl = document.getElementById("activeTaskEtaBadge");
+  if (etaBadgeEl && state.activeRenderTask && typeof formatDurationEstimate === "function") {
+    const actItem = (state.renderQueue || []).find((x) => x.status === "rendering" || x.filename === state.activeRenderTask.filename);
+    const baseEst = Number(actItem?.estimated_seconds || 0);
+    if (baseEst > 0) {
+      const pct = Number(state.activeRenderTask.pct || 0);
+      const step = Number(state.activeRenderTask.step || 0);
+      let remSec = Math.max(5, baseEst - elapsedSec);
+      if (step >= 1 && pct >= 5.0 && elapsedSec > 0) {
+        const pFrac = Math.max(0.05, Math.min(0.99, pct / 100.0));
+        const w = Math.pow(pFrac, 1.2);
+        const blendedTotal = (1.0 - w) * baseEst + w * (elapsedSec / pFrac);
+        remSec = Math.max(5, blendedTotal - elapsedSec);
+      }
+      etaBadgeEl.textContent = `⏱ Rem: ~${formatDurationEstimate(remSec)}`;
+    }
+  }
 
   // Continuous engine polling: directly query engine_status.json via /api/render/status every second
   if (elapsedSec > 0 && !state._pollingEngineStatus) {
@@ -446,7 +549,7 @@ async function updateRenderTimer() {
     try {
       const res = await fetch("/api/render/status");
       const json = await res.json();
-      if (json && json.engine_status && json.running) {
+      if (json && json.engine_status && (json.running || json.engine_status.state === "rendering")) {
         const eng = json.engine_status;
         const curStep = state.activeRenderTask?.step || 0;
         const curPct = state.activeRenderTask?.pct || 0;
@@ -498,6 +601,14 @@ function initLogStream() {
           refreshProjectAssets(true);
           return;
         }
+        if (data.text.includes("[MASTER_LOCKED]")) {
+          showToast("⚠️ Master video is locked by a video player. Close your player and restitch.", 9000);
+          return;
+        }
+        if (data.text.includes("[MASTER_ERROR]")) {
+          showToast("❌ Master video restitch failed. See terminal logs.", 6000);
+          return;
+        }
         if (data.text.includes("[ANCHORS_UPDATED]")) {
           showToast("🎨 Anchor image updated!");
           refreshProjectAssets(true);
@@ -523,14 +634,7 @@ function initLogStream() {
       }
 
       if (data.done) {
-        if (state.renderTimerInterval) {
-          clearInterval(state.renderTimerInterval);
-          state.renderTimerInterval = null;
-        }
-        state.activeRenderTask = null;
-        renderQueueUI();
-        document.getElementById("renderStatusText").textContent = `Finished (Code ${data.exit_code})`;
-        document.getElementById("renderStatusText").style.color = data.exit_code === 0 ? "var(--accent-green)" : "var(--accent-red)";
+        resetEngineUI();
         // Refresh project assets & master video without clobbering unsaved UI edits or playhead
         refreshProjectAssets(true);
       }
@@ -546,6 +650,15 @@ function initLogStream() {
   state.eventSource = es;
 }
 
+function resetEngineUI() {
+  if (state.renderTimerInterval) { clearInterval(state.renderTimerInterval); state.renderTimerInterval = null; }
+  state.isEngineRunning = false;
+  state.activeRenderTask = null;
+  state.sseTaskStatuses?.clear();
+  (state.renderQueue || []).forEach((t) => { if (t.status === "rendering") t.status = t.needs_render === false ? "skipped" : "queued"; });
+  renderQueueUI();
+}
+
 async function triggerRender(args = []) {
   if (state.isDirty) {
     showToast("💾 Auto-saving project changes before render...");
@@ -557,8 +670,7 @@ async function triggerRender(args = []) {
   }
   const term = document.getElementById("terminalOutput");
   term.innerHTML = "";
-  document.getElementById("renderStatusText").textContent = "Running...";
-  document.getElementById("renderStatusText").style.color = "var(--primary)";
+  state.isEngineRunning = true;
 
   // Clear previous task state so stale tasks (e.g. S22) never linger
   state.activeRenderTask = null;
@@ -596,10 +708,10 @@ async function triggerRender(args = []) {
     });
     const json = await res.json();
     if (!json.success) {
+      resetEngineUI();
       alert(`Render error: ${json.error}`);
     } else if (json.queued === false) {
-      document.getElementById("renderStatusText").textContent = "Up to date";
-      document.getElementById("renderStatusText").style.color = "var(--success)";
+      resetEngineUI();
       showToast(`✔ ${json.message || "All passes up-to-date"}`);
       loadProjectQueue(state.currentSlug);
     } else {
@@ -607,6 +719,7 @@ async function triggerRender(args = []) {
       loadProjectQueue(state.currentSlug);
     }
   } catch (err) {
+    resetEngineUI();
     alert(`Failed to start render: ${err}`);
   }
 }
@@ -625,50 +738,23 @@ document.querySelectorAll(".btn-filter[data-filter]").forEach((b) => {
   });
 });
 
-document.getElementById("btnReloadQueue")?.addEventListener("click", () => {
-  loadProjectQueue(state.currentSlug);
-  showToast("Queue refreshed");
-});
-
 document.getElementById("btnQueueAll")?.addEventListener("click", async () => {
   try {
     if (state.isDirty) await saveProjectData(false);
     const slug = state.currentSlug || "all_or_nothing";
-    const res = await fetch("/api/queue/enqueue_all", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug }),
-    });
+    const res = await fetch("/api/queue/enqueue_all", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
     const data = await res.json();
-    if (data.queue) {
-      state.sseTaskStatuses?.clear();
-      state.renderQueue = data.queue;
-      renderQueueUI();
-      showToast("All unrendered items enqueued");
-    }
-  } catch (err) {
-    showToast("Failed to queue all items");
-  }
+    if (data.queue) { state.sseTaskStatuses?.clear(); state.renderQueue = data.queue; renderQueueUI(); showToast("All unrendered items enqueued"); }
+  } catch (err) { showToast("Failed to queue all items"); }
 });
 
 document.getElementById("btnClearQueue")?.addEventListener("click", async () => {
   try {
     const slug = state.currentSlug || "all_or_nothing";
-    const res = await fetch("/api/queue/clear", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ slug }),
-    });
+    const res = await fetch("/api/queue/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
     const data = await res.json();
-    if (data.queue) {
-      state.sseTaskStatuses?.clear();
-      state.renderQueue = data.queue;
-      renderQueueUI();
-      showToast("Queue cleared");
-    }
-  } catch (err) {
-    showToast("Failed to clear queue");
-  }
+    if (data.queue) { state.sseTaskStatuses?.clear(); state.renderQueue = data.queue; renderQueueUI(); showToast("Queue cleared"); }
+  } catch (err) { showToast("Failed to clear queue"); }
 });
 
 // Event delegation for table action buttons (Move Up, Move Down, Delete, Add)
@@ -678,77 +764,46 @@ document.getElementById("queueTableBody")?.addEventListener("click", async (e) =
   const id = btn.dataset.id;
   if (!id) return;
   const slug = state.currentSlug || "all_or_nothing";
+  let endpoint = null, body = { slug, id };
 
-  if (btn.classList.contains("btn-queue-up")) {
+  if (btn.classList.contains("btn-queue-up")) { endpoint = "/api/queue/move"; body.direction = "up"; }
+  else if (btn.classList.contains("btn-queue-down")) { endpoint = "/api/queue/move"; body.direction = "down"; }
+  else if (btn.classList.contains("btn-queue-del")) endpoint = "/api/queue/remove";
+  else if (btn.classList.contains("btn-queue-add")) endpoint = "/api/queue/enqueue";
+
+  if (endpoint) {
     try {
-      const res = await fetch("/api/queue/move", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, id, direction: "up" }),
-      });
+      const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.queue) {
-        state.sseTaskStatuses?.clear();
-        state.renderQueue = data.queue;
-        renderQueueUI();
+        state.sseTaskStatuses?.clear(); state.renderQueue = data.queue; renderQueueUI();
+        if (endpoint.includes("remove")) showToast("Removed from queue");
+        if (endpoint.includes("enqueue")) showToast("Added to queue");
       }
-    } catch (err) {
-      console.error(err);
-    }
-  } else if (btn.classList.contains("btn-queue-down")) {
-    try {
-      const res = await fetch("/api/queue/move", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, id, direction: "down" }),
-      });
-      const data = await res.json();
-      if (data.queue) {
-        state.sseTaskStatuses?.clear();
-        state.renderQueue = data.queue;
-        renderQueueUI();
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  } else if (btn.classList.contains("btn-queue-del")) {
-    try {
-      const res = await fetch("/api/queue/remove", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, id }),
-      });
-      const data = await res.json();
-      if (data.queue) {
-        state.sseTaskStatuses?.clear();
-        state.renderQueue = data.queue;
-        renderQueueUI();
-        showToast("Removed from queue");
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  } else if (btn.classList.contains("btn-queue-add")) {
-    try {
-      const res = await fetch("/api/queue/enqueue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug, id }),
-      });
-      const data = await res.json();
-      if (data.queue) {
-        state.sseTaskStatuses?.clear();
-        state.renderQueue = data.queue;
-        renderQueueUI();
-        showToast("Added to queue");
-      }
-    } catch (err) {
-      console.error(err);
-    }
+    } catch (err) { console.error(err); }
   }
 });
 
-document.getElementById("btnRenderAll")?.addEventListener("click", () => triggerRender([]));
+async function stopActiveRender() {
+  resetEngineUI();
+  try {
+    await fetch("/api/render/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: state.currentSlug }) });
+    showToast("⏹ Render stopped.");
+    if (state.currentSlug) loadProjectQueue(state.currentSlug);
+  } catch (err) {
+    showToast(`Error stopping render: ${err}`);
+  }
+}
+
+document.getElementById("btnRenderAll")?.addEventListener("click", () => {
+  const isRunning = Boolean(
+    state.isEngineRunning ||
+    (state.activeRenderTask && state.activeRenderTask.status === "rendering") ||
+    (state.renderQueue || []).some((t) => t.status === "rendering")
+  );
+  if (isRunning) stopActiveRender();
+  else triggerRender([]);
+});
 
 const dummyContainer = document.getElementById("dummyModeContainer");
 const chkDummyMode = document.getElementById("chkDummyRenderMode");
@@ -757,64 +812,34 @@ const chkDummyMode = document.getElementById("chkDummyRenderMode");
 // Only expose in UI if explicitly requested via URL parameter (?dev=1 or ?dummy=1).
 const devUrlParams = new URLSearchParams(window.location.search);
 const showDevControls = devUrlParams.get("dev") === "1" || devUrlParams.get("dummy") === "1";
-if (dummyContainer) {
-  dummyContainer.style.display = showDevControls ? "flex" : "none";
-}
+if (dummyContainer) dummyContainer.style.display = showDevControls ? "flex" : "none";
 
 if (chkDummyMode) {
   fetch("/api/settings/dummy_mode")
     .then((r) => r.json())
-    .then((data) => {
-      if (data && data.dummy_render !== undefined) {
-        chkDummyMode.checked = !!data.dummy_render;
-      }
-    })
+    .then((data) => { if (data && data.dummy_render !== undefined) chkDummyMode.checked = !!data.dummy_render; })
     .catch(() => {});
 
   chkDummyMode.addEventListener("change", async () => {
     try {
-      const res = await fetch("/api/settings/dummy_mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      await fetch("/api/settings/dummy_mode", {
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled: chkDummyMode.checked }),
       });
-      const data = await res.json();
       showToast(chkDummyMode.checked ? "🧪 Dummy render engine enabled (Fast mock simulation)" : "⚡ Real Wan2GP engine enabled");
-    } catch (e) {
-      console.error("Failed to toggle dummy mode:", e);
-    }
+    } catch (e) { console.error("Failed to toggle dummy mode:", e); }
   });
 }
 
 window.setDummyMode = async function (enabled = true) {
   try {
     const res = await fetch("/api/settings/dummy_mode", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: !!enabled }),
     });
     const data = await res.json();
     if (chkDummyMode) chkDummyMode.checked = !!data.dummy_render;
     return data;
-  } catch (e) {
-    console.error("Failed to set dummy mode:", e);
-  }
+  } catch (e) { console.error("Failed to set dummy mode:", e); }
 };
-document.getElementById("btnStopRender").addEventListener("click", async () => {
-  const statusElem = document.getElementById("renderStatusText");
-  statusElem.textContent = "Stopped (Ready)";
-  statusElem.style.color = "var(--text-muted)";
-  if (state.renderTimerInterval) {
-    clearInterval(state.renderTimerInterval);
-    state.renderTimerInterval = null;
-  }
-  state.activeRenderTask = null;
-  renderQueueUI();
-  try {
-    const res = await fetch("/api/render/stop", { method: "POST" });
-    const json = await res.json();
-    showToast("Render process terminated.");
-  } catch (err) {
-    showToast(`Error stopping render: ${err}`);
-  }
-});
+

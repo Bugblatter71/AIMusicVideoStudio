@@ -1,6 +1,21 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 
+// The Render Console has ONE toggle button (#btnRenderAll): "▶ Run" when idle, "⏹ Stop" while the engine runs.
+async function stopViaToggle(page) {
+  const btn = page.locator('#btnRenderAll');
+  await expect(btn).toContainText('Stop', { timeout: 8000 });
+  await Promise.all([
+    page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
+    btn.click(),
+  ]);
+  await expect(btn).toContainText('Run', { timeout: 10000 });
+}
+
+async function waitForIdle(page, timeout = 45000) {
+  await expect(page.locator('#btnRenderAll')).toContainText('Run', { timeout });
+}
+
 test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   test.beforeEach(async ({ page }) => {
     // Navigate directly to test_project
@@ -132,9 +147,9 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('05. Immediate Restitch Master MP4 executes without queue blocking', async ({ page }) => {
-    await page.locator('button[data-tab="console"]').click();
+    await page.locator('button[data-tab="master"]').click();
 
-    const restitchBtn = page.locator('#btnStitchMaster');
+    const restitchBtn = page.locator('#btnStitchMasterFromTab');
     await expect(restitchBtn).toBeVisible();
     await restitchBtn.click();
 
@@ -143,25 +158,25 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await expect(toast).toContainText(/Restitching master video/i, { timeout: 8000 });
   });
 
-  test('06. Click Render Scene triggers single render and completes cleanly in dummy mode', async ({ page }) => {
-    // Select S01 (index 0)
+  test('06. Run toggles to Stop, executes the queue and returns to Run in dummy mode', async ({ page }) => {
+    // Scene Inspector no longer has Render Scene / duplicate Split buttons
     await page.evaluate(() => {
       // @ts-ignore
       window.selectScene(0);
     });
     await expect(page.locator('#inspectorSceneId')).toContainText('Scene S01');
+    await expect(page.locator('#btnRenderSceneSingle')).toHaveCount(0);
+    await expect(page.locator('#btnSplitScene')).toHaveCount(0);
 
-    // Click "Render Scene" button
-    const renderSceneBtn = page.locator('#btnRenderSceneSingle');
-    await expect(renderSceneBtn).toBeVisible();
-    await renderSceneBtn.click();
+    // Run the queue from the Render Console
+    await page.locator('button[data-tab="console"]').click();
+    const runBtn = page.locator('#btnRenderAll');
+    await expect(runBtn).toContainText('Run');
+    await runBtn.click();
+    await expect(runBtn).toContainText('Stop', { timeout: 8000 });
 
-    // Verify it switched to console tab
-    await expect(page.locator('#tab-console')).toBeVisible();
-
-    // Wait for render to complete (in dummy mode S01 completes in ~2-3s)
-    const statusText = page.locator('#renderStatusText');
-    await expect(statusText).toContainText(/Finished|Idle|Stopped|Ready/i, { timeout: 15000 });
+    // Wait for the queue to finish (dummy mode is ~2-3s per pass) and the button to flip back
+    await waitForIdle(page);
 
     // Verify queue shows S01 completed
     await page.locator('#btnConsoleQueue').click();
@@ -170,23 +185,12 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   });
 
   test('07. Multi-stage journey: Cancel active run, add new scene to timeline, and verify queue updates', async ({ page }) => {
-    // 1. Start a render of S01
-    await page.locator('button[data-tab="timeline"]').click();
-    await page.evaluate(() => {
-      // @ts-ignore
-      window.selectScene(0);
-    });
-    await page.locator('#btnRenderSceneSingle').click();
+    // 1. Start the queue from the Render Console
+    await page.locator('button[data-tab="console"]').click();
+    await page.locator('#btnRenderAll').click();
 
-    // 3. Immediately click Stop
-    const stopBtn = page.locator('#btnStopRender');
-    await expect(stopBtn).toBeVisible();
-    await stopBtn.click();
-
-    // 4. Verify status indicates stopped and no ghost active task
-    const statusText = page.locator('#renderStatusText');
-    await expect(statusText).toContainText(/Stopping|Stopped|Ready|Idle|Finished/i, { timeout: 10000 });
-    await expect(statusText).toContainText(/Stopped|Ready|Idle|Finished/i, { timeout: 15000 });
+    // 3. Immediately click Stop (same toggle button) and verify it flips back to Run with no ghost task
+    await stopViaToggle(page);
 
     // 5. Switch to Timeline and click "Add Scene"
     await page.locator('button[data-tab="timeline"]').click();
@@ -205,7 +209,6 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     // 8. Switch to Console -> Queue View
     await page.locator('button[data-tab="console"]').click();
     await page.locator('#btnConsoleQueue').click();
-    await page.locator('#btnReloadQueue').click();
 
     // 9. Verify queue has 5 items now (S01, S02:p1, S02:p2, S03, S04)
     const rows = page.locator('#queueTableBody tr');
@@ -256,37 +259,22 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await expect(rows.nth(0).locator('button[title="Remove from Queue"]')).toBeVisible({ timeout: 5000 });
   });
 
-  test('09. Multi-stage journey: Cancel Scene A, then render Scene B cleanly without ghost lingering or blockages', async ({ page }) => {
-    // 1. Start render on S02 (duet scene)
-    await page.locator('button[data-tab="timeline"]').click();
-    await page.evaluate(() => {
-      // @ts-ignore
-      window.selectScene(1);
-    });
-    await expect(page.locator('#inspectorSceneId')).toContainText('Scene S02');
-    await page.locator('#btnRenderSceneSingle').click();
+  test('09. Multi-stage journey: Stop a run, Run again cleanly without ghost lingering or blockages', async ({ page }) => {
+    // 1. Start the queue from the Render Console
+    await page.locator('button[data-tab="console"]').click();
+    await page.locator('#btnConsoleQueue').click();
+    await page.locator('#btnRenderAll').click();
 
-    // 3. Immediately click Stop to cancel S02
-    await page.locator('#btnStopRender').click();
-    await expect(page.locator('#renderStatusText')).toContainText(/Stopping|Stopped|Ready|Idle|Finished/i, { timeout: 10000 });
-    await expect(page.locator('#renderStatusText')).toContainText(/Stopped|Ready|Idle|Finished/i, { timeout: 15000 });
+    // 2. Immediately Stop via the toggle
+    await stopViaToggle(page);
 
-    // 4. Switch to Timeline and click Render Scene on S03
-    await page.locator('button[data-tab="timeline"]').click();
-    await page.evaluate(() => {
-      // @ts-ignore
-      window.selectScene(2);
-    });
-    await expect(page.locator('#inspectorSceneId')).toContainText('Scene S03');
-    await page.locator('#btnRenderSceneSingle').click();
+    // 3. Run again: the first pending item (S01) becomes the active task, not a stale one
+    await page.locator('#btnRenderAll').click();
+    await expect(page.locator('#btnRenderAll')).toContainText('Stop', { timeout: 8000 });
+    await expect(page.locator('#activeTaskTitle')).toContainText('S01', { timeout: 15000 });
 
-    // 5. Verify console tab switched, active task card shows S03 (NOT S02)
-    await expect(page.locator('#tab-console')).toBeVisible();
-    await expect(page.locator('#activeTaskTitle')).toContainText('S03');
-
-    // 6. Wait for S03 to complete
-    const statusText = page.locator('#renderStatusText');
-    await expect(statusText).toContainText(/Finished|Idle|Stopped|Ready/i, { timeout: 15000 });
+    // 4. Stop again so the run does not linger
+    await stopViaToggle(page);
 
     // 7. Reload the page to test resilience against ghost cards
     await page.reload();
@@ -367,19 +355,14 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
       ]);
     }
 
-    // 6. Trigger "Render Missing / Changed"
+    // 6. Click Run
     await page.locator('#btnRenderAll').click();
 
-    // 7. Verify active rendering starts
-    const statusText = page.locator('#renderStatusText');
-    await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
+    // 7. Verify active rendering starts (button flips to Stop)
+    await expect(page.locator('#btnRenderAll')).toContainText('Stop', { timeout: 8000 });
 
-    // 8. Clean up: click stop button and wait for termination
-    await Promise.all([
-      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
-      page.locator('#btnStopRender').click(),
-    ]);
-    await expect(statusText).toContainText(/Stopped|Ready|Idle|Finished/i, { timeout: 8000 });
+    // 8. Clean up: stop via the same toggle and wait for termination
+    await stopViaToggle(page);
   });
 
   test('12. Anchor image edits dynamically queue dependent scenes with ANCHOR reason', async ({ page }) => {
@@ -428,15 +411,11 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     const rows = page.locator('#queueTableBody tr');
     await expect(rows.nth(0)).toContainText('S02_Pass1_Left', { timeout: 8000 });
 
-    // 4. Verify S02:p1 is targeted and active
-    const statusText = page.locator('#renderStatusText');
-    await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
+    // 4. Verify S02:p1 is targeted and active (toggle shows Stop)
+    await expect(page.locator('#btnRenderAll')).toContainText('Stop', { timeout: 8000 });
 
     // 5. Clean up: stop render and wait for server to acknowledge termination
-    await Promise.all([
-      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
-      page.locator('#btnStopRender').click(),
-    ]);
+    await stopViaToggle(page);
   });
 
   test('14. Render Two-Pass Duet scene queues and executes Pass 1 followed by Pass 2', async ({ page }) => {
@@ -454,10 +433,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await expect(rows.nth(1)).toContainText('S02_Pass2_Final', { timeout: 8000 });
 
     // 3. Stop render and wait for server to acknowledge termination
-    await Promise.all([
-      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
-      page.locator('#btnStopRender').click(),
-    ]);
+    await stopViaToggle(page);
   });
 
   test('15. Dynamic queueing during active render: Add scene while another is actively rendering', async ({ page }) => {
@@ -473,10 +449,9 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await rows.nth(0).locator('button[title="Add to Queue"]').click();
     await expect(rows.nth(0)).toContainText('Queued', { timeout: 5000 });
 
-    // 3. Trigger render on S01
+    // 3. Click Run on the queued S01
     await page.locator('#btnRenderAll').click();
-    const statusText = page.locator('#renderStatusText');
-    await expect(statusText).toContainText(/Running|Finished/i, { timeout: 8000 });
+    await expect(page.locator('#btnRenderAll')).toContainText('Stop', { timeout: 8000 });
 
     // 4. Dynamically add S03 (row 3) to queue while engine is active
     const addBtnS03 = rows.nth(3).locator('button[title="Add to Queue"]');
@@ -486,13 +461,10 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     }
 
     // 5. Stop render and wait for server to acknowledge termination
-    await Promise.all([
-      page.waitForResponse((resp) => resp.url().includes('/api/render/stop') && resp.status() === 200),
-      page.locator('#btnStopRender').click(),
-    ]);
+    await stopViaToggle(page);
   });
 
-  test('16. Scene prompt edit in UI transitions badge to needs render and queues under Render Missing/Changed', async ({ page }) => {
+  test('16. Scene prompt edit in UI transitions badge to needs render and queues under Queue Missing / Changed', async ({ page }) => {
     // 1. Select scene S01 (index 0)
     await page.evaluate(() => {
       // @ts-ignore
@@ -520,7 +492,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
     await page.locator('button[data-tab="console"]').click();
     await page.locator('#btnConsoleQueue').click();
 
-    // 5. Trigger Queue All / Render Missing & Changed to refresh evaluation
+    // 5. Click Queue Missing / Changed to refresh evaluation
     await page.locator('#btnQueueAll').click();
     const s01Row = page.locator('#queueTableBody tr', { hasText: 'S01' });
     await expect(s01Row).toBeVisible({ timeout: 8000 });

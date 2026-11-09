@@ -69,6 +69,11 @@ def cmd_list(args):
     print("-" * 80)
 
 
+def _extract_aid(val: str) -> str:
+    m = re.match(r"^(A\d+)", str(val or "").strip(), re.IGNORECASE)
+    return m.group(1).upper() if m else str(val or "").strip()
+
+
 def cmd_summary(args):
     pjson, data = find_latest_project_json(args.slug)
     if not pjson or not data:
@@ -87,9 +92,9 @@ def cmd_summary(args):
     print("=" * 80)
     print(f"  Total Duration : {pcfg.get('total_duration', 0):.2f}s (FPS: {pcfg.get('fps', 24)})")
     print(f"  Master Res     : {pcfg.get('master_resolution', models.get('default_video_resolution', '1344x768'))}")
-    print(f"  Audio File     : {pcfg.get('audio', 'N/A')}")
-    print(f"  Default Model  : {models.get('default_model', 'N/A')}")
-    print(f"  Anchors ({len(anchors)}) : {', '.join(a.get('id', '?') for a in anchors)}")
+    print(f"  Audio File     : {pcfg.get('audio', pcfg.get('master_audio', 'N/A'))}")
+    print(f"  Default Model  : {models.get('default_model', models.get('default_video_renderer', 'N/A'))}")
+    print(f"  Anchors ({len(anchors)}) : {', '.join(_extract_aid(a.get('id') or a.get('filename', '?')) for a in anchors)}")
     print(f"  Markers ({len(markers)}) : {len(markers)} timeline cue points")
     print(f"  Total Scenes   : {len(scenes)}")
 
@@ -97,6 +102,34 @@ def cmd_summary(args):
     duet_count = sum(1 for s in scenes if "duet" in s.get("mode", "") or "two_pass" in s.get("mode", "") or "gva" in s.get("mode", ""))
     print(f"    - Solo Scenes: {solo_count}")
     print(f"    - Duet Scenes: {duet_count}")
+
+    pdir = PROJECTS_DIR / args.slug
+    manifest_file = pdir / "work" / "takes_manifest.json"
+    if manifest_file.is_file():
+        try:
+            m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            scs = m_data.get("scenes", {})
+            total_takes = sum(len(s.get("takes", [])) for s in scs.values())
+            print(f"  Render Vault   : {total_takes} takes recorded across {len(scs)} scenes")
+        except Exception:
+            pass
+
+    ckpts_file = pdir / "checkpoints" / "index.json"
+    if ckpts_file.is_file():
+        try:
+            c_data = json.loads(ckpts_file.read_text(encoding="utf-8"))
+            print(f"  Checkpoints    : {len(c_data.get('checkpoints', []))} saved milestones")
+        except Exception:
+            pass
+
+    chars_file = pdir / "characters.json"
+    if chars_file.is_file():
+        try:
+            ch_data = json.loads(chars_file.read_text(encoding="utf-8"))
+            print(f"  Characters     : {len(ch_data.get('characters', []))} registered character tags")
+        except Exception:
+            pass
+
     print("-" * 80)
 
 
@@ -108,7 +141,11 @@ def cmd_audit(args):
 
     pdir = PROJECTS_DIR / args.slug
     scenes = data.get("scenes", [])
-    anchors = {a.get("id"): a for a in data.get("anchors", []) if a.get("id")}
+    anchors: dict[str, dict] = {}
+    for a in data.get("anchors", []):
+        for k in (a.get("id"), a.get("filename"), _extract_aid(a.get("id") or a.get("filename", ""))):
+            if k:
+                anchors[str(k)] = a
     issues: list[str] = []
     warnings: list[str] = []
 
@@ -149,13 +186,43 @@ def cmd_audit(args):
                 if clean_st not in available_stems and f"{clean_st}.mp3" not in available_stems:
                     warnings.append(f"Scene {sid} {role} '{st}' not found in {audio_dir.name}/")
 
-    # 3. Anchor references
+        # Check render padding
+        for pk in ("render_pad_start", "pad_start", "head_overlap"):
+            if s.get(pk) is not None:
+                val = float(s[pk])
+                if val < 0:
+                    warnings.append(f"Scene {sid} {pk} is negative ({val}s)")
+                elif float(s.get("start", 0)) - val < -0.001:
+                    warnings.append(f"Scene {sid} render_pad_start ({val}s) exceeds scene start ({s.get('start', 0)}s); will clamp to 0.0s")
+                break
+        for pk in ("render_pad_end", "pad_end", "tail_overlap"):
+            if s.get(pk) is not None:
+                val = float(s[pk])
+                if val < 0:
+                    warnings.append(f"Scene {sid} {pk} is negative ({val}s)")
+                elif s.get("anchor_end") and val > 0:
+                    warnings.append(f"Scene {sid} sets both anchor_end and render_pad_end ({val}s); end anchor frame will be trimmed in master")
+                break
+
+    # 3. Anchor references & disk existence
+    cfg_anchors_rel = data.get("project", {}).get("directories", {}).get("anchors", "work/anchors")
+    anchor_dirs = [d for d in (pdir / cfg_anchors_rel, pdir / "work" / "anchors_v3", pdir / "work" / "anchors", pdir / "anchors") if d.is_dir()]
     for s in scenes:
         sid = s.get("id", "?")
-        for aid_key in ("anchor", "anchor_female"):
-            aid = s.get(aid_key)
-            if aid and aid not in anchors:
-                warnings.append(f"Scene {sid} references undefined anchor '{aid}'")
+        for aid_key in ("anchor", "anchor_end", "anchor_female"):
+            aid_val = s.get(aid_key)
+            if not aid_val:
+                continue
+            aid_short = _extract_aid(aid_val)
+            if aid_val not in anchors and aid_short not in anchors:
+                warnings.append(f"Scene {sid} references undefined {aid_key} '{aid_val}'")
+            elif anchor_dirs:
+                found_on_disk = any(
+                    (adir / aid_val).is_file() or any(f.is_file() for f in adir.glob(f"{aid_short}*"))
+                    for adir in anchor_dirs
+                )
+                if not found_on_disk:
+                    warnings.append(f"Scene {sid} {aid_key} '{aid_val}' file not found on disk")
 
     # 4. Render coverage check
     renders_dir = pdir / "work" / "renders_v3"
@@ -220,8 +287,10 @@ def cmd_show_scene(args):
     print(f"  Scene {scene.get('id')}: {scene.get('title', 'Untitled')} [{args.slug}]")
     print("=" * 80)
     print(f"  Timing   : {scene.get('start', 0)}s -> {scene.get('end', 0)}s ({float(scene.get('end', 0)) - float(scene.get('start', 0)):.2f}s duration)")
-    print(f"  Mode     : {scene.get('mode', 'solo')}")
-    print(f"  Anchor   : {scene.get('anchor', 'N/A')}" + (f" | Female: {scene.get('anchor_female')}" if scene.get('anchor_female') else ""))
+    print(f"  Mode     : {scene.get('mode', 'solo')} | Renderer: {scene.get('renderer', 'default')}")
+    print(f"  Anchor   : {scene.get('anchor', 'N/A')}" + (f" | End: {scene.get('anchor_end')}" if scene.get('anchor_end') else "") + (f" | Female: {scene.get('anchor_female')}" if scene.get('anchor_female') else ""))
+    if scene.get("render_pad_start") is not None or scene.get("render_pad_end") is not None:
+        print(f"  Padding  : Head +{scene.get('render_pad_start', 0.0)}s | Tail +{scene.get('render_pad_end', 0.0)}s")
     print(f"  Stem     : {scene.get('stem', 'N/A')}")
     print(f"  Out Name : {scene.get('output_name', 'N/A')}")
     if "prompt_pass1" in scene:
@@ -271,10 +340,50 @@ def cmd_set_scene(args):
         old_val = scene.get("anchor")
         scene["anchor"] = args.anchor
         changes.append(f"anchor: '{old_val}' -> '{args.anchor}'")
+    if getattr(args, "anchor_end", None) is not None:
+        old_val = scene.get("anchor_end")
+        if str(args.anchor_end).lower() in ("none", "null", "clear", ""):
+            scene.pop("anchor_end", None)
+            new_val = None
+        else:
+            scene["anchor_end"] = args.anchor_end
+            new_val = args.anchor_end
+        changes.append(f"anchor_end: '{old_val}' -> '{new_val}'")
     if args.stem is not None:
         old_val = scene.get("stem")
         scene["stem"] = args.stem
         changes.append(f"stem: '{old_val}' -> '{args.stem}'")
+    if getattr(args, "renderer", None) is not None:
+        old_val = scene.get("renderer")
+        new_val = None if str(args.renderer).lower() in ("null", "none", "default") else (int(args.renderer) if str(args.renderer).isdigit() else args.renderer)
+        scene["renderer"] = new_val
+        changes.append(f"renderer: {old_val} -> {new_val}")
+    if getattr(args, "pad_start", None) is not None:
+        old_val = scene.get("render_pad_start")
+        if str(args.pad_start).strip().lower() in ("none", "null", "clear", "default", ""):
+            scene.pop("render_pad_start", None)
+            new_val = None
+        else:
+            val = float(args.pad_start)
+            if val < 0:
+                print("❌ Error: --pad-start cannot be negative", file=sys.stderr)
+                sys.exit(1)
+            scene["render_pad_start"] = val
+            new_val = val
+        changes.append(f"render_pad_start: {old_val} -> {new_val}")
+    if getattr(args, "pad_end", None) is not None:
+        old_val = scene.get("render_pad_end")
+        if str(args.pad_end).strip().lower() in ("none", "null", "clear", "default", ""):
+            scene.pop("render_pad_end", None)
+            new_val = None
+        else:
+            val = float(args.pad_end)
+            if val < 0:
+                print("❌ Error: --pad-end cannot be negative", file=sys.stderr)
+                sys.exit(1)
+            scene["render_pad_end"] = val
+            new_val = val
+        changes.append(f"render_pad_end: {old_val} -> {new_val}")
 
     if not changes:
         print("ℹ️ No property modifications provided. Scene unchanged.")
@@ -284,8 +393,16 @@ def cmd_set_scene(args):
     bak = backup_file(pjson)
     pjson.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
+    try:
+        sys.path.insert(0, str(WORKSPACE_ROOT / "work"))
+        from ui.server_queue import compute_fast_project_queue
+        compute_fast_project_queue(args.slug)
+    except Exception:
+        pass
+
     print(f"✅ Successfully updated scene {scene.get('id')} in {pjson.name}")
-    print(f"   Backup written to: {bak.name}")
+    if bak:
+        print(f"   Backup written to: {bak.name}")
     for ch in changes:
         print(f"   - {ch}")
 
@@ -385,7 +502,11 @@ def main():
     p_set.add_argument("--mode", help="Generation mode")
     p_set.add_argument("--prompt", help="Prompt text")
     p_set.add_argument("--anchor", help="Anchor ID (e.g. A01)")
+    p_set.add_argument("--anchor-end", help="End Anchor ID (e.g. A02) or 'none'/'clear' to remove")
     p_set.add_argument("--stem", help="Audio stem filename")
+    p_set.add_argument("--renderer", help="Renderer profile index or ID (e.g. 1, 9, or null/default)")
+    p_set.add_argument("--pad-start", help="Head render padding in seconds, or 'none'/'clear'/'default' to remove")
+    p_set.add_argument("--pad-end", help="Tail render padding in seconds, or 'none'/'clear'/'default' to remove")
 
     # split-scene
     p_split = subparsers.add_parser("split-scene", help="Split a scene into two sequential sub-scenes")

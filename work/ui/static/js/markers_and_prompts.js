@@ -26,11 +26,15 @@ function addMarkerAtTime(t) {
   state.projectData.markers.sort((a, b) => a.time - b.time);
   const newIdx = state.projectData.markers.findIndex((m) => m === newMarker);
 
+  markProjectDirty();
   redrawTimeline();
   if (state.selectedSceneIdx !== null) {
     const sc = state.projectData.scenes[state.selectedSceneIdx];
     updateSceneMarkersBar(sc);
     updatePromptResolvedPreviews(sc);
+  }
+  if (typeof window.recordHistorySnapshot === "function") {
+    window.recordHistorySnapshot(`Add Marker ${newMarker.name}`);
   }
   openMarkerModal(newIdx !== -1 ? newIdx : state.projectData.markers.length - 1);
   showToast(`Placed marker at ${formatTime(t)}`);
@@ -110,11 +114,15 @@ function initMarkerModalEvents() {
     m.color = newColor;
 
     state.projectData.markers.sort((a, b) => a.time - b.time);
+    markProjectDirty();
     redrawTimeline();
     if (state.selectedSceneIdx !== null) {
       const sc = state.projectData.scenes[state.selectedSceneIdx];
       updateSceneMarkersBar(sc);
       updatePromptResolvedPreviews(sc);
+    }
+    if (typeof window.recordHistorySnapshot === "function") {
+      window.recordHistorySnapshot(`Edit Marker ${newName}`);
     }
     closeMarkerModal();
     showToast(`Saved marker: "${newName}" (${newTime}s)`);
@@ -125,11 +133,15 @@ function initMarkerModalEvents() {
     const m = state.projectData?.markers?.[state.selectedMarkerIdx];
     const name = m ? m.name : "marker";
     state.projectData.markers.splice(state.selectedMarkerIdx, 1);
+    markProjectDirty();
     redrawTimeline();
     if (state.selectedSceneIdx !== null) {
       const sc = state.projectData.scenes[state.selectedSceneIdx];
       updateSceneMarkersBar(sc);
       updatePromptResolvedPreviews(sc);
+    }
+    if (typeof window.recordHistorySnapshot === "function") {
+      window.recordHistorySnapshot(`Delete Marker ${name}`);
     }
     closeMarkerModal();
     showToast(`Deleted marker: "${name}"`);
@@ -159,10 +171,21 @@ function updateSceneMarkersBar(sc) {
     return;
   }
 
+  let rawHead = null;
+  for (const k of ["render_pad_start", "pad_start", "head_overlap"]) {
+    if (sc[k] !== undefined && sc[k] !== null && String(sc[k]).trim() !== "") { rawHead = Number(sc[k]); break; }
+  }
+  if (rawHead === null && sc.render_overlap !== undefined && sc.render_overlap !== null) {
+    rawHead = typeof sc.render_overlap === "object" ? Number(sc.render_overlap.head || 0) : Number(sc.render_overlap);
+  }
+  if (rawHead === null) rawHead = Number(state.projectData?.project?.render_overlap_seconds || 0);
+  const headPad = Math.max(0, Math.min(rawHead, Number(sc.start || 0)));
+  const reqStart = Math.max(0, Number(sc.start || 0) - headPad);
+
   bar.style.display = "block";
   list.innerHTML = "";
   inScene.forEach((m) => {
-    const rel = m.time - sc.start;
+    const rel = m.time - reqStart;
     const fps = Number(state.projectData?.project?.fps) || 24;
     const relFrames = Math.max(0, Math.round(rel * fps));
     const pill = document.createElement("div");
@@ -209,6 +232,9 @@ function insertMarkerTagIntoPrompt(tag) {
   textarea.focus();
 
   textarea.dispatchEvent(new Event("input"));
+  if (typeof window.recordHistorySnapshot === "function") {
+    window.recordHistorySnapshot(`Insert Tag ${tag}`);
+  }
   showToast(`Inserted ${tag}`);
 }
 
@@ -230,5 +256,8 @@ window.addEventListener("resize", resizeAllPromptTextareas);
 
 function updatePromptResolvedPreviews(sc) {
   resizeAllPromptTextareas();
+  if (window.updatePromptReferenceTray) {
+    window.updatePromptReferenceTray(sc);
+  }
 }
 

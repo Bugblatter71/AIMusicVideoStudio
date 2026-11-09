@@ -21,8 +21,15 @@ def diagnose_project(slug: str) -> dict:
     jobs_dir = proj_dir / "work" / "jobs_v3"
     queue_file = jobs_dir / "v3_queue.json"
     hashes_file = jobs_dir / "state_hashes.json"
+    if not hashes_file.is_file():
+        alt_hashes = proj_dir / "work" / "state_hashes.json"
+        if alt_hashes.is_file():
+            hashes_file = alt_hashes
+
     status_file = jobs_dir / "engine_status.json"
     cancel_file = jobs_dir / "cancel_request.json"
+    manifest_file = proj_dir / "work" / "takes_manifest.json"
+    ckpts_file = proj_dir / "checkpoints" / "index.json"
 
     result = {
         "slug": slug,
@@ -30,10 +37,28 @@ def diagnose_project(slug: str) -> dict:
         "hashes_file_exists": hashes_file.is_file(),
         "engine_status_exists": status_file.is_file(),
         "cancel_requested": cancel_file.is_file(),
+        "vault_stats": {"total_takes": 0, "scenes": 0},
+        "checkpoints_count": 0,
         "summary": {"total": 0, "queued": 0, "completed": 0, "skipped": 0, "rendering": 0, "failed": 0},
         "items": [],
         "engine_status": None,
     }
+
+    if manifest_file.is_file():
+        try:
+            m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+            scs = m_data.get("scenes", {})
+            total_takes = sum(len(s.get("takes", [])) for s in scs.values())
+            result["vault_stats"] = {"total_takes": total_takes, "scenes": len(scs)}
+        except Exception:
+            pass
+
+    if ckpts_file.is_file():
+        try:
+            c_data = json.loads(ckpts_file.read_text(encoding="utf-8"))
+            result["checkpoints_count"] = len(c_data.get("checkpoints", []))
+        except Exception:
+            pass
 
     if status_file.is_file():
         try:
@@ -105,6 +130,12 @@ def main():
     print(f"  Rendering    : {summ.get('rendering', 0)}")
     if summ.get("failed", 0) > 0:
         print(f"  Failed       : {summ['failed']}")
+
+    vstats = diag.get("vault_stats", {})
+    if vstats.get("total_takes", 0) > 0:
+        print(f"  Render Vault : {vstats['total_takes']} takes recorded across {vstats['scenes']} scenes")
+    if diag.get("checkpoints_count", 0) > 0:
+        print(f"  Checkpoints  : {diag['checkpoints_count']} saved milestones")
 
     if diag.get("cancel_requested"):
         print("\n  ⚠️ ATTENTION: Stale 'cancel_request.json' file is present in jobs_v3/ directory!")

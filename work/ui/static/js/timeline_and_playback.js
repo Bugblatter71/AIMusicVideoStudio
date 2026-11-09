@@ -1,6 +1,4 @@
-// ============================================================================
 // Audio & Waveform Engine (Web Audio API + Canvas)
-// ============================================================================
 async function loadProjectAudio() {
   const pcfg = state.projectData.project || {};
   let audioFile = pcfg.master_audio || "";
@@ -36,15 +34,12 @@ async function loadProjectAudio() {
   redrawTimeline();
 }
 
-let isScrubbingRuler = false;
+let isScrubbingRuler = false, isRightClickDragging = false, rightClickStartX = 0, rightClickStartScrollLeft = 0;
 
 function togglePlayback() {
   if (state.isPlaying) {
     audioEl.pause();
-    const clipVideo = document.getElementById("clipVideoPlayer");
-    if (clipVideo && !clipVideo.paused) clipVideo.pause();
-    const masterVideo = document.getElementById("masterVideoPlayer");
-    if (masterVideo && !masterVideo.paused) masterVideo.pause();
+    ["clipVideoPlayer", "masterVideoPlayer"].forEach((id) => { const v = document.getElementById(id); if (v && !v.paused) v.pause(); });
   } else {
     audioEl.play().catch((e) => console.warn("Audio play prevented:", e));
   }
@@ -52,18 +47,8 @@ function togglePlayback() {
 
 document.getElementById("btnPlayPause").addEventListener("click", togglePlayback);
 document.getElementById("btnStop").addEventListener("click", () => {
-  audioEl.pause();
-  audioEl.currentTime = 0;
-  const clipVideo = document.getElementById("clipVideoPlayer");
-  if (clipVideo) {
-    clipVideo.pause();
-    clipVideo.currentTime = 0;
-  }
-  const masterVideo = document.getElementById("masterVideoPlayer");
-  if (masterVideo) {
-    masterVideo.pause();
-    masterVideo.currentTime = 0;
-  }
+  audioEl.pause(); audioEl.currentTime = 0;
+  ["clipVideoPlayer", "masterVideoPlayer"].forEach((id) => { const v = document.getElementById(id); if (v) { v.pause(); v.currentTime = 0; } });
   state.isPlaying = false;
   document.getElementById("btnPlayPause").textContent = "▶ Play";
   seekTimeline(0, null, true);
@@ -133,7 +118,7 @@ function updatePlayheadVisual(timeSec, autoScroll = false) {
   }
 
   // Auto-scroll timeline to keep playhead within view
-  if (autoScroll && scrollContainer) {
+  if (autoScroll && scrollContainer && !isRightClickDragging) {
     const sl = scrollContainer.scrollLeft;
     const cw = scrollContainer.clientWidth;
     if (x > sl + cw - 40) {
@@ -142,6 +127,14 @@ function updatePlayheadVisual(timeSec, autoScroll = false) {
       scrollContainer.scrollLeft = Math.max(0, x - 80);
     }
   }
+}
+
+function getClipRenderStart(sc) {
+  const clips = state.assets?.clips || {};
+  const c = clips[sc.id] || clips[sc.id?.toUpperCase()] || clips[sc.id?.toLowerCase()];
+  if (c && typeof c.render_start === "number") return c.render_start;
+  const k = Object.keys(clips).find((x) => x.startsWith(`${sc.id}_`) || x === `${sc.id}.mp4`);
+  return (k && typeof clips[k]?.render_start === "number") ? clips[k].render_start : sc.start;
 }
 
 function updateAudioPlayheadLoop() {
@@ -154,7 +147,7 @@ function updateAudioPlayheadLoop() {
   if (clipVideo && clipVideo.src && clipVideo.paused && state.selectedSceneIdx !== null) {
     const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
     if (sc && cur >= sc.start && cur < sc.end) {
-      const rel = cur - sc.start;
+      const rel = cur - getClipRenderStart(sc);
       if (Math.abs(clipVideo.currentTime - rel) > 0.08) {
         clipVideo.currentTime = rel;
       }
@@ -169,10 +162,7 @@ function updateClipVideoPlayheadLoop() {
   if (!clipVideo || clipVideo.paused || clipVideo.ended) return;
   if (state.selectedSceneIdx !== null) {
     const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-    if (sc) {
-      const globalTime = sc.start + clipVideo.currentTime;
-      updatePlayheadVisual(globalTime, true);
-    }
+    if (sc) updatePlayheadVisual(getClipRenderStart(sc) + clipVideo.currentTime, true);
   }
   requestAnimationFrame(updateClipVideoPlayheadLoop);
 }
@@ -215,17 +205,13 @@ function initMediaSyncEvents() {
     clipVideo.addEventListener("timeupdate", () => {
       if (!isScrubbingRuler && state.selectedSceneIdx !== null) {
         const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-        if (sc) {
-          updatePlayheadVisual(sc.start + clipVideo.currentTime, !clipVideo.paused);
-        }
+        if (sc) updatePlayheadVisual(getClipRenderStart(sc) + clipVideo.currentTime, !clipVideo.paused);
       }
     });
     clipVideo.addEventListener("seeked", () => {
       if (!isScrubbingRuler && state.selectedSceneIdx !== null) {
         const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-        if (sc) {
-          updatePlayheadVisual(sc.start + clipVideo.currentTime, false);
-        }
+        if (sc) updatePlayheadVisual(getClipRenderStart(sc) + clipVideo.currentTime, false);
       }
     });
   }
@@ -284,11 +270,12 @@ function redrawTimeline() {
   const bottomMargin = 16;
   const totalHeight = trackTop + trackHeight + bottomMargin;
 
-  canvas.width = totalWidth;
-  canvas.height = totalHeight;
-
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
+  if (canvas.width !== totalWidth) {
+    canvas.width = totalWidth;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+  }
+  if (canvas.height !== totalHeight) canvas.height = totalHeight;
 
   if (playhead) {
     playhead.style.height = `${totalHeight}px`;
@@ -388,6 +375,10 @@ function redrawTimeline() {
 
     ctx.fillStyle = grad;
     ctx.fillRect(sx, trackTop, sw, trackHeight);
+    if (sc.render_pad_start > 0 || sc.render_pad_end > 0) {
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(sx, trackTop, sw, 2);
+    }
 
     // 1. If Video rendered: Show multiple thumbnails from video (filmstrip)
     let stripDrawn = false;
@@ -411,19 +402,27 @@ function redrawTimeline() {
         ctx.beginPath();
         ctx.rect(sx, trackTop, sw, trackHeight);
         ctx.clip();
-        ctx.drawImage(stripImg, sx, trackTop, sw, trackHeight);
 
-        // Frame separator lines across sw for distinct multiple thumbnails (dynamically matches strip image frame count)
-        ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
-        ctx.lineWidth = 1;
+        // Maintain original 16:9 aspect ratio for each clip thumbnail
         const frameAspect = stripImg.naturalHeight > 0 ? stripImg.naturalWidth / stripImg.naturalHeight : 1;
         const numFrames = Math.max(1, Math.round(frameAspect / (16 / 9)));
-        for (let f = 1; f < numFrames; f++) {
-          const fx = sx + (sw * f) / numFrames;
-          ctx.beginPath();
-          ctx.moveTo(fx, trackTop);
-          ctx.lineTo(fx, trackTop + trackHeight);
-          ctx.stroke();
+        const thumbAspect = 16 / 9;
+        const thumbW = Math.max(20, trackHeight * thumbAspect);
+        const srcFrameW = stripImg.naturalWidth / numFrames;
+        const numThumbs = Math.ceil(sw / thumbW);
+
+        for (let i = 0; i < numThumbs; i++) {
+          const curX = sx + i * thumbW;
+          const f = Math.min(numFrames - 1, Math.floor((i / Math.max(1, numThumbs)) * numFrames));
+          ctx.drawImage(stripImg, f * srcFrameW, 0, srcFrameW, stripImg.naturalHeight, curX, trackTop, thumbW, trackHeight);
+          if (i > 0) {
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(curX, trackTop);
+            ctx.lineTo(curX, trackTop + trackHeight);
+            ctx.stroke();
+          }
         }
         ctx.restore();
         stripDrawn = true;
@@ -467,45 +466,50 @@ function redrawTimeline() {
     ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
     ctx.fillRect(sx, trackTop, sw, 18);
 
-    // Scene ID & timing
-    ctx.fillStyle = "#ffffff";
+    // Status badge calculations
+    const aid = extractAnchorId(sc.anchor);
+    const badgeW = (hasClip && sw > 90) ? 48 : (aid && sw > 90 ? 46 : 0);
+    const rightLimit = sx + sw - (badgeW > 0 ? badgeW + 6 : 6);
+
+    // Sticky Scene ID & timing (stays visible while scrolling left until no room)
+    const curScrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+    const labelX = Math.max(sx + 6, curScrollLeft + 6);
+    const fullLabel = `${sc.id} [${(sc.end - sc.start).toFixed(1)}s]`;
     ctx.font = "bold 11px sans-serif";
-    ctx.fillText(`${sc.id} [${(sc.end - sc.start).toFixed(1)}s]`, sx + 6, trackTop + 13);
+    const fullW = ctx.measureText(fullLabel).width;
+    const shortW = ctx.measureText(sc.id).width;
+    const labelToDraw = (labelX + fullW <= rightLimit) ? fullLabel : ((labelX + shortW <= rightLimit) ? sc.id : null);
+    if (labelToDraw) {
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(labelToDraw, labelX, trackTop + 13);
+    }
+
+    const qItem = (state.renderQueue || []).find((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
+    const isQueued = qItem && (qItem.status === "queued" || qItem.needs_render);
+    const isRendering = qItem && qItem.status === "rendering";
 
     // Status badge (Top right of block)
-    const aid = extractAnchorId(sc.anchor);
-    if (hasClip) {
-      if (sw > 90) {
-        ctx.fillStyle = "rgba(16, 185, 129, 0.95)";
-        if (ctx.roundRect) {
-          ctx.beginPath();
-          ctx.roundRect(sx + sw - 48, trackTop + 2, 44, 14, 2);
-          ctx.fill();
-        } else {
-          ctx.fillRect(sx + sw - 48, trackTop + 2, 44, 14);
-        }
-        ctx.fillStyle = "#ffffff";
-        ctx.font = "bold 8.5px sans-serif";
-        ctx.fillText("▶ VIDEO", sx + sw - 44, trackTop + 12);
-      }
-    } else if (aid) {
-      if (sw > 90) {
-        ctx.fillStyle = "rgba(56, 189, 248, 0.85)";
-        if (ctx.roundRect) {
-          ctx.beginPath();
-          ctx.roundRect(sx + sw - 46, trackTop + 2, 42, 14, 2);
-          ctx.fill();
-        } else {
-          ctx.fillRect(sx + sw - 46, trackTop + 2, 42, 14);
-        }
-        ctx.fillStyle = "#000000";
-        ctx.font = "bold 8.5px sans-serif";
-        ctx.fillText(`⚓ ${aid}`, sx + sw - 42, trackTop + 12);
-      }
+    if (badgeW > 0) {
+      let bBg = hasClip ? (isQueued ? "rgba(245, 158, 11, 0.95)" : "rgba(16, 185, 129, 0.95)") : "rgba(56, 189, 248, 0.85)";
+      let bTxt = hasClip ? (isQueued ? "▶ QUEUED" : "▶ VIDEO") : `⚓ ${aid}`;
+      let tCol = hasClip ? "#ffffff" : "#000000";
+      if (isRendering) { bBg = "rgba(56, 189, 248, 0.95)"; bTxt = "⚡ RENDERING"; tCol = "#ffffff"; }
+      ctx.fillStyle = bBg;
+      const bx = sx + sw - badgeW;
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, trackTop + 2, badgeW - 4, 14, 2); ctx.fill(); }
+      else { ctx.fillRect(bx, trackTop + 2, badgeW - 4, 14); }
+      ctx.fillStyle = tCol;
+      ctx.font = "bold 8.5px sans-serif";
+      ctx.fillText(bTxt, bx + 4, trackTop + 12);
     }
 
     // Outline Border
-    ctx.strokeStyle = isSelected ? "#38bdf8" : (hasClip ? "rgba(16, 185, 129, 0.55)" : "rgba(255, 255, 255, 0.25)");
+    let borderCol = "rgba(255, 255, 255, 0.25)";
+    if (isSelected) borderCol = "#38bdf8";
+    else if (isRendering) borderCol = "rgba(56, 189, 248, 0.8)";
+    else if (hasClip && isQueued) borderCol = "rgba(245, 158, 11, 0.75)";
+    else if (hasClip) borderCol = "rgba(16, 185, 129, 0.55)";
+    ctx.strokeStyle = borderCol;
     ctx.lineWidth = isSelected ? 2.5 : 1;
     ctx.strokeRect(sx, trackTop, sw, trackHeight);
   });
@@ -623,16 +627,56 @@ function setupCanvasEvents() {
   const zoomSlider = document.getElementById("timelineZoom");
 
   if (zoomSlider) {
+    zoomSlider.min = "1.0";
+    zoomSlider.max = "3.5";
+    zoomSlider.step = "0.25";
+    zoomSlider.value = String(state.zoom || 1.0);
+
     zoomSlider.addEventListener("input", (e) => {
       const val = parseFloat(e.target.value);
-      state.zoom = val === 0 ? 0.35 : val;
+      state.zoom = Math.max(1.0, isNaN(val) ? 1.0 : val);
       redrawTimeline();
       updatePlayheadVisual(state.playheadTime || audioEl.currentTime);
     });
   }
 
-  // Top ruler & timeline positioning / scrubbing / boundary dragging
+  // Top ruler & timeline positioning / scrubbing / boundary dragging / right-click drag scrolling
+  if (scrollContainer) {
+    let scrollRafId = null;
+    scrollContainer.addEventListener("scroll", () => {
+      if (!scrollRafId) {
+        scrollRafId = requestAnimationFrame(() => {
+          scrollRafId = null;
+          redrawTimeline();
+        });
+      }
+    });
+    scrollContainer.addEventListener("contextmenu", (e) => e.preventDefault());
+    scrollContainer.addEventListener("mousedown", (e) => {
+      if (e.button === 2 && e.target !== canvas) {
+        isRightClickDragging = true;
+        rightClickStartX = e.clientX;
+        rightClickStartScrollLeft = scrollContainer.scrollLeft;
+        scrollContainer.style.cursor = "grabbing";
+        canvas.style.cursor = "grabbing";
+        e.preventDefault();
+      }
+    });
+  }
+  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
   canvas.addEventListener("mousedown", (e) => {
+    if (e.button === 2) {
+      // Right-click: start timeline drag scrolling
+      isRightClickDragging = true;
+      rightClickStartX = e.clientX;
+      rightClickStartScrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+      canvas.style.cursor = "grabbing";
+      if (scrollContainer) scrollContainer.style.cursor = "grabbing";
+      e.preventDefault();
+      return;
+    }
+
     if (e.button !== 0) return; // Left click only
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
@@ -643,6 +687,10 @@ function setupCanvasEvents() {
     // 0. Check if clicked on a draggable scene boundary
     const boundaryIdx = findHoveredBoundary(clickX, clickY);
     if (boundaryIdx !== null) {
+      if (typeof window.beginEditSession === "function") {
+        const sc = state.projectData?.scenes?.[boundaryIdx];
+        window.beginEditSession(`boundary:${boundaryIdx}`, `Drag Scene Boundary ${sc ? sc.id : ""}`.trim());
+      }
       state.isDraggingBoundary = true;
       state.draggedBoundaryIdx = boundaryIdx;
       selectScene(boundaryIdx);
@@ -687,8 +735,14 @@ function setupCanvasEvents() {
     seekTimeline(clickTime, null, true);
   });
 
-  // Smooth scrubbing & boundary dragging while mouse moves across window
+  // Smooth scrubbing, boundary dragging & right-click panning while mouse moves across window
   window.addEventListener("mousemove", (e) => {
+    if (isRightClickDragging && scrollContainer) {
+      const dx = e.clientX - rightClickStartX;
+      scrollContainer.scrollLeft = rightClickStartScrollLeft - dx;
+      return;
+    }
+
     if (state.isDraggingBoundary && state.draggedBoundaryIdx !== null) {
       const rect = canvas.getBoundingClientRect();
       const pps = state.pixelsPerSecond * state.zoom;
@@ -713,10 +767,18 @@ function setupCanvasEvents() {
   });
 
   window.addEventListener("mouseup", () => {
+    if (isRightClickDragging) {
+      isRightClickDragging = false;
+      canvas.style.cursor = "";
+      if (scrollContainer) scrollContainer.style.cursor = "";
+    }
     if (state.isDraggingBoundary) {
       state.isDraggingBoundary = false;
       state.draggedBoundaryIdx = null;
       redrawTimeline();
+      if (typeof window.commitEditSession === "function") {
+        window.commitEditSession();
+      }
     }
     if (isScrubbingRuler) {
       isScrubbingRuler = false;
@@ -725,6 +787,10 @@ function setupCanvasEvents() {
 
   // Dynamic hover cursor over timeline canvas
   canvas.addEventListener("mousemove", (e) => {
+    if (isRightClickDragging) {
+      canvas.style.cursor = "grabbing";
+      return;
+    }
     if (state.isDraggingBoundary) {
       canvas.style.cursor = "col-resize";
       return;
@@ -752,13 +818,7 @@ function setupCanvasEvents() {
     }
 
     const curTrackBottom = 84 + Math.max(30, Math.round(60 * (state.zoom || 1)));
-    if (my <= 24) {
-      canvas.style.cursor = "pointer";
-    } else if (my >= 84 && my <= curTrackBottom) {
-      canvas.style.cursor = "pointer";
-    } else {
-      canvas.style.cursor = "crosshair";
-    }
+    canvas.style.cursor = (my <= 24 || (my >= 84 && my <= curTrackBottom)) ? "pointer" : "crosshair";
   });
 
   // Double-click on ruler adds marker at click time
@@ -774,9 +834,7 @@ function setupCanvasEvents() {
   });
 
   // Add Marker button in transport bar
-  document.getElementById("btnAddMarker")?.addEventListener("click", () => {
-    addMarkerAtPlayhead();
-  });
+  document.getElementById("btnAddMarker")?.addEventListener("click", addMarkerAtPlayhead);
 
   window.addEventListener("resize", () => {
     redrawTimeline();

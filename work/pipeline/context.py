@@ -17,10 +17,38 @@ from .media_utils import (
 )
 from .prompts import (
     adapt_video_prompt,
+    build_ref2va_prompt,
     expand_variables,
     extract_anchor_id,
     resolve_marker_prompt,
+    resolve_scene_refs,
+    strip_dangling_ref_tags,
 )
+
+
+def resolve_scene_padding(sc: dict | None, proj_head: float = 0.0, proj_tail: float = 0.0) -> tuple[float, float]:
+    """Resolves (head_pad_s, tail_pad_s) following scene-override -> project-default hierarchy."""
+    p_head, p_tail = max(0.0, float(proj_head or 0.0)), max(0.0, float(proj_tail or 0.0))
+    if not isinstance(sc, dict): return p_head, p_tail
+
+    def _parse(val):
+        if val is None: return None
+        try: s = str(val).strip(); return float(s) if s else None
+        except (ValueError, TypeError): return None
+
+    ov = sc.get("render_overlap") if sc.get("render_overlap") is not None else sc.get("render_overlap_seconds")
+    head = next((_parse(sc[k]) for k in ("render_pad_start", "pad_start", "head_overlap") if _parse(sc.get(k)) is not None), None)
+    if head is None and ov is not None:
+        head = _parse(ov.get("head")) if isinstance(ov, dict) else _parse(ov)
+    if head is None: head = p_head
+
+    tail = next((_parse(sc[k]) for k in ("render_pad_end", "pad_end", "tail_overlap") if _parse(sc.get(k)) is not None), None)
+    if tail is None and ov is not None:
+        tail = _parse(ov.get("tail")) if isinstance(ov, dict) else _parse(ov)
+    if tail is None: tail = 0.0 if sc.get("anchor_end") else p_tail
+
+    sc_start = max(0.0, _parse(sc.get("start")) or 0.0)
+    return round(max(0.0, min(head, sc_start)), 3), round(max(0.0, tail), 3)
 
 
 class ProjectContext:
@@ -28,6 +56,7 @@ class ProjectContext:
 
     def __init__(self, json_path: Path, profiles_path: Path | None = None):
         self.json_path = Path(json_path).resolve()
+        self.config_file = self.json_path
         if not self.json_path.exists():
             raise FileNotFoundError(f"Configuration JSON not found: {self.json_path}")
 
@@ -68,6 +97,10 @@ class ProjectContext:
         self.run_controls = raw.get("run_controls", {})
         self.variables = raw.get("variables", {})
         self.markers = raw.get("markers", [])
+
+        from .characters import build_tag_lookup, synthesize_default_characters
+        self.characters = synthesize_default_characters(raw, self.project_dir)
+        self.tag_lookup = build_tag_lookup(self.characters, self.project_dir)
 
         # Resolve WGP root with auto-detection fallback across standard Pinokio locations
         wgp_str = os.environ.get("WGP_ROOT") or env.get("wgp_root", "")
@@ -299,7 +332,7 @@ class ProjectContext:
         self.no_queue_sync = False
 
     def scan_anchor_disk_files(self) -> dict[str, Path]:
-        """Scans self.anchors_dir for any image files starting with Ann (e.g. A01, A02 ... A14).
+        """Scans self.anchors_dir for any image files starting with Ann (e.g. A01, A05b ... A14).
         Returns a dictionary mapping 'A01' -> Path(...), etc.
         """
         if not self.anchors_dir.exists():
@@ -309,7 +342,7 @@ class ProjectContext:
         for p in sorted(self.anchors_dir.iterdir()):
             if p.is_file() and p.suffix.lower() in exts:
                 aid = extract_anchor_id(p.name)
-                if aid.startswith("A") and aid[1:].isdigit():
+                if re.match(r"^A\d{2}[a-z]?$", aid, re.IGNORECASE):
                     res[aid] = p
         return res
 
@@ -427,6 +460,17 @@ class ProjectContext:
         return {"anchors": {}, "tasks": {}}
 
     def save_state_hashes(self, state: dict):
+        if self.state_hash_file.exists():
+            try:
+                disk = json.loads(self.state_hash_file.read_text(encoding="utf-8"))
+                for section in ("tasks", "task_settings", "scene_renders", "anchors", "anchor_file_hashes", "trim_cache"):
+                    if section in disk and isinstance(disk[section], dict):
+                        target = state.setdefault(section, {})
+                        for k, v in disk[section].items():
+                            if k not in target:
+                                target[k] = v
+            except Exception:
+                pass
         self.state_hash_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
     def model_fps(self, rspec: dict | None = None) -> float:
@@ -460,10 +504,16 @@ class ProjectContext:
             calculated = min(int(spec["max_frames"]), calculated)
         return calculated
 
+    def get_scene_render_padding(self, sc: dict) -> tuple[float, float]:
+        return resolve_scene_padding(sc, self.head_overlap_s, self.tail_overlap_s)
+
     def slice_audio(self, src_audio: Path, start_s: float, dur_s: float, out_wav: Path):
         expected_size = round(dur_s * 176400) + 44
+        sig = f"{start_s:.3f}:{dur_s:.3f}"
+        meta = out_wav.with_suffix(".slice")
         if out_wav.exists() and abs(out_wav.stat().st_size - expected_size) < 4000:
-            return
+            if not meta.exists() or meta.read_text(encoding="utf-8").strip() == sig:
+                return
         subprocess.run(
             [
                 str(self.ffmpeg), "-y", "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}",
@@ -471,6 +521,10 @@ class ProjectContext:
             ],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+        try:
+            meta.write_text(sig, encoding="utf-8")
+        except OSError:
+            pass
 
     def ensure_silent_wav(self, dur_s: float, frames: int) -> Path:
         out_wav = self.audio_dir / f"silent_{frames}f.wav"
@@ -552,6 +606,34 @@ class ProjectContext:
         )
         return mask_mp4
 
+    def resolve_scene_image_refs(self, sc: dict, prompt: str = "") -> list[Path]:
+        """Resolves available reference image candidates for a given scene."""
+        if "image_refs" in sc:
+            if not sc["image_refs"]:
+                return []
+            return [resolve_path(self.project_dir, p) for p in sc["image_refs"]]
+
+        raw_prompt = str(sc.get("prompt") or sc.get("prompt_m") or prompt)
+        anchor_name = str(sc.get("anchor") or "")
+        if "NIGHTOUT" in raw_prompt or "A11" in anchor_name:
+            nightout_dir = self.project_dir / "references" / "nightout"
+            if nightout_dir.exists() and nightout_dir.is_dir():
+                candidates = [
+                    nightout_dir / "male_nightout_front34.jpg",
+                    nightout_dir / "male_nightout_profile.jpg",
+                    nightout_dir / "female_nightout_front34.jpg",
+                    nightout_dir / "female_nightout_profile.jpg",
+                ]
+                valid = [p for p in candidates if p.exists()]
+                if valid:
+                    return valid
+
+        vrefs = self.video_shared_cfg.get("image_refs")
+        if vrefs:
+            return [resolve_path(self.project_dir, p) for p in vrefs]
+
+        return [Path(p) for p in self.anchor_refs if Path(p).exists()]
+
     def make_video_task(
         self,
         output_filename: str,
@@ -563,6 +645,8 @@ class ProjectContext:
         rspec: dict,
         video_guide: Path | None = None,
         video_mask: Path | None = None,
+        image_refs: list[Path | str] | None = None,
+        image_end: Path | None = None,
     ) -> dict:
         vshared = self.video_shared_cfg
         expanded = expand_variables(prompt, self.variables)
@@ -576,9 +660,45 @@ class ProjectContext:
             or "fasth3" in mtype.lower()
             or "singularity" in mtype.lower()
         )
+        supports_refs = bool(rspec.get("supports_image_refs", is_ref2va))
+        supports_end = bool(rspec.get("supports_end_anchor", not is_ref2va)) and not (video_guide and video_mask)
+        has_end = bool(supports_end and image_end and Path(image_end).exists())
         raw_apt = rspec.get("audio_prompt_type", vshared.get("audio_prompt_type", ""))
         if is_ref2va and raw_apt == "A":
             raw_apt = "AS"
+
+        video_prompt_type = pass2_vpt if (video_guide and video_mask) else ""
+        resolved_refs: list[Path] = []
+        from .characters import compile_character_prompt, find_prompt_entities
+
+        has_at_tag = bool(re.search(r"@[a-zA-Z0-9_-]+", prompt))
+        if getattr(self, "tag_lookup", None) and (
+            has_at_tag
+            or (supports_refs and (find_prompt_entities(prompt, self.tag_lookup) or find_prompt_entities(expanded, self.tag_lookup)))
+        ):
+            compiled_prompt, resolved_refs = compile_character_prompt(
+                prompt, self.tag_lookup, supports_refs=supports_refs, fallback_refs=image_refs, has_end=has_end
+            )
+            if supports_refs:
+                adapted_prompt = compiled_prompt
+            else:
+                adapted_prompt = adapt_video_prompt(compiled_prompt, rspec.get("prompt_style", "h3"))
+            if resolved_refs:
+                if "I" not in video_prompt_type:
+                    video_prompt_type = (video_prompt_type + "I").strip()
+        elif supports_refs and image_refs:
+            resolved_refs, ref_map = resolve_scene_refs(expanded, image_refs)
+            if resolved_refs:
+                if "I" not in video_prompt_type:
+                    video_prompt_type = (video_prompt_type + "I").strip()
+                adapted_prompt = build_ref2va_prompt(expanded, ref_map)
+        else:
+            adapted_prompt = strip_dangling_ref_tags(adapted_prompt)
+
+        raw_ipt = str(rspec.get("image_prompt_type", vshared.get("image_prompt_type", "S")))
+        if has_end and "E" not in raw_ipt:
+            raw_ipt = "SE" if ("S" in raw_ipt or not raw_ipt) else f"{raw_ipt}E"
+
         task = {
             "model_type": mtype,
             "prompt": adapted_prompt,
@@ -593,8 +713,8 @@ class ProjectContext:
             "repeat_generation": rspec.get("repeat_generation", vshared.get("repeat_generation", 1)),
             "multi_prompts_gen_type": rspec.get("multi_prompts_gen_type", vshared.get("multi_prompts_gen_type", "PG")),
             "image_mode": rspec.get("image_mode", vshared.get("image_mode", 0)),
-            "image_prompt_type": rspec.get("image_prompt_type", vshared.get("image_prompt_type", "S")),
-            "video_prompt_type": pass2_vpt if (video_guide and video_mask) else "",
+            "image_prompt_type": raw_ipt,
+            "video_prompt_type": video_prompt_type,
             "audio_prompt_type": raw_apt,
             "image_start": str(image_start),
             "audio_guide": str(audio_path) if "A" in raw_apt else "",
@@ -611,6 +731,16 @@ class ProjectContext:
             "custom_settings": dict(rspec.get("custom_settings", vshared.get("custom_settings", {}))),
             "output_filename": output_filename,
         }
+        if has_end:
+            task["image_end"] = str(image_end)
+        if resolved_refs:
+            task["image_refs"] = [str(p) for p in resolved_refs]
+            task["image_refs_relative_size"] = rspec.get(
+                "image_refs_relative_size", vshared.get("image_refs_relative_size", 100)
+            )
+            task["remove_background_images_ref"] = rspec.get(
+                "remove_background_images_ref", vshared.get("remove_background_images_ref", 0)
+            )
         if "flow_shift" in rspec or "flow_shift" in vshared:
             task["flow_shift"] = rspec.get("flow_shift", vshared.get("flow_shift", 12.0))
         mtype = rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd")
@@ -701,9 +831,16 @@ class ProjectContext:
         return cfg
 
 
-from pipeline.scene_ops import (
-    derive_split_scene_ids,
-    split_scene_in_project_data,
-    delete_scene_in_project_data,
-)
+try:
+    from .scene_ops import (
+        derive_split_scene_ids,
+        split_scene_in_project_data,
+        delete_scene_in_project_data,
+    )
+except ImportError:
+    from pipeline.scene_ops import (
+        derive_split_scene_ids,
+        split_scene_in_project_data,
+        delete_scene_in_project_data,
+    )
 

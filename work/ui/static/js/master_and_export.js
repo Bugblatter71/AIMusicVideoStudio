@@ -11,13 +11,7 @@ async function triggerImmediateRestitch() {
       return;
     }
   }
-  const btn1 = document.getElementById("btnStitchMaster");
   const btn2 = document.getElementById("btnStitchMasterFromTab");
-  if (btn1) {
-    btn1.dataset.origText = btn1.textContent;
-    btn1.textContent = "⏳ Restitching...";
-    btn1.disabled = true;
-  }
   if (btn2) {
     btn2.dataset.origText = btn2.textContent;
     btn2.textContent = "⏳ Restitching...";
@@ -44,10 +38,6 @@ async function triggerImmediateRestitch() {
     showToast(`Failed to trigger restitch: ${err}`);
   } finally {
     setTimeout(() => {
-      if (btn1) {
-        btn1.textContent = btn1.dataset.origText || "🎬 Restitch Master MP4";
-        btn1.disabled = false;
-      }
       if (btn2) {
         btn2.textContent = btn2.dataset.origText || "🧵 Stitch Master Video";
         btn2.disabled = false;
@@ -106,7 +96,8 @@ function switchTab(tabName) {
   const sidePaneTitle = document.getElementById("sidePaneTitle");
 
   const tabTitles = {
-    anchors: "🎨 Character & Scene Anchors",
+    characters: "👤 Characters & Reference Library",
+    anchors: "🖼️ Scene Anchors",
     settings: "⚙️ Project & Model Settings",
     console: "🚀 Render Console",
     master: "📺 Master Video Player",
@@ -142,7 +133,9 @@ function switchTab(tabName) {
       p.classList.toggle("active", p.id === `tab-${tabName}`);
     });
 
-    if (tabName === "anchors") {
+    if (tabName === "characters") {
+      if (window.renderCharactersTab) window.renderCharactersTab();
+    } else if (tabName === "anchors") {
       updateAnchorStudioUI();
     } else if (tabName === "console") {
       setConsoleView("queue");
@@ -164,7 +157,6 @@ window.updateMasterVideoUI = updateMasterVideoUI;
 window.switchTab = switchTab;
 
 // Event Listeners
-document.getElementById("btnStitchMaster")?.addEventListener("click", () => triggerImmediateRestitch());
 document.getElementById("btnRefreshMasterVideo")?.addEventListener("click", () => {
   updateMasterVideoUI();
   showToast("Master video reloaded");

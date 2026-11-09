@@ -146,6 +146,29 @@ def split_scene_in_project_data(
         scene1["title"] = f"{orig_title} (Part 1)"
         scene2["title"] = f"{orig_title} (Part 2)"
 
+    if "anchor_end" in scene1:
+        scene1.pop("anchor_end", None)
+
+    ov = target_scene.get("render_overlap") if target_scene.get("render_overlap") is not None else target_scene.get("render_overlap_seconds")
+    if ov is not None:
+        try:
+            h_ov = float(ov.get("head", 0.0)) if isinstance(ov, dict) else float(ov)
+            t_ov = float(ov.get("tail", 0.0)) if isinstance(ov, dict) else float(ov)
+            if not any(scene1.get(k) is not None for k in ("render_pad_start", "pad_start", "head_overlap")):
+                scene1["render_pad_start"] = h_ov
+            if not any(scene2.get(k) is not None for k in ("render_pad_end", "pad_end", "tail_overlap")):
+                scene2["render_pad_end"] = t_ov
+        except (ValueError, TypeError):
+            pass
+        for ok in ("render_overlap", "render_overlap_seconds"):
+            scene1.pop(ok, None)
+            scene2.pop(ok, None)
+
+    for k in ("render_pad_end", "pad_end", "tail_overlap"):
+        scene1.pop(k, None)
+    for k in ("render_pad_start", "pad_start", "head_overlap"):
+        scene2.pop(k, None)
+
     if "output_name" in target_scene:
         out_orig = target_scene["output_name"]
         if out_orig.startswith(orig_id):

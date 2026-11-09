@@ -64,6 +64,30 @@
   },
   "markers": [
     {
+      "id": "M02",
+      "name": "Woodwind enters",
+      "time": 72.14,
+      "color": "#f59e0b"
+    },
+    {
+      "id": "M03",
+      "name": "Strings enter",
+      "time": 77.41,
+      "color": "#f59e0b"
+    },
+    {
+      "id": "M04",
+      "name": "Brass enters",
+      "time": 91.21,
+      "color": "#f59e0b"
+    },
+    {
+      "id": "M05",
+      "name": "Guitar enters",
+      "time": 98.24,
+      "color": "#f59e0b"
+    },
+    {
       "id": "M01",
       "name": "drums come in here",
       "time": 132,
@@ -96,22 +120,40 @@
       "prompt": "A single continuous, undivided 16:9 medium-wide photograph inside one open wood-paneled recording studio (no split-screen, no vertical divider, continuous studio room and continuous wooden floor across the entire frame). On the continuous wooden floor, one large glowing sapphire-blue circle on the left overlaps with three intersecting warm golden-amber Venn diagram circles on the right. On the left side inside the sapphire-blue floor circle stands {MALE_STUDIO_DESC} at a vintage brass stand microphone turned in three-quarter profile facing right toward the woman, eyes clearly open, singing emotionally while gripping the mic stand. In the exact same room on the right side inside the three overlapping golden-amber Venn circles sits {FEMALE_STUDIO_DESC} on a studio stool beside a music stand with sheet music, headphones around her neck, and an acoustic-electric guitar on a stand beside her, her eyes open and her mouth completely closed as she watches him sing with a cellist seated in the background."
     },
     {
-      "filename": "A05 - 2Man_and_woman_looking_at_8410e52f_2K.jpg",
+      "filename": "A05 - Musicians_playing_on_soundstage_\u2026_2c7b892e_2K.jpg",
       "renderer": null,
       "seed": 8105,
-      "prompt": "A slowly panning high-angle cinematic 16:9 wide crane shot over a dark recording soundstage floor illuminated by a glowing Venn diagram of light rings: on the left is one single giant all-encompassing sapphire-blue circle of light containing a full chamber string orchestra (violins, violas, cellos, double bass) bowing in unison; on the right is a multi-set Venn diagram of three intersecting warm golden-amber and rose circles of light containing a pop drum kit, bass amp, and guitar stand; where the giant blue circle overlaps one of the golden circles in a glowing violet intersection at the center sit {MALE_STUDIO_DESC} (left, facing right, eyes open, mouth closed) and {FEMALE_STUDIO_DESC} (right, facing left, eyes open, mouth closed) looking at each other, both sat in facing chairs, sitting in the middle between the orchestra and the drums"
+      "prompt": "A high-angle cinematic 16:9 wide crane shot over a dark recording soundstage floor illuminated by a glowing Venn diagram of light rings: on the left is one giant sapphire-blue circle of light containing a chamber string orchestra (violins, violas, cellos, double bass); on the right is a cluster of intersecting warm golden-amber and rose circles of light containing a grand piano with pianist, woodwind section (bassoon and clarinet), brass section (trumpet and trombone), bass guitarist, and drum kit; in the glowing violet center intersection sits {FEMALE_STUDIO_DESC} on a wooden stool playing an acoustic guitar in front of a stand microphone (eyes open, mouth closed)."
     },
     {
-      "filename": "A06 - 2Woman_playing_electric_guitar_f92b39a1_2K.jpg",
+      "filename": "A05b_Woodwinds_Venn_Stage.jpg",
+      "renderer": null,
+      "seed": 8115,
+      "prompt": "A cinematic 16:9 medium-wide shot angled toward the upper-right glowing golden-amber floor circle of the dark Venn-diagram recording soundstage. In sharp focus sit the woodwind section (a bassoonist playing a mahogany bassoon and a clarinetist playing a black clarinet behind illuminated music stands) with the open black concert grand piano and female pianist directly behind them. On the left in the glowing violet center intersection sits {FEMALE_STUDIO_DESC} on a wooden stool holding her acoustic guitar at a stand microphone (eyes open, mouth closed)."
+    },
+    {
+      "filename": "A05c_Strings_Venn_Stage.jpg",
+      "renderer": null,
+      "seed": 8116,
+      "prompt": "A cinematic 16:9 medium-wide shot angled toward the left glowing sapphire-blue floor circle of the dark Venn-diagram recording soundstage. In sharp focus inside the sapphire-blue neon floor ring, the chamber string section (violinists, cellist, and standing upright double bassist) dynamically bow their string instruments behind music stands, while on the right in the glowing violet center intersection sits {FEMALE_STUDIO_DESC} on a wooden stool with her acoustic guitar and stand microphone (eyes open, mouth closed)."
+    },
+    {
+      "filename": "A05d_Brass_Venn_Stage.jpg",
+      "renderer": null,
+      "seed": 8117,
+      "prompt": "A cinematic 16:9 medium-wide shot angled toward the lower-right glowing warm golden-amber floor circle of the dark Venn-diagram recording soundstage. In the foreground inside the golden ring, the brass section (a trumpeter and a trombonist seated beside illuminated music stands) play their gleaming brass instruments, while behind them in the glowing violet center intersection sits {FEMALE_STUDIO_DESC} on a wooden stool with her acoustic guitar in the centre of the stage (eyes open, mouth closed), with the sapphire-blue string section on the left."
+    },
+    {
+      "filename": "A06_Guitar_Center_Venn_Stage.jpg",
       "renderer": null,
       "seed": 8106,
-      "prompt": "A cinematic 16:9 medium shot on the recording soundstage illuminated by three intersecting warm golden-amber Venn circles of light on the wooden floor. In the center-right sits {FEMALE_STUDIO_DESC} playing an electric pop guitar , angled in three-quarter view with her eyes clearly open and her mouth completely closed, playing a melodic guitar intro while looking toward the left."
+      "prompt": "A cinematic 16:9 medium shot centered on {FEMALE_STUDIO_DESC} seated on a wooden stool in the glowing violet center intersection of the dark Venn-diagram recording soundstage, actively strumming her acoustic guitar in front of a stand microphone with her eyes clearly open and her mouth completely closed. Surrounding her in atmospheric bokeh are the chamber string section in the sapphire-blue circle on the left and the woodwinds, grand piano, and brass in the warm golden circles on the right."
     },
     {
-      "filename": "A07 - Orchestra_and_band_playing_on_cc899f16_2K.jpg",
+      "filename": "A07_Guitar_Closeup_Venn_Stage.jpg",
       "renderer": null,
       "seed": 8107,
-      "prompt": "A cinematic 16:9 medium two-shot at the center of the recording soundstage where a single large sapphire-blue floor circle (left) overlaps with three intersecting warm golden-amber venn diagram floor circles (right) in a glowing violet Venn diagram intersection. On the left half stands {MALE_STUDIO_DESC} at a vintage brass stand microphone in three-quarter profile facing right, eyes clearly open and mouth completely closed. On the right half stands {FEMALE_STUDIO_DESC} at her vintage brass stand microphone in three-quarter profile facing left, eyes clearly open and mouth completely closed, looking deeply into his eyes just before she begins to sing, with violinists and cellists seated in soft bokeh behind them."
+      "prompt": "A cinematic 16:9 waist-up medium close-up of {FEMALE_STUDIO_DESC} seated on her stool in the glowing violet center intersection of the dark Venn-diagram recording soundstage, strumming her acoustic guitar behind a vintage stand microphone with her eyes clearly open and her mouth completely closed, surrounded by the glowing blue and golden floor circles and orchestra musicians in rich background bokeh."
     },
     {
       "filename": "A08 - 2Duet_vocal_recording_in_studio_a164bc0d_2K.jpg",
@@ -169,12 +211,12 @@
     },
     {
       "id": "S02",
-      "renderer": null,
+      "renderer": 9,
       "start": 6.8,
       "end": 13.6,
       "mode": "gva_male_left_silent_right",
       "split_x": 0.48,
-      "anchor": "A03_Meta_Studio_HeSings_SheProduces.jpg",
+      "anchor": "A03 - 2Man_singing_and_woman_listening_90de80da_2K.jpg",
       "seed_m": 8202,
       "seed_f": 8302,
       "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous wide-angle shot across the open recording soundstage. Across the unified wooden floor, on the left side inside his single large sapphire-blue circle of light, {MALE_STUDIO_DESC} at the studio brass microphone sings directly toward the woman on the right with open eyes, natural head and body movement, and synchronized lip movements, while the woman on the right listens quietly with her mouth closed.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
@@ -188,20 +230,21 @@
       "start": 13.6,
       "end": 20.4,
       "mode": "male_solo",
-      "anchor": "A02_Male_Orchestra_MediumStage.jpg",
+      "anchor": "A02 - 2Man_singing_at_microphone_cfd7bbc7_2K.jpg",
       "seed": 8203,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Medium waist-up shot on the recording soundstage where {MALE_STUDIO_DESC} grips the vintage brass stand microphone inside his single large sapphire-blue Venn circle while the chamber string orchestra and pianist play behind him. He sways naturally with open, expressive eyes, singing with synchronized lip movements. Subtle orbital camera drift.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
     },
     {
       "id": "S04",
-      "renderer": null,
+      "renderer": 9,
       "start": 20.4,
       "end": 27.2,
       "mode": "male_solo",
       "anchor": "A04 - 2Man_singing_to_woman_in_0e61c834_2K.jpg",
       "seed": 8204,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless, continuous medium-wide shot inside one open wood-paneled recording studio with unified wooden flooring. On the left side inside his sapphire-blue floor circle, {MALE_STUDIO_DESC} at the brass microphone sings emotionally toward the woman on the right with open eyes, natural hand and head movement, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
-      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. \nOn the left side inside his large sapphire-blue circle, {MALE_STUDIO_DESC} pours his heart into the studio microphone facing right toward her, with animated upper-body movement, open eyes locked on her, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A"
+      "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. \nOn the left side inside his large sapphire-blue circle, {MALE_STUDIO_DESC} pours his heart into the studio microphone facing right toward her, with animated upper-body movement, open eyes locked on her, and synchronized lip movements.\noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
+      "render_pad_start": 1
     },
     {
       "id": "S05",
@@ -209,7 +252,7 @@
       "start": 27.2,
       "end": 33.4,
       "mode": "male_solo",
-      "anchor": "A02_Male_Orchestra_MediumStage.jpg",
+      "anchor": "A02 - 2Man_singing_at_microphone_cfd7bbc7_2K.jpg",
       "seed": 8205,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Pre-chorus intensity rises as {MALE_STUDIO_DESC} grips the brass stand microphone inside his single giant sapphire-blue circle with the string orchestra bowing behind him, singing earnestly with open eyes, natural body movement, and synchronized lip movements. Slow push-in.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
     },
@@ -235,7 +278,7 @@
     },
     {
       "id": "S08",
-      "renderer": null,
+      "renderer": 9,
       "start": 48.4,
       "end": 55.57,
       "mode": "gva_male_left_silent_right",
@@ -259,37 +302,62 @@
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Close-up at the vintage brass microphone as {MALE_STUDIO_DESC} delivers the final lines of the first chorus with open eyes, natural chest and head movement, and synchronized lip movements, then gently closes his mouth and exhales at the end as the strings take over.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
     },
     {
-      "id": "S10",
-      "renderer": null,
+      "id": "S10a",
+      "renderer": 1,
       "start": 66.3,
-      "end": 91.19,
+      "end": 72.14,
       "mode": "silent_locked",
-      "anchor": "A05 - 2Man_and_woman_looking_at_8410e52f_2K.jpg",
+      "anchor": "A05 - Musicians_playing_on_soundstage_\u2026_2c7b892e_2K.jpg",
       "seed": 8210,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection, the light glows softly.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle wide crane shot over the dark Venn-diagram recording soundstage with {FEMALE_STUDIO_DESC} seated on her wooden stool holding her acoustic guitar in the glowing violet center intersection of the stage (mouth closed, eyes open) surrounded by the full orchestra. only the pianist is playing their instruument, the other musicians wait and don't play. While the pianist plays the grand piano in the upper-right golden floor circle, the camera maintains the wide high-angle framing with a subtle, gentle forward drift over the orchestra.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
       "stem": "silent"
+    },
+    {
+      "id": "S10b",
+      "renderer": 1,
+      "start": 72.14,
+      "end": 77.41,
+      "mode": "solo",
+      "anchor": "A05b_Woodwinds_Venn_Stage.jpg",
+      "seed": 8211,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Medium-wide shot inside the glowing golden floor circle on the right of the soundstage: the bassoonist and clarinetist actively play the woodwind melody with the grand pianist playing behind them, while {FEMALE_STUDIO_DESC} sits calmly with her acoustic guitar on the left of the frame (mouth closed, eyes open). Subtle gentle floating camera motion framing the woodwind performance.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "stem": "master"
+    },
+    {
+      "id": "S11",
+      "renderer": 1,
+      "start": 77.41,
+      "end": 91.21,
+      "mode": "solo",
+      "anchor": "A05c_Strings_Venn_Stage.jpg",
+      "anchor_end": "A05d_Brass_Venn_Stage.jpg",
+      "seed": 8212,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue seamlessly from <Picture 1> and transition smoothly into <Picture 2> by the end of the shot. Inside the glowing sapphire-blue floor circle on the left of the soundstage, the chamber string section (violinists, cellist, and standing double bassist) bows sweeping, expressive unison melodies while {FEMALE_STUDIO_DESC} sits on her stool holding her acoustic guitar in the glowing center intersection of the stage (mouth closed, eyes open). In the final third of the shot, the camera smoothly glides right across the central guitarist toward the lower-right golden floor circle, arriving at the exact framing of <Picture 2> on the brass section as the brass enters.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "stem": "master"
     },
     {
       "id": "S12a",
-      "renderer": null,
-      "start": 91.19,
-      "end": 99,
+      "renderer": 1,
+      "start": 91.21,
+      "end": 98.24,
       "mode": "solo",
-      "anchor": "A06 - 2Woman_playing_electric_guitar_f92b39a1_2K.jpg",
-      "seed": 8212,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. As the guitar enters the arrangement, the camera slowly pushes in on {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar in time with the audio track. Her mouth is completely closed and her eyes are open.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
-      "stem": "10 Guitar"
+      "anchor": "A05d_Brass_Venn_Stage.jpg",
+      "anchor_end": "A06_Guitar_Center_Venn_Stage.jpg",
+      "seed": 38853,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue seamlessly from <Picture 1> and transition smoothly into <Picture 2> by the end of the shot. In the foreground inside the warm golden floor circle, the trumpeter and trombonist play dynamic brass swells while {FEMALE_STUDIO_DESC} sits on her stool with her acoustic guitar in the center intersection of the stage behind them (mouth closed, eyes open). In the second half of the shot, the camera smoothly pushes in past the brass players toward the center of the stage, arriving at the exact medium framing of <Picture 2> centered on {FEMALE_STUDIO_DESC} with her acoustic guitar as the guitar enters.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "stem": "master"
     },
     {
       "id": "S12b",
-      "renderer": null,
-      "start": 99,
+      "renderer": 1,
+      "start": 98.24,
       "end": 104.4,
       "mode": "solo",
-      "anchor": "A07 - Orchestra_and_band_playing_on_cc899f16_2K.jpg",
-      "seed": 8213,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. High-angle crane shot slowly gliding over the dark soundstage floor illuminated by the glowing Venn diagram: inside the giant sapphire-blue circle on the left, the chamber string orchestra bows their violins and cellos in sweeping unison; in the center violet intersection the brass section starts playing. the camera slowly pushes towards {FEMALE_STUDIO_DESC} sitting on a stool vigorously strumming her acoustic guitar in time with the audio track. Her mouth is completely closed and her eyes are open. \noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
-      "stem": "silent"
+      "anchor": "A06_Guitar_Center_Venn_Stage.jpg",
+      "anchor_end": "A07_Guitar_Closeup_Venn_Stage.jpg",
+      "seed": 8214,
+      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue seamlessly from <Picture 1> and transition smoothly into <Picture 2> by the end of the shot. Seated on her wooden stool in the glowing violet center intersection of the Venn soundstage surrounded by the orchestra in soft bokeh, {FEMALE_STUDIO_DESC} actively strums her acoustic guitar in time with the guitar track, her mouth completely closed and her eyes open and expressive. The camera slowly pushes in from the medium shot of <Picture 1> to the closer waist-up framing of <Picture 2> as she finishes the instrumental intro and takes a breath ready to begin singing.\noverall_soundscape: Quiet room tone, no singing or speech.\nnon_diegetic_music: N/A",
+      "stem": "10 Guitar"
     },
     {
       "id": "S13",
@@ -355,7 +423,7 @@
       "id": "S17",
       "renderer": null,
       "start": 130.6,
-      "end": 136.8,
+      "end": 138.47,
       "mode": "duet_method_b",
       "anchor": "A10 - 2Man_singing_and_drummer_playing_32e5bc7f_2K.jpg",
       "prompt_m": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. In the studio {MALE_STUDIO_DESC} on the left sings with increasing desperation into the brass microphone, with open eyes, dynamic head sway, and synchronized lip movements. \noverall_soundscape: Studio room tone and male vocal.\nnon_diegetic_music: N/A",
@@ -369,7 +437,7 @@
     {
       "id": "S18",
       "renderer": null,
-      "start": 136.8,
+      "start": 138.47,
       "end": 152.1,
       "mode": "solo",
       "anchor": "A11 - 2Man_singing_to_woman_at_996040c2_2K.jpg",
@@ -401,21 +469,11 @@
       "id": "S21a",
       "renderer": null,
       "start": 166,
-      "end": 170.02,
+      "end": 173,
       "mode": "male_solo",
       "anchor": "A01 - 2Man_singing_into_microphone_ed7b66b4_2K.jpg",
       "seed": 8223,
       "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Close-up on {MALE_STUDIO_DESC} at the brass condenser microphone as he delivers the final soaring line before Chorus 3, with wide open emotional eyes, subtle head movement, and synchronized lip movements.halfway through the clip he looks directly into the camera and maintains eye contact with it till the end of the clip as he continues singing. \noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
-    },
-    {
-      "id": "S21b",
-      "renderer": null,
-      "start": 170.02,
-      "end": 173,
-      "mode": "male_solo",
-      "anchor": "A01 - 2Man_singing_into_microphone_ed7b66b4_2K.jpg",
-      "seed": 8224,
-      "prompt": "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Extreme close-up on {MALE_STUDIO_DESC} looks directly into the camera at the brass condenser microphone as he delivers the final soaring line before Chorus 3, with wide open emotional eyes, subtle head movement, and synchronized lip movements.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A"
     },
     {
       "id": "S22",
@@ -488,5 +546,113 @@
       "seed": 8228,
       "stem": "male"
     }
-  ]
+  ],
+  "characters": {
+    "marcus": {
+      "id": "marcus",
+      "name": "Marcus (Lead Vocalist)",
+      "kind": "character",
+      "default_look": "studio",
+      "avatar": "work/ref_sheets/male_angle1_front34.jpg",
+      "physical_traits": "the exact 30-year-old Black male singer",
+      "looks": {
+        "studio": {
+          "tag": "@male_studio",
+          "legacy_var": "MALE_STUDIO_DESC",
+          "name": "Studio Recording",
+          "description": "short tapered fade haircut, neat short beard, wearing a dark slate-navy suede jacket over a burgundy crew-neck t-shirt and thin silver chain",
+          "legacy_prompt_text": "the exact 30-year-old Black male singer from <image1> and <image2> (short tapered fade haircut, neat short beard, wearing a dark slate-navy suede jacket over a burgundy crew-neck t-shirt and thin silver chain)",
+          "image_refs": [
+            "work/ref_sheets/male_angle1_front34.jpg",
+            "work/ref_sheets/male_angle3_profile.jpg"
+          ]
+        },
+        "nightout": {
+          "tag": "@male_nightout",
+          "legacy_var": "MALE_NIGHTOUT_DESC",
+          "name": "Upscale Evening",
+          "description": "short tapered fade haircut, neat short beard, wearing a smart dark midnight-blue collared shirt",
+          "legacy_prompt_text": "the exact 30-year-old Black male singer from <image1> and <image2> (short tapered fade haircut, neat short beard, wearing a smart dark midnight-blue collared shirt)",
+          "image_refs": [
+            "references/nightout/male_nightout_front34.jpg",
+            "references/nightout/male_nightout_profile.jpg"
+          ]
+        }
+      }
+    },
+    "elena": {
+      "id": "elena",
+      "name": "Elena (Producer & Guitarist)",
+      "kind": "character",
+      "default_look": "studio",
+      "avatar": "work/ref_sheets/female_angle1_front34.jpg",
+      "physical_traits": "the exact late-20s woman",
+      "looks": {
+        "studio": {
+          "tag": "@female_studio",
+          "legacy_var": "FEMALE_STUDIO_DESC",
+          "name": "Studio Control Room",
+          "description": "shoulder-length wavy dark auburn-chestnut hair with curtain bangs, warm hazel eyes, wearing a black suede biker jacket over a dark charcoal V-neck top and a thin silver necklace",
+          "legacy_prompt_text": "the exact late-20s woman from <image3> and <image4> (shoulder-length wavy dark auburn-chestnut hair with curtain bangs, warm hazel eyes, wearing a black suede biker jacket over a dark charcoal V-neck top and a thin silver necklace)",
+          "image_refs": [
+            "work/ref_sheets/female_angle1_front34.jpg",
+            "work/ref_sheets/female_angle3_profile.jpg"
+          ]
+        },
+        "nightout": {
+          "tag": "@female_nightout",
+          "legacy_var": "FEMALE_NIGHTOUT_DESC",
+          "name": "Evening Cocktail",
+          "description": "shoulder-length wavy dark auburn-chestnut hair with curtain bangs, warm hazel eyes, wearing a chic sleeveless burgundy-black evening top",
+          "legacy_prompt_text": "the exact late-20s woman from <image3> and <image4> (shoulder-length wavy dark auburn-chestnut hair with curtain bangs, warm hazel eyes, wearing a chic sleeveless burgundy-black evening top)",
+          "image_refs": [
+            "references/nightout/female_nightout_front34.jpg",
+            "references/nightout/female_nightout_profile.jpg"
+          ]
+        }
+      }
+    },
+    "orchestra": {
+      "id": "orchestra",
+      "name": "Soundstage Orchestra Sections",
+      "kind": "ensemble",
+      "default_look": "strings",
+      "avatar": "references/orchestra/strings.jpg",
+      "physical_traits": "professional session musicians on the dark soundstage",
+      "looks": {
+        "pianist": {
+          "tag": "@pianist",
+          "name": "Grand Piano Soloist",
+          "description": "classical pianist seated at an ebony concert grand piano in formal dark attire",
+          "image_refs": [
+            "references/orchestra/pianist.jpg"
+          ]
+        },
+        "strings": {
+          "tag": "@strings",
+          "name": "Chamber String Section",
+          "description": "chamber string orchestra bowing their violins and cellos in sweeping unison",
+          "image_refs": [
+            "references/orchestra/strings.jpg"
+          ]
+        },
+        "brass": {
+          "tag": "@brass",
+          "name": "Brass Section",
+          "description": "brass section playing trumpets and French horns under warm stage lights",
+          "image_refs": [
+            "references/orchestra/brass.jpg"
+          ]
+        },
+        "woodwinds": {
+          "tag": "@woodwinds",
+          "name": "Woodwind Section",
+          "description": "woodwind section playing flutes and clarinets in synchronized harmony",
+          "image_refs": [
+            "references/orchestra/woodwinds.jpg"
+          ]
+        }
+      }
+    }
+  }
 }

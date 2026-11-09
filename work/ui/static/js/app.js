@@ -16,6 +16,8 @@ if (!window.state) {
     "js/state_and_utils.js",
     "js/timeline_and_playback.js",
     "js/scene_inspector.js",
+    "js/takes_and_history.js",
+    "js/characters_studio.js",
     "js/markers_and_prompts.js",
     "js/anchors_and_settings.js",
     "js/queue_and_console.js",

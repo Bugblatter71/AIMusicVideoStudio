@@ -6,7 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .context import ProjectContext
+from .context import ProjectContext, resolve_scene_padding
 from .media_utils import (
     _file_sha256,
     _sha256,
@@ -16,9 +16,25 @@ from .media_utils import (
     resolve_rendered_clip_path,
     settings_change_reason,
 )
-from .prompts import expand_variables, extract_anchor_id, resolve_marker_prompt
+from .prompts import (
+    expand_variables,
+    extract_anchor_id,
+    resolve_marker_prompt,
+    resolve_scene_refs,
+)
 from .stage1_anchors import match_anchor_id
 from .stage3_master import assemble_progressive_master
+from .takes import (
+    after_scene_render,
+    before_scene_render,
+    restore_previous_active_take_if_missing,
+)
+from .stage2_hashes import (
+    _scene_id_matches,
+    match_scene_pass,
+    _stem_matches_legacy_render,
+    compute_project_task_hashes,
+)
 from .wgp_bridge import (
     LazyWgpSession,
     check_cancel_requested,
@@ -26,209 +42,6 @@ from .wgp_bridge import (
     execute_wgp_job,
     write_engine_status,
 )
-
-
-def _scene_id_matches(tok: str, sid: str) -> bool:
-    t = tok.strip().upper()
-    s = sid.strip().upper()
-    if t == s:
-        return True
-    m_tok = re.match(r"^S0*(\d+)([A-Z_]*)$", t)
-    m_sid = re.match(r"^S0*(\d+)([A-Z_]*)$", s)
-    if m_tok and m_sid:
-        tok_num, tok_suf = int(m_tok.group(1)), m_tok.group(2)
-        sid_num, sid_suf = int(m_sid.group(1)), m_sid.group(2)
-        return tok_num == sid_num and tok_suf == sid_suf
-    return False
-
-
-def match_scene_pass(force_scenes: list[str], sid: str, pass_num: int | None) -> bool:
-    for raw in force_scenes:
-        tok = raw.strip().upper()
-        if tok in ("ALL", "ALL-SCENES"):
-            return True
-        if ":" in tok:
-            base, sub = tok.split(":", 1)
-            if _scene_id_matches(base, sid):
-                if sub in ("P1", "PASS1", "1", "LEFT", "M") and pass_num in (None, 1):
-                    return True
-                if sub in ("P2", "PASS2", "2", "RIGHT", "F") and pass_num in (None, 2):
-                    return True
-        elif _scene_id_matches(tok, sid):
-            return True
-    return False
-
-
-def _stem_matches_legacy_render(ctx: ProjectContext, sid: str, stem_key: str, default_stem: str) -> bool:
-    """Returns True if stem_key is either the mode's default stem or already has a sliced audio file on disk."""
-    if stem_key == default_stem:
-        return True
-    skey = (stem_key or "").strip().lower()
-    if not skey or skey in ("silent", "none"):
-        return default_stem in ("", "silent", "none")
-    safe_stem_tag = re.sub(r"[^a-zA-Z0-9_\-]", "_", stem_key)
-    return (ctx.audio_dir / f"{sid}_{safe_stem_tag}.wav").exists()
-
-
-def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | None = None) -> dict[str, tuple[str, ...]]:
-    """Computes (current_hash, *compat_hashes) for every video pass in the project.
-    Single source of truth used by both server.py and run_stage2_scenes.
-    Includes audio stem selection (`stem`, `stem_m`, `stem_f`) in `current_hash`, while
-    preserving backward-compatible hashes for existing unedited scenes.
-    """
-    results: dict[str, tuple[str, ...]] = {}
-    vshared = ctx.video_shared_cfg
-    res_override = ctx.resolve_resolution(target_resolution) if target_resolution else None
-
-    for sc in ctx.scenes:
-        sid = sc["id"]
-        start = float(sc.get("start", 0))
-        end = float(sc.get("end", 0))
-        mode = sc.get("mode", "solo")
-        aid, anchor_path = ctx.resolve_anchor_path(sc.get("anchor", ""))
-        anchor_fn = anchor_path.name
-        a_hash = f"{_file_sha256(anchor_path)}"
-
-        if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
-            vrid, vrspec = ctx.resolve_video_renderer(sc)
-            vmodel = vrspec["model_type"]
-            res_str = res_override or ctx.resolve_resolution(vrspec.get("resolution", ctx.current_resolution))
-            if mode == "male_solo":
-                default_stem = "male"
-                stem_key = sc.get("stem", default_stem)
-                raw_out_name = sc.get("output_name", f"{sid}_male_solo")
-            elif mode == "female_solo":
-                default_stem = "female"
-                stem_key = sc.get("stem", default_stem)
-                raw_out_name = sc.get("output_name", f"{sid}_female_solo")
-            elif mode == "silent_locked":
-                default_stem = "silent"
-                stem_key = "silent"
-                raw_out_name = sc.get("output_name", f"{sid}_silent")
-            elif mode == "solo":
-                default_stem = "male"
-                stem_key = sc.get("stem", default_stem)
-                raw_out_name = sc.get("output_name", f"{sid}_solo")
-            else:
-                default_stem = "silent"
-                stem_key = sc.get("stem", default_stem)
-                raw_out_name = sc.get("output_name", f"{sid}_{stem_key}")
-
-            out_name = f"{raw_out_name}_{res_str}" if res_str not in raw_out_name else raw_out_name
-
-            raw_prompt = sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or ""
-            expanded_prompt = expand_variables(raw_prompt, ctx.variables)
-            req_start = max(0.0, start - ctx.head_overlap_s)
-            expanded_prompt = resolve_marker_prompt(expanded_prompt, req_start, ctx.markers, fps=ctx.model_fps(vrspec))
-            scene_seed = int(sc.get("seed") if sc.get("seed") is not None else (sc.get("seed_m") or 1000))
-
-            flow_shift = vrspec.get("flow_shift", vshared.get("flow_shift", 12.0)) if ("flow_shift" in vrspec or "flow_shift" in vshared) else None
-            base_payload = {
-                "sid": sid, "mode": mode,
-                "anchor": anchor_fn, "a_hash": a_hash,
-                "prompt": expanded_prompt, "seed": scene_seed,
-                "resolution": res_str,
-                "model_type": vmodel,
-                "steps": vrspec.get("num_inference_steps"),
-                "phases": vrspec.get("guidance_phases"),
-                "flow_shift": flow_shift,
-                "sample_solver": vrspec.get("sample_solver", vshared.get("sample_solver", "euler")),
-                "spatial_upsampling": vrspec.get("spatial_upsampling", vshared.get("spatial_upsampling", "")),
-                "config": vrspec.get("config", vshared.get("config", "")),
-                "skip_steps_cache_type": vrspec.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
-            }
-            t_payload = dict(base_payload, stem=stem_key)
-            t_hash = _sha256(t_payload)
-            t_payload_leg = dict(t_payload, start=start, end=end)
-            valid_hashes = [t_hash, _sha256(t_payload_leg)]
-
-            if _stem_matches_legacy_render(ctx, sid, stem_key, default_stem):
-                h_nostem = _sha256(base_payload)
-                h_nostem_leg = _sha256(dict(base_payload, start=start, end=end))
-                valid_hashes.extend([h_nostem, h_nostem_leg])
-
-            results[out_name] = tuple(valid_hashes)
-
-        elif mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
-            vrid_p1, vrspec_p1 = ctx.resolve_video_renderer(sc, pass_num=1)
-            vrid_p2, vrspec_p2 = ctx.resolve_video_renderer(sc, pass_num=2)
-            vmodel_p1 = vrspec_p1["model_type"]
-            vmodel_p2 = vrspec_p2["model_type"]
-            res_str = res_override or ctx.resolve_resolution(vrspec_p2.get("resolution", ctx.current_resolution))
-            out_p1 = f"{sid}_Pass1_Left_{res_str}"
-            out_p2 = f"{sid}_Pass2_Final_{res_str}"
-
-            default_stem_m = "male"
-            stem_m = sc.get("stem_m") or sc.get("stem_p1") or sc.get("stem") or default_stem_m
-            default_stem_f = "female" if mode == "duet_method_b" else "silent"
-            stem_f = sc.get("stem_f") or sc.get("stem_p2") or default_stem_f
-
-            raw_m = sc.get("prompt_m") or sc.get("prompt") or ""
-            raw_f = sc.get("prompt_f") or sc.get("prompt") or ""
-            exp_prompt_m = expand_variables(raw_m, ctx.variables)
-            req_start = max(0.0, start - ctx.head_overlap_s)
-            exp_prompt_m = resolve_marker_prompt(exp_prompt_m, req_start, ctx.markers, fps=ctx.model_fps(vrspec_p1))
-            exp_prompt_f = expand_variables(raw_f, ctx.variables)
-            exp_prompt_f = resolve_marker_prompt(exp_prompt_f, req_start, ctx.markers, fps=ctx.model_fps(vrspec_p2))
-
-            seed_m = int(sc.get("seed_m") if sc.get("seed_m") is not None else (sc.get("seed") or 1000))
-            seed_f = int(sc.get("seed_f") if sc.get("seed_f") is not None else (sc.get("seed") or 1000))
-            split_x = float(sc.get("split_x", 0.50))
-
-            p1_flow = vrspec_p1.get("flow_shift", vshared.get("flow_shift", 12.0)) if ("flow_shift" in vrspec_p1 or "flow_shift" in vshared) else None
-            p1_base = {
-                "sid": sid, "pass": 1, "mode": mode,
-                "anchor": anchor_fn, "a_hash": a_hash,
-                "prompt_m": exp_prompt_m, "seed_m": seed_m,
-                "resolution": res_str,
-                "model_type": vmodel_p1,
-                "steps": vrspec_p1.get("num_inference_steps"),
-                "phases": vrspec_p1.get("guidance_phases"),
-                "flow_shift": p1_flow,
-                "sample_solver": vrspec_p1.get("sample_solver", vshared.get("sample_solver", "euler")),
-                "spatial_upsampling": vrspec_p1.get("spatial_upsampling", vshared.get("spatial_upsampling", "")),
-                "config": vrspec_p1.get("config", vshared.get("config", "")),
-                "skip_steps_cache_type": vrspec_p1.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
-            }
-            p1_payload = dict(p1_base, stem_m=stem_m)
-            h_p1 = _sha256(p1_payload)
-            h_p1_leg = _sha256(dict(p1_payload, start=start, end=end))
-            h_p1_nostem = _sha256(p1_base)
-            h_p1_nostem_leg = _sha256(dict(p1_base, start=start, end=end))
-
-            p1_valid = [h_p1, h_p1_leg]
-            p1_matches_legacy = _stem_matches_legacy_render(ctx, sid, stem_m, default_stem_m)
-            if p1_matches_legacy:
-                p1_valid.extend([h_p1_nostem, h_p1_nostem_leg])
-            results[out_p1] = tuple(p1_valid)
-
-            p2_flow = vrspec_p2.get("flow_shift", vshared.get("flow_shift", 12.0)) if ("flow_shift" in vrspec_p2 or "flow_shift" in vshared) else None
-            p2_base = {
-                "sid": sid, "pass": 2, "mode": mode,
-                "h_p1": h_p1, "split_x": split_x,
-                "prompt_f": exp_prompt_f, "seed_f": seed_f,
-                "resolution": res_str,
-                "model_type": vmodel_p2,
-                "steps": vrspec_p2.get("num_inference_steps"),
-                "phases": vrspec_p2.get("guidance_phases"),
-                "flow_shift": p2_flow,
-                "sample_solver": vrspec_p2.get("sample_solver", vshared.get("sample_solver", "euler")),
-                "spatial_upsampling": vrspec_p2.get("spatial_upsampling", vshared.get("spatial_upsampling", "")),
-                "config": vrspec_p2.get("config", vshared.get("config", "")),
-                "skip_steps_cache_type": vrspec_p2.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
-            }
-            p2_payload = dict(p2_base, stem_f=stem_f)
-            h_p2 = _sha256(p2_payload)
-            h_p2_leg = _sha256(dict(p2_payload, start=start, end=end, h_p1=h_p1_leg))
-
-            p2_valid = [h_p2, h_p2_leg]
-            if p1_matches_legacy and _stem_matches_legacy_render(ctx, sid, stem_f, default_stem_f):
-                p2_nostem = dict(p2_base, h_p1=h_p1_nostem)
-                p2_nostem_leg = dict(p2_base, h_p1=h_p1_nostem_leg, start=start, end=end)
-                p2_valid.extend([_sha256(p2_nostem), _sha256(p2_nostem_leg)])
-            results[out_p2] = tuple(p2_valid)
-
-    return results
 
 
 def run_stage2_scenes(
@@ -276,16 +89,29 @@ def run_stage2_scenes(
         mode = sc["mode"]
         aid, anchor_path = ctx.resolve_anchor_path(sc["anchor"])
         anchor_fn = anchor_path.name
-        anchor_was_regen = cascade_anchors and (anchor_fn in regenerated_anchors or aid in regenerated_anchors)
+        aid_end, anchor_end_path = ("", None)
+        if sc.get("anchor_end"):
+            aid_end_cand, a_end_p = ctx.resolve_anchor_path(sc.get("anchor_end"))
+            if a_end_p.exists():
+                aid_end, anchor_end_path = aid_end_cand, a_end_p
+        anchor_was_regen = cascade_anchors and (
+            anchor_fn in regenerated_anchors
+            or aid in regenerated_anchors
+            or (anchor_end_path is not None and (anchor_end_path.name in regenerated_anchors or aid_end in regenerated_anchors))
+        )
+        head_pad, tail_pad = ctx.get_scene_render_padding(sc)
+        has_custom_pad = any(sc.get(k) is not None for k in ("render_pad_start", "render_pad_end", "pad_start", "pad_end", "render_overlap", "head_overlap", "tail_overlap"))
+        req_start = max(0.0, start - head_pad)
+        req_end = end + tail_pad
+        req_dur = req_end - req_start
+        cov_s = req_start if has_custom_pad else start
+        cov_e = req_end if has_custom_pad else end
 
         if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
             vrid, vrspec = ctx.resolve_video_renderer(sc)
             vmodel = vrspec["model_type"]
 
             # Overlap calculation: render with configured padding beyond timeline edit boundaries
-            req_start = max(0.0, start - ctx.head_overlap_s)
-            req_end = end + ctx.tail_overlap_s
-            req_dur = req_end - req_start
             frames = ctx.valid_video_frames(req_dur, vrspec)
             gen_dur = frames / ctx.model_fps(vrspec)
             target_render_start = req_start
@@ -319,9 +145,13 @@ def run_stage2_scenes(
                     {"output_filename": out_name, "model_type": vmodel, "video_length": frames, "resolution": res_str},
                     "", "SKIPPED (NOT TARGETED)", False,
                 ))
+                scene_renders = state.setdefault("scene_renders", {})
+                r_info = scene_renders.get(out_name)
+                act_r_start = float(r_info["render_start"]) if (r_info and "render_start" in r_info) else target_render_start
+                act_r_end = float(r_info["render_end"]) if (r_info and "render_end" in r_info) else target_render_end
                 scene_meta.append({
                     "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
-                    "clip": f"{out_name}.mp4", "render_start": target_render_start, "render_end": target_render_end,
+                    "clip": f"{out_name}.mp4", "render_start": act_r_start, "render_end": act_r_end,
                     "anchor": sc.get("anchor"),
                 })
                 continue
@@ -336,25 +166,26 @@ def run_stage2_scenes(
 
             scene_renders = state.setdefault("scene_renders", {})
             is_covered, rendered_start, rendered_end = check_scene_render_coverage(
-                ctx.ffmpeg, out_mp4, scene_renders, out_name, start, end
+                ctx.ffmpeg, out_mp4, scene_renders, out_name, cov_s, cov_e
             )
             actual_render_start = rendered_start if is_covered else target_render_start
             actual_render_end = rendered_end if is_covered else target_render_end
 
             wav_path = ctx.resolve_scene_audio(sid, stem_key, target_render_start, gen_dur, frames)
             raw_prompt = sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or ""
-            expanded_prompt = expand_variables(raw_prompt, ctx.variables)
-            expanded_prompt = resolve_marker_prompt(expanded_prompt, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec))
+            prompt_for_task = resolve_marker_prompt(raw_prompt, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec))
             scene_seed = int(sc.get("seed") if sc.get("seed") is not None else (sc.get("seed_m") or 1000))
 
             t_dict = ctx.make_video_task(
                 output_filename=out_name,
-                prompt=expanded_prompt,
+                prompt=prompt_for_task,
                 video_length=frames,
                 seed=scene_seed,
                 image_start=anchor_path,
                 audio_path=wav_path,
                 rspec=vrspec,
+                image_refs=ctx.resolve_scene_image_refs(sc, raw_prompt),
+                image_end=anchor_end_path,
             )
             t_dict["render_start"] = target_render_start
             t_dict["render_end"] = target_render_end
@@ -385,12 +216,15 @@ def run_stage2_scenes(
                     elif changed:
                         needs_render, reason = True, "FORCED (EDITED)"
                     elif not is_covered:
-                        needs_render, reason = True, f"FORCED (BOUNDS NOT COVERED: [{start:.2f}, {end:.2f}] vs [{rendered_start:.2f}, {rendered_end:.2f}])"
+                        needs_render, reason = True, f"FORCED (BOUNDS NOT COVERED: [{req_start:.2f}, {req_end:.2f}] vs [{rendered_start:.2f}, {rendered_end:.2f}])"
                     else:
                         needs_render, reason = True, "FORCED"
             else:
                 forced = match_scene_pass(force_scenes, sid, None)
-                anchor_newer = file_exists and anchor_path.exists() and (out_mp4.stat().st_mtime < anchor_path.stat().st_mtime)
+                anchor_newer = file_exists and (
+                    (anchor_path.exists() and out_mp4.stat().st_mtime < anchor_path.stat().st_mtime)
+                    or (anchor_end_path is not None and anchor_end_path.exists() and out_mp4.stat().st_mtime < anchor_end_path.stat().st_mtime)
+                )
                 settings_reason = settings_change_reason(ctx.ffmpeg, settings_store, out_name, t_dict, out_mp4, file_exists)
 
                 if forced:
@@ -407,7 +241,7 @@ def run_stage2_scenes(
                     needs_render, reason = True, "PROMPT/SEED/RENDERER/ANCHOR EDITED"
                 elif not is_covered:
                     r_str = f"[{rendered_start:.2f}, {rendered_end:.2f}]" if rendered_start is not None else "none"
-                    needs_render, reason = True, f"TIMELINE EXCEEDS RENDER ([{start:.2f}, {end:.2f}] not covered by {r_str})"
+                    needs_render, reason = True, f"TIMELINE EXCEEDS RENDER ([{req_start:.2f}, {req_end:.2f}] not covered by {r_str})"
                 else:
                     needs_render, reason = False, "UP-TO-DATE (COVERED BY RENDER)"
 
@@ -429,9 +263,6 @@ def run_stage2_scenes(
             vmodel_p2 = vrspec_p2["model_type"]
 
             # Overlap calculation
-            req_start = max(0.0, start - ctx.head_overlap_s)
-            req_end = end + ctx.tail_overlap_s
-            req_dur = req_end - req_start
             frames = ctx.valid_video_frames(req_dur, vrspec_p2)
             gen_dur = frames / ctx.model_fps(vrspec_p2)
             target_render_start = req_start
@@ -451,9 +282,13 @@ def run_stage2_scenes(
                     {"output_filename": out_p2, "model_type": vmodel_p2, "video_length": frames, "resolution": res_str},
                     "", "SKIPPED (NOT TARGETED)", False,
                 ))
+                scene_renders = state.setdefault("scene_renders", {})
+                r_info = scene_renders.get(out_p2)
+                act_r_start = float(r_info["render_start"]) if (r_info and "render_start" in r_info) else target_render_start
+                act_r_end = float(r_info["render_end"]) if (r_info and "render_end" in r_info) else target_render_end
                 scene_meta.append({
                     "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
-                    "clip": f"{out_p2}.mp4", "render_start": target_render_start, "render_end": target_render_end,
+                    "clip": f"{out_p2}.mp4", "render_start": act_r_start, "render_end": act_r_end,
                     "anchor": sc.get("anchor"),
                 })
                 continue
@@ -474,29 +309,29 @@ def run_stage2_scenes(
 
             raw_m = sc.get("prompt_m") or sc.get("prompt") or ""
             raw_f = sc.get("prompt_f") or sc.get("prompt") or ""
-            exp_prompt_m = expand_variables(raw_m, ctx.variables)
-            exp_prompt_m = resolve_marker_prompt(exp_prompt_m, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p1))
-            exp_prompt_f = expand_variables(raw_f, ctx.variables)
-            exp_prompt_f = resolve_marker_prompt(exp_prompt_f, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p2))
+            prompt_m_for_task = resolve_marker_prompt(raw_m, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p1))
+            prompt_f_for_task = resolve_marker_prompt(raw_f, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p2))
 
             seed_m = int(sc.get("seed_m") if sc.get("seed_m") is not None else (sc.get("seed") or 1000))
             seed_f = int(sc.get("seed_f") if sc.get("seed_f") is not None else (sc.get("seed") or 1000))
 
             t_p1 = ctx.make_video_task(
                 output_filename=out_p1,
-                prompt=exp_prompt_m,
+                prompt=prompt_m_for_task,
                 video_length=frames,
                 seed=seed_m,
                 image_start=anchor_path,
                 audio_path=wav_m,
                 rspec=vrspec_p1,
+                image_refs=ctx.resolve_scene_image_refs(sc, raw_m),
+                image_end=anchor_end_path,
             )
             t_p1["render_start"] = target_render_start
             t_p1["render_end"] = target_render_end
 
             t_p2 = ctx.make_video_task(
                 output_filename=out_p2,
-                prompt=exp_prompt_f,
+                prompt=prompt_f_for_task,
                 video_length=frames,
                 seed=seed_f,
                 image_start=anchor_path,
@@ -504,6 +339,7 @@ def run_stage2_scenes(
                 rspec=vrspec_p2,
                 video_guide=ctx.renders_dir / f"{out_p1}.mp4",
                 video_mask=mask_path,
+                image_refs=ctx.resolve_scene_image_refs(sc, raw_f),
             )
             t_p2["render_start"] = target_render_start
             t_p2["render_end"] = target_render_end
@@ -533,8 +369,8 @@ def run_stage2_scenes(
             prev_p2 = task_hashes.get(out_p2)
 
             scene_renders = state.setdefault("scene_renders", {})
-            cov_p1, r_start_p1, r_end_p1 = check_scene_render_coverage(ctx.ffmpeg, mp4_p1, scene_renders, out_p1, start, end)
-            cov_p2, r_start_p2, r_end_p2 = check_scene_render_coverage(ctx.ffmpeg, mp4_p2, scene_renders, out_p2, start, end)
+            cov_p1, r_start_p1, r_end_p1 = check_scene_render_coverage(ctx.ffmpeg, mp4_p1, scene_renders, out_p1, cov_s, cov_e)
+            cov_p2, r_start_p2, r_end_p2 = check_scene_render_coverage(ctx.ffmpeg, mp4_p2, scene_renders, out_p2, cov_s, cov_e)
 
             actual_render_start = r_start_p2 if cov_p2 else target_render_start
             actual_render_end = r_end_p2 if cov_p2 else target_render_end
@@ -572,7 +408,10 @@ def run_stage2_scenes(
                 force_p1 = match_scene_pass(force_scenes, sid, 1)
                 force_p2 = match_scene_pass(force_scenes, sid, 2)
                 chg_p1 = (prev_p1 is not None) and (prev_p1 not in valid_p1)
-                anchor_newer_p1 = ex_p1 and anchor_path.exists() and (mp4_p1.stat().st_mtime < anchor_path.stat().st_mtime)
+                anchor_newer_p1 = ex_p1 and (
+                    (anchor_path.exists() and mp4_p1.stat().st_mtime < anchor_path.stat().st_mtime)
+                    or (anchor_end_path is not None and anchor_end_path.exists() and mp4_p1.stat().st_mtime < anchor_end_path.stat().st_mtime)
+                )
                 anchor_newer_p2 = ex_p2 and anchor_path.exists() and (mp4_p2.stat().st_mtime < anchor_path.stat().st_mtime)
                 p1_newer_than_p2 = ex_p1 and ex_p2 and (mp4_p2.stat().st_mtime < mp4_p1.stat().st_mtime)
                 set_p1 = settings_change_reason(ctx.ffmpeg, settings_store, out_p1, t_p1, mp4_p1, ex_p1)
@@ -592,7 +431,7 @@ def run_stage2_scenes(
                     nr_p1, r_p1 = True, "PASS 1 (prompt_m/seed_m) EDITED"
                 elif not cov_p1:
                     r_str = f"[{r_start_p1:.2f}, {r_end_p1:.2f}]" if r_start_p1 is not None else "none"
-                    nr_p1, r_p1 = True, f"TIMELINE EXCEEDS RENDER ([{start:.2f}, {end:.2f}] not covered by {r_str})"
+                    nr_p1, r_p1 = True, f"TIMELINE EXCEEDS RENDER ([{req_start:.2f}, {req_end:.2f}] not covered by {r_str})"
                 else:
                     nr_p1, r_p1 = False, "UP-TO-DATE (COVERED BY RENDER)"
 
@@ -729,11 +568,10 @@ def run_stage2_scenes(
                 print(f"[QUEUE_SKIP] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'reason': reason})}", flush=True)
             continue
 
-        if out_mp4.exists():
-            try:
-                out_mp4.unlink()
-            except OSError:
-                pass
+        sid = out_name.split("_")[0]
+        sc_obj = next((s for s in ctx.scenes if s.get("id") == sid), {"id": sid})
+        pass_num = 1 if "_Pass1" in out_name else (2 if "_Pass2" in out_name else None)
+        before_scene_render(ctx, sc_obj, out_name, out_mp4, state)
 
         if dummy_render:
             t0 = time.time()
@@ -853,13 +691,17 @@ def run_stage2_scenes(
                 "render_start": t.get("render_start", 0.0),
                 "render_end": t.get("render_end", 0.0),
                 "frames": t.get("video_length", 0),
+                "elapsed": elapsed,
+                "completed_at": round(time.time(), 3),
             }
-            img_start = t.get("image_start")
-            if img_start and Path(img_start).exists():
-                aid = extract_anchor_id(Path(img_start).name)
-                if aid.startswith("A") and aid[1:].isdigit():
-                    state.setdefault("anchor_file_hashes", {})[aid] = _file_sha256(Path(img_start))
+            for img_k in ("image_start", "image_end"):
+                img_p = t.get(img_k)
+                if img_p and Path(img_p).exists():
+                    aid_k = extract_anchor_id(Path(img_p).name)
+                    if aid_k.startswith("A") and aid_k[1:].isdigit():
+                        state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p))
             ctx.save_state_hashes(state)
+            after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state)
 
             if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch):
                 assemble_progressive_master(ctx, scene_meta, log_prefix="      ")
@@ -895,6 +737,7 @@ def run_stage2_scenes(
             sync_queue_fn=_sync_queue,
         )
         if was_cancelled:
+            restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
             clear_cancel_request(ctx)
             queue_summary[idx - 1]["status"] = "queued"
             queue_summary[idx - 1]["reason"] = "STOPPED BY USER"
@@ -902,6 +745,7 @@ def run_stage2_scenes(
             write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"})
             raise RuntimeError(f"Cancelled rendering {out_mp4.name}")
         if not res.success or not res.generated_files:
+            restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
             err_list = [e.message for e in (res.errors or [])]
             queue_summary[idx - 1]["status"] = "failed"
             queue_summary[idx - 1]["error"] = err_list
@@ -943,13 +787,17 @@ def run_stage2_scenes(
             "render_start": t.get("render_start", 0.0),
             "render_end": t.get("render_end", 0.0),
             "frames": t.get("video_length", 0),
+            "elapsed": elapsed,
+            "completed_at": round(time.time(), 3),
         }
-        img_start = t.get("image_start")
-        if img_start and Path(img_start).exists():
-            aid = extract_anchor_id(Path(img_start).name)
-            if aid.startswith("A") and aid[1:].isdigit():
-                state.setdefault("anchor_file_hashes", {})[aid] = _file_sha256(Path(img_start))
+        for img_k in ("image_start", "image_end"):
+            img_p = t.get(img_k)
+            if img_p and Path(img_p).exists():
+                aid_k = extract_anchor_id(Path(img_p).name)
+                if aid_k.startswith("A") and aid_k[1:].isdigit():
+                    state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p))
         ctx.save_state_hashes(state)
+        after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state)
 
         # Update progressive master if this pass completed a full scene (not an intermediate pass 1 guide)
         if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch):

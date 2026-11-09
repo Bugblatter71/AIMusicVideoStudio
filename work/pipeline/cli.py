@@ -474,9 +474,31 @@ def main():
                 scene_meta = json.loads(timeline_file.read_text(encoding="utf-8"))
             except Exception:
                 pass
-        if not scene_meta:
+        if scene_meta:
+            project_scenes_by_id = {s["id"]: s for s in ctx.scenes if isinstance(s, dict) and "id" in s}
+            scene_renders = state.setdefault("scene_renders", {})
+            for entry in scene_meta:
+                sid = entry.get("id")
+                curr_sc = project_scenes_by_id.get(sid)
+                if curr_sc:
+                    entry["start"] = float(curr_sc.get("start", entry.get("start", 0.0)))
+                    entry["end"] = float(curr_sc.get("end", entry.get("end", 0.0)))
+                    entry["dur"] = round(entry["end"] - entry["start"], 3)
+                    if "anchor" in curr_sc:
+                        entry["anchor"] = curr_sc["anchor"]
+                stem = Path(entry.get("clip", "")).stem
+                r_info = scene_renders.get(stem)
+                if r_info and "render_start" in r_info:
+                    entry["render_start"] = float(r_info["render_start"])
+                    entry["render_end"] = float(r_info.get("render_end", entry["end"]))
+            try:
+                timeline_file.write_text(json.dumps(scene_meta, indent=2), encoding="utf-8")
+            except Exception:
+                pass
+        else:
             scene_meta = []
             res_str = ctx.resolve_resolution(ctx.current_resolution)
+            scene_renders = state.setdefault("scene_renders", {})
             for sc in ctx.scenes:
                 sid = sc["id"]
                 start = float(sc["start"])
@@ -491,12 +513,19 @@ def main():
                     out_clip = f"{sid}_silent_{res_str}.mp4"
                 else:
                     out_clip = f"{sid}_male_solo_{res_str}.mp4"
+                stem = Path(out_clip).stem
+                r_info = scene_renders.get(stem)
+                r_start = float(r_info["render_start"]) if (r_info and "render_start" in r_info) else start
+                r_end = float(r_info["render_end"]) if (r_info and "render_end" in r_info) else end
                 scene_meta.append({
                     "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
-                    "clip": out_clip, "render_start": start, "render_end": end,
+                    "clip": out_clip, "render_start": r_start, "render_end": r_end,
                     "anchor": sc.get("anchor"),
                 })
-        run_stage3_assemble_master(ctx, scene_meta)
+        ok = run_stage3_assemble_master(ctx, scene_meta)
+        if not ok:
+            print("\n[Stitch Error] Failed to update master video (file locked or assembly failed).", flush=True)
+            sys.exit(1)
         print(f"\n[Stitch] Master video restitched in {time.time() - t_start:.1f}s.", flush=True)
         return
 

@@ -57,33 +57,42 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
     if ctx.generate_review_strips:
         ctx.strips_dir.mkdir(parents=True, exist_ok=True)
 
+    project_scenes_by_id = {
+        s["id"]: s for s in getattr(ctx, "scenes", [])
+        if isinstance(s, dict) and "id" in s
+    }
+
     for i, sc in enumerate(scene_meta):
         sid = sc["id"]
-        dur = sc["dur"]
+        curr_sc = project_scenes_by_id.get(sid)
+        sc_start = float(curr_sc["start"]) if (curr_sc and "start" in curr_sc) else float(sc["start"])
+        sc_end = float(curr_sc["end"]) if (curr_sc and "end" in curr_sc) else float(sc["end"])
+        sc_dur = max(0.001, round(sc_end - sc_start, 3))
+        dur = sc_dur
         canonical_stem = re.sub(r"\(\d+\)$", "", Path(sc["clip"]).stem)
         src_clip = resolve_rendered_clip_path(ctx.renders_dir, canonical_stem, promote=True)
         dst_clip = ctx.trimmed_dir / f"{i:02d}_{sid}_{res_tag}.mp4"
         dst_placeholder = ctx.trimmed_dir / f"{i:02d}_{sid}_placeholder_{res_tag}.mp4"
 
         # Lock exact frame bounds on the master fps grid (eliminates cumulative timing drift)
-        start_frame = int(round(sc["start"] * ctx.fps))
-        end_frame = int(round(sc["end"] * ctx.fps))
+        start_frame = int(round(sc_start * ctx.fps))
+        end_frame = int(round(sc_end * ctx.fps))
         target_frames = max(1, end_frame - start_frame)
 
-        # Retrieve render_start for offset trimming
-        render_start = sc.get("render_start")
-        if render_start is None:
-            r_info = scene_renders.get(canonical_stem) or scene_renders.get(src_clip.stem)
-            if r_info and "render_start" in r_info:
-                render_start = float(r_info["render_start"])
-            else:
-                render_start = float(sc["start"])
+        # Retrieve render_start for offset trimming (prioritizing physical render info for existing clips)
+        r_info = scene_renders.get(canonical_stem) or scene_renders.get(src_clip.stem)
+        if src_clip.exists() and r_info and "render_start" in r_info:
+            render_start = float(r_info["render_start"])
+        elif sc.get("render_start") is not None:
+            render_start = float(sc["render_start"])
+        elif r_info and "render_start" in r_info:
+            render_start = float(r_info["render_start"])
         else:
-            render_start = float(render_start)
+            render_start = sc_start
 
         # Head offset into the rendered clip to reach timeline edit start
-        head_offset_s = max(0.0, float(sc["start"]) - render_start) + ctx.trim_first_frame_s
-        trim_sig = f"{sc['start']:.3f}_{sc['end']:.3f}_{head_offset_s:.3f}_{target_frames}_{res_str}_{ctx.fps}"
+        head_offset_s = max(0.0, sc_start - render_start) + ctx.trim_first_frame_s
+        trim_sig = f"{sc_start:.3f}_{sc_end:.3f}_{head_offset_s:.3f}_{target_frames}_{res_str}_{ctx.fps}"
 
         if src_clip.exists() and src_clip.stat().st_size > 50000:
             rendered_count += 1
@@ -207,7 +216,15 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
     concat_txt = ctx.trimmed_dir / "concat_list.txt"
     concat_txt.write_text("\n".join(concat_lines), encoding="utf-8")
 
-    total_dur = float(ctx.total_duration) if ctx.total_duration else sum(s["dur"] for s in scene_meta)
+    total_dur = (
+        float(ctx.total_duration)
+        if ctx.total_duration
+        else sum(
+            float(project_scenes_by_id.get(s["id"], {}).get("end", s.get("end", 0.0)))
+            - float(project_scenes_by_id.get(s["id"], {}).get("start", s.get("start", 0.0)))
+            for s in scene_meta
+        )
+    )
     tmp_output = ctx.master_output.with_suffix(".tmp.mp4")
 
     subprocess.run(
@@ -237,7 +254,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
         print(f"{log_prefix}[Progressive Master Updated] -> {ctx.master_output.name} ({status_msg})", flush=True)
         return True
     except PermissionError:
-        print(f"{log_prefix}[Notice] {ctx.master_output.name} is currently open in a player. Clips cached; will update master once player is closed.", flush=True)
+        print(f"{log_prefix}[Error] [MASTER_FILE_LOCKED] {ctx.master_output.name} is currently open in a player or another program. Close the player to update the master video.", flush=True)
         if tmp_output.exists():
             try:
                 tmp_output.unlink()
@@ -245,13 +262,13 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                 pass
         return False
     except Exception as e:
-        print(f"{log_prefix}[Warning] Could not update master output file: {e}", flush=True)
+        print(f"{log_prefix}[Error] [MASTER_STITCH_FAILED] Could not update master output file: {e}", flush=True)
         return False
 
 
-def run_stage3_assemble_master(ctx: ProjectContext, scene_meta: list[dict]):
+def run_stage3_assemble_master(ctx: ProjectContext, scene_meta: list[dict]) -> bool:
     print("\n" + "=" * 72, flush=True)
     print("STAGE 3: Assembling Flash-Free Master Video & Extracting Review Strips", flush=True)
     print("=" * 72, flush=True)
 
-    assemble_progressive_master(ctx, scene_meta, log_prefix="  ")
+    return assemble_progressive_master(ctx, scene_meta, log_prefix="  ")
