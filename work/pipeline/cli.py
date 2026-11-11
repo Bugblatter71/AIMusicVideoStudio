@@ -505,12 +505,17 @@ def main():
                 end = float(sc["end"])
                 edit_dur = round(end - start, 3)
                 mode = sc["mode"]
-                if mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
+                if mode in ("duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
                     out_clip = f"{sid}_Pass2_Final_{res_str}.mp4"
+                elif mode in ("duet_method_a", "duet_a"):
+                    cand = next((c for c in (f"{sid}_duet_a", f"{sid}_duet_method_a", f"{sid}_duet_stereo") if (ctx.renders_dir / f"{c}_{res_str}.mp4").exists()), None)
+                    out_clip = f"{cand or f'{sid}_duet_a'}_{res_str}.mp4"
                 elif mode == "female_solo":
                     out_clip = f"{sid}_female_solo_{res_str}.mp4"
-                elif mode == "silent_locked":
+                elif mode in ("silent_locked", "silent", "ambient"):
                     out_clip = f"{sid}_silent_{res_str}.mp4"
+                elif mode == "solo":
+                    out_clip = f"{sid}_solo_{res_str}.mp4"
                 else:
                     out_clip = f"{sid}_male_solo_{res_str}.mp4"
                 stem = Path(out_clip).stem

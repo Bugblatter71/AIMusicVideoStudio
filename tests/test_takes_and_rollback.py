@@ -544,14 +544,23 @@ class TestTakesAndRollback(unittest.TestCase):
         out_name = "S01_solo_768x432"
         state = {"task_hashes": {out_name: "hash_s01_v1"}}
 
-        # 2. Start rendering Take 2: active file is safely unlinked
+        # 2. Start rendering Take 2: active file is safely unlinked (or left as 0-byte stub)
         before_scene_render(ctx, sc, out_name, s01_render, state)
         self.assertFalse(s01_render.exists())
+        s01_render.write_bytes(b"")
 
-        # 3. Simulate cancellation or engine crash mid-render
-        restore_previous_active_take_if_missing(ctx, "S01", out_name, s01_render)
+        # 3. Simulate server.kill_active_render mid-render (without scene_id in queue item)
+        import server
+        orig_pdir = server.PROJECTS_DIR
+        try:
+            server.PROJECTS_DIR = Path(self.test_dir)
+            q_file = self.jobs_dir / "v3_queue.json"
+            q_file.write_text(json.dumps([{"output_filename": out_name, "status": "rendering", "needs_render": True}]), encoding="utf-8")
+            server.kill_active_render(target_slug=self.proj_dir.name)
+        finally:
+            server.PROJECTS_DIR = orig_pdir
 
-        # 4. Verify previous active take was cleanly restored
+        # 4. Verify previous active take was cleanly restored over the 0-byte stub
         self.assertTrue(s01_render.is_file())
         self.assertEqual(s01_render.read_bytes()[:21], b"take1_stable_content_")
 

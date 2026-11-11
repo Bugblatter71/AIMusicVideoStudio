@@ -17,6 +17,7 @@ from .media_utils import (
     settings_change_reason,
 )
 from .prompts import (
+    compile_modular_scene_prompt,
     expand_variables,
     extract_anchor_id,
     resolve_marker_prompt,
@@ -107,7 +108,7 @@ def run_stage2_scenes(
         cov_s = req_start if has_custom_pad else start
         cov_e = req_end if has_custom_pad else end
 
-        if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
+        if mode in ("solo", "male_solo", "female_solo", "silent_locked", "silent", "ambient", "single_pass", "duet_method_a", "duet_a"):
             vrid, vrspec = ctx.resolve_video_renderer(sc)
             vmodel = vrspec["model_type"]
 
@@ -118,18 +119,18 @@ def run_stage2_scenes(
             target_render_end = target_render_start + gen_dur
 
             res_str = ctx.resolve_resolution(vrspec.get("resolution", ctx.current_resolution))
-            if mode == "male_solo":
-                stem_key = sc.get("stem", "male")
-                raw_out_name = sc.get("output_name", f"{sid}_male_solo")
-            elif mode == "female_solo":
-                stem_key = sc.get("stem", "female")
-                raw_out_name = sc.get("output_name", f"{sid}_female_solo")
-            elif mode == "silent_locked":
-                stem_key = "silent"
-                raw_out_name = sc.get("output_name", f"{sid}_silent")
-            elif mode == "solo":
-                stem_key = sc.get("stem", "male")
-                raw_out_name = sc.get("output_name", f"{sid}_solo")
+            if mode in ("duet_method_a", "duet_a"):
+                stem_l = sc.get("stem_m") or sc.get("stem_left") or sc.get("stem_l") or "male"
+                stem_r = sc.get("stem_f") or sc.get("stem_right") or sc.get("stem_r") or "female"
+                stem_key = f"{stem_l}_{stem_r}"
+                cand = next((c for c in (f"{sid}_duet_a", f"{sid}_duet_method_a", f"{sid}_duet_stereo") if (ctx.renders_dir / f"{c}_{res_str}.mp4").exists()), None)
+                raw_out_name = sc.get("output_name", cand or f"{sid}_duet_a")
+            elif mode in ("solo", "male_solo", "female_solo"):
+                stem_key = sc.get("stem") or ("female" if mode == "female_solo" else "male")
+                cand = next((c for c in (f"{sid}_{mode}", f"{sid}_solo", f"{sid}_male_solo", f"{sid}_female_solo", f"{sid}_{stem_key}") if (ctx.renders_dir / f"{c}_{res_str}.mp4").exists()), None) if not sc.get("output_name") else None
+                raw_out_name = sc.get("output_name", cand or (f"{sid}_{mode}" if mode != "solo" else f"{sid}_solo"))
+            elif mode in ("silent_locked", "silent", "ambient"):
+                stem_key, raw_out_name = "silent", sc.get("output_name", f"{sid}_silent")
             else:
                 stem_key = sc.get("stem", "silent")
                 raw_out_name = sc.get("output_name", f"{sid}_{stem_key}")
@@ -164,15 +165,19 @@ def run_stage2_scenes(
                     if dims and f"{dims[0]}x{dims[1]}" == res_str:
                         shutil.copy2(str(legacy_mp4), str(out_mp4))
 
+            allow_pad = bool(sc.get("hold_last_frame") or sc.get("pad_tail") or sc.get("allow_tail_pad"))
             scene_renders = state.setdefault("scene_renders", {})
             is_covered, rendered_start, rendered_end = check_scene_render_coverage(
-                ctx.ffmpeg, out_mp4, scene_renders, out_name, cov_s, cov_e
+                ctx.ffmpeg, out_mp4, scene_renders, out_name, cov_s, cov_e, allow_tail_pad=allow_pad
             )
             actual_render_start = rendered_start if is_covered else target_render_start
             actual_render_end = rendered_end if is_covered else target_render_end
 
-            wav_path = ctx.resolve_scene_audio(sid, stem_key, target_render_start, gen_dur, frames)
-            raw_prompt = sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or ""
+            if mode in ("duet_method_a", "duet_a"):
+                wav_path = ctx.resolve_scene_stereo_audio(sid, stem_l, stem_r, target_render_start, gen_dur, frames)
+            else:
+                wav_path = ctx.resolve_scene_audio(sid, stem_key, target_render_start, gen_dur, frames)
+            raw_prompt = compile_modular_scene_prompt(sc, pass_num=None)
             prompt_for_task = resolve_marker_prompt(raw_prompt, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec))
             scene_seed = int(sc.get("seed") if sc.get("seed") is not None else (sc.get("seed_m") or 1000))
 
@@ -186,6 +191,8 @@ def run_stage2_scenes(
                 rspec=vrspec,
                 image_refs=ctx.resolve_scene_image_refs(sc, raw_prompt),
                 image_end=anchor_end_path,
+                sc=sc,
+                pass_num=None,
             )
             t_dict["render_start"] = target_render_start
             t_dict["render_end"] = target_render_end
@@ -256,7 +263,7 @@ def run_stage2_scenes(
                 "anchor": sc.get("anchor")
             })
 
-        elif mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
+        elif mode in ("duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
             vrid_p1, vrspec_p1 = ctx.resolve_video_renderer(sc, pass_num=1)
             vrid_p2, vrspec_p2 = ctx.resolve_video_renderer(sc, pass_num=2)
             vmodel_p1 = vrspec_p1["model_type"]
@@ -294,12 +301,8 @@ def run_stage2_scenes(
                 continue
 
             stem_m = sc.get("stem_m") or sc.get("stem_p1") or sc.get("stem") or "male"
-            if mode == "duet_method_b":
-                stem_f = sc.get("stem_f") or sc.get("stem_p2") or "female"
-            elif mode == "gva_male_left_silent_right":
-                stem_f = sc.get("stem_f") or sc.get("stem_p2") or "silent"
-            else:
-                stem_f = sc.get("stem_f") or sc.get("stem_p2") or "silent"
+            default_f = "silent" if mode == "gva_male_left_silent_right" else "female"
+            stem_f = sc.get("stem_f") or sc.get("stem_p2") or default_f
 
             wav_m = ctx.resolve_scene_audio(sid, stem_m, target_render_start, gen_dur, frames)
             wav_f = ctx.resolve_scene_audio(sid, stem_f, target_render_start, gen_dur, frames)
@@ -307,8 +310,8 @@ def run_stage2_scenes(
             split_x = float(sc.get("split_x", 0.50))
             mask_path = ctx.ensure_right_mask(frames, split_x, res_str)
 
-            raw_m = sc.get("prompt_m") or sc.get("prompt") or ""
-            raw_f = sc.get("prompt_f") or sc.get("prompt") or ""
+            raw_m = compile_modular_scene_prompt(sc, pass_num=1)
+            raw_f = compile_modular_scene_prompt(sc, pass_num=2)
             prompt_m_for_task = resolve_marker_prompt(raw_m, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p1))
             prompt_f_for_task = resolve_marker_prompt(raw_f, target_render_start, ctx.markers, fps=ctx.model_fps(vrspec_p2))
 
@@ -325,6 +328,8 @@ def run_stage2_scenes(
                 rspec=vrspec_p1,
                 image_refs=ctx.resolve_scene_image_refs(sc, raw_m),
                 image_end=anchor_end_path,
+                sc=sc,
+                pass_num=1,
             )
             t_p1["render_start"] = target_render_start
             t_p1["render_end"] = target_render_end
@@ -340,6 +345,8 @@ def run_stage2_scenes(
                 video_guide=ctx.renders_dir / f"{out_p1}.mp4",
                 video_mask=mask_path,
                 image_refs=ctx.resolve_scene_image_refs(sc, raw_f),
+                sc=sc,
+                pass_num=2,
             )
             t_p2["render_start"] = target_render_start
             t_p2["render_end"] = target_render_end
@@ -368,9 +375,10 @@ def run_stage2_scenes(
             prev_p1 = task_hashes.get(out_p1)
             prev_p2 = task_hashes.get(out_p2)
 
+            allow_pad = bool(sc.get("hold_last_frame") or sc.get("pad_tail") or sc.get("allow_tail_pad"))
             scene_renders = state.setdefault("scene_renders", {})
-            cov_p1, r_start_p1, r_end_p1 = check_scene_render_coverage(ctx.ffmpeg, mp4_p1, scene_renders, out_p1, cov_s, cov_e)
-            cov_p2, r_start_p2, r_end_p2 = check_scene_render_coverage(ctx.ffmpeg, mp4_p2, scene_renders, out_p2, cov_s, cov_e)
+            cov_p1, r_start_p1, r_end_p1 = check_scene_render_coverage(ctx.ffmpeg, mp4_p1, scene_renders, out_p1, cov_s, cov_e, allow_tail_pad=allow_pad)
+            cov_p2, r_start_p2, r_end_p2 = check_scene_render_coverage(ctx.ffmpeg, mp4_p2, scene_renders, out_p2, cov_s, cov_e, allow_tail_pad=allow_pad)
 
             actual_render_start = r_start_p2 if cov_p2 else target_render_start
             actual_render_end = r_end_p2 if cov_p2 else target_render_end
@@ -482,6 +490,7 @@ def run_stage2_scenes(
         queue_summary.append({
             "idx": idx,
             "total": len(all_tasks),
+            "scene_id": t["output_filename"].split("_")[0],
             "filename": f"{t['output_filename']}.mp4",
             "output_filename": t["output_filename"],
             "reason": reason,
@@ -571,7 +580,6 @@ def run_stage2_scenes(
         sid = out_name.split("_")[0]
         sc_obj = next((s for s in ctx.scenes if s.get("id") == sid), {"id": sid})
         pass_num = 1 if "_Pass1" in out_name else (2 if "_Pass2" in out_name else None)
-        before_scene_render(ctx, sc_obj, out_name, out_mp4, state)
 
         if dummy_render:
             t0 = time.time()
@@ -585,7 +593,10 @@ def run_stage2_scenes(
                 flush=True,
             )
             queue_summary[idx - 1]["status"] = "rendering"
+            for k in ("pct", "phase", "raw_phase", "status_text", "step", "total_steps", "window_index", "window_count", "estimated_remaining_seconds", "estimated_remaining_str"):
+                queue_summary[idx - 1].pop(k, None)
             _sync_queue()
+            before_scene_render(ctx, sc_obj, out_name, out_mp4, state)
             write_engine_status(
                 ctx,
                 {
@@ -616,6 +627,7 @@ def run_stage2_scenes(
             total_dummy_steps = 5
             for step in range(1, total_dummy_steps + 1):
                 if check_cancel_requested(ctx):
+                    restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
                     clear_cancel_request(ctx)
                     queue_summary[idx - 1]["status"] = "queued"
                     queue_summary[idx - 1]["reason"] = "STOPPED BY USER"
@@ -672,6 +684,7 @@ def run_stage2_scenes(
             )
             queue_summary[idx - 1]["status"] = "completed"
             queue_summary[idx - 1]["elapsed"] = elapsed
+            for k in ("estimated_remaining_seconds", "estimated_remaining_str"): queue_summary[idx - 1].pop(k, None)
             _sync_queue()
             write_engine_status(
                 ctx,
@@ -718,24 +731,22 @@ def run_stage2_scenes(
             flush=True,
         )
         queue_summary[idx - 1]["status"] = "rendering"
+        for k in ("pct", "phase", "raw_phase", "status_text", "step", "total_steps", "window_index", "window_count", "estimated_remaining_seconds", "estimated_remaining_str"):
+            queue_summary[idx - 1].pop(k, None)
         _sync_queue()
+        before_scene_render(ctx, sc_obj, out_name, out_mp4, state)
 
         wangp_task = {k: v for k, v in t.items() if k not in ("render_start", "render_end")}
-        res, was_cancelled, t0 = execute_wgp_job(
-            ctx=ctx,
-            session=session,
-            task_cfg=wangp_task,
-            idx=idx,
-            total=len(all_tasks),
-            filename=out_mp4.name,
-            stage="scene",
-            reason=reason,
-            model=str(t.get("model_type") or ""),
-            frames=int(t.get("video_length") or 0),
-            resolution=str(t.get("resolution") or ""),
-            on_progress_item=queue_summary[idx - 1],
-            sync_queue_fn=_sync_queue,
-        )
+        try:
+            res, was_cancelled, t0 = execute_wgp_job(
+                ctx=ctx, session=session, task_cfg=wangp_task, idx=idx, total=len(all_tasks),
+                filename=out_mp4.name, stage="scene", reason=reason, model=str(t.get("model_type") or ""),
+                frames=int(t.get("video_length") or 0), resolution=str(t.get("resolution") or ""),
+                on_progress_item=queue_summary[idx - 1], sync_queue_fn=_sync_queue,
+            )
+        except BaseException:
+            restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
+            raise
         if was_cancelled:
             restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
             clear_cancel_request(ctx)
@@ -768,6 +779,7 @@ def run_stage2_scenes(
         )
         queue_summary[idx - 1]["status"] = "completed"
         queue_summary[idx - 1]["elapsed"] = elapsed
+        for k in ("estimated_remaining_seconds", "estimated_remaining_str"): queue_summary[idx - 1].pop(k, None)
         _sync_queue()
         write_engine_status(
             ctx,
@@ -801,6 +813,6 @@ def run_stage2_scenes(
 
         # Update progressive master if this pass completed a full scene (not an intermediate pass 1 guide)
         if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch):
-            assemble_progressive_master(ctx, scene_meta, log_prefix="      ")
+            assemble_progressive_master(ctx, scene_meta, log_prefix="      ", progressive=True)
 
     return scene_meta

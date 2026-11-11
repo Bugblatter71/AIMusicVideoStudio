@@ -206,6 +206,7 @@ def check_scene_render_coverage(
     out_name: str,
     start: float,
     end: float,
+    allow_tail_pad: bool = False,
 ) -> tuple[bool, float | None, float | None]:
     """
     Checks if an existing rendered mp4 clip fully covers the required [start, end] timeline window.
@@ -224,7 +225,7 @@ def check_scene_render_coverage(
         frames = probe_video_frames(ffmpeg, out_mp4)
         if dur is not None and dur > 0:
             r_start = float(start)
-            r_end = float(start) + float(dur)
+            r_end = max(float(start) + float(dur), float(end)) if allow_tail_pad else (float(start) + float(dur))
             scene_renders[out_name] = {
                 "render_start": r_start,
                 "render_end": r_end,
@@ -235,8 +236,8 @@ def check_scene_render_coverage(
             return False, None, None
 
     # Fully covered if rendered clip starts at or before timeline start and ends at or after timeline end
-    # Uses a tiny 50ms tolerance for numerical/frame-rate quantization
-    is_covered = (r_start <= (start + 0.05)) and (r_end >= (end - 0.05))
+    # Uses a tiny 50ms tolerance for numerical/frame-rate quantization; allow_tail_pad accepts held/padded outro cuts
+    is_covered = (r_start <= (start + 0.05)) and (allow_tail_pad or (r_end >= (end - 0.05)))
     return is_covered, r_start, r_end
 
 
@@ -557,7 +558,7 @@ def estimate_scene_render_time(
     eff_dur = max(0.1, eff_end - eff_start)
 
     mode = str(sc.get("mode") or "solo").strip()
-    is_duet = mode in ("duet_method_b", "two_pass_gva", "gva_male_left_silent_right")
+    is_duet = mode in ("duet", "duet_method_b", "two_pass_gva", "gva_male_left_silent_right")
     has_end = bool(sc.get("anchor_end"))
 
     passes = [1, 2] if is_duet else [None]
@@ -679,23 +680,31 @@ def attach_queue_time_estimates(
         if status == "rendering":
             rem_sec = p_est["estimated_seconds"]
             if isinstance(live_eng, dict):
-                started = float(live_eng.get("started_at") or 0.0)
-                pct = float(itm.get("pct") or live_eng.get("pct") or 0.0)
-                step = int(itm.get("step") or live_eng.get("step") or 0)
-                if started > 0 and step >= 1 and pct >= 5.0:
-                    elapsed_live = max(1.0, now_ts - started)
-                    p_frac = max(0.05, min(0.99, pct / 100.0))
-                    w = p_frac ** 1.2
-                    blended_total = (1.0 - w) * p_est["estimated_seconds"] + w * (elapsed_live / p_frac)
-                    rem_sec = max(5.0, round(blended_total - elapsed_live, 1))
-                elif started > 0:
-                    elapsed_live = max(0.0, now_ts - started)
-                    rem_sec = max(5.0, round(p_est["estimated_seconds"] - elapsed_live, 1))
+                eng_fn = str(live_eng.get("filename") or live_eng.get("output_filename") or "")
+                matches_eng = (not eng_fn) or eng_fn in (itm.get("filename"), itm.get("output_filename"), f"{itm.get('output_filename')}.mp4")
+                if matches_eng:
+                    started = float(live_eng.get("started_at") or 0.0)
+                    pct_val = live_eng.get("pct")
+                    pct = float(pct_val if pct_val is not None else (itm.get("pct") or 0.0))
+                    step_val = live_eng.get("step")
+                    step = int(step_val if step_val is not None else (itm.get("step") or 0))
+                    if started > 0 and step >= 1 and 5.0 <= pct < 99.0:
+                        elapsed_live = max(1.0, now_ts - started)
+                        p_frac = max(0.05, min(0.99, pct / 100.0))
+                        w = p_frac ** 1.2
+                        blended_total = (1.0 - w) * p_est["estimated_seconds"] + w * (elapsed_live / p_frac)
+                        rem_sec = max(5.0, round(blended_total - elapsed_live, 1))
+                    elif started > 0:
+                        elapsed_live = max(0.0, now_ts - started)
+                        rem_sec = max(5.0, round(p_est["estimated_seconds"] - elapsed_live, 1))
             itm["estimated_remaining_seconds"] = rem_sec
             itm["estimated_remaining_str"] = format_duration_estimate(rem_sec)
             pending_total_sec += rem_sec
-        elif status == "queued":
-            pending_total_sec += p_est["estimated_seconds"]
+        else:
+            itm.pop("estimated_remaining_seconds", None)
+            itm.pop("estimated_remaining_str", None)
+            if status == "queued":
+                pending_total_sec += p_est["estimated_seconds"]
 
     return {
         "calibration_alpha": alpha,

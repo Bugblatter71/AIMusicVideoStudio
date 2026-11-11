@@ -84,13 +84,10 @@
               <div class="form-group form-group-mode">
                 <label for="sceneMode">Mode</label>
                 <select id="sceneMode">
-                  <option value="solo">Solo Performance (single_pass)</option>
-                  <option value="male_solo">Male Solo</option>
-                  <option value="female_solo">Female Solo</option>
-                  <option value="duet_method_b">Two-Pass Duet (Method B / GVA)</option>
-                  <option value="gva_male_left_silent_right">GVA Male Left / Silent Right (Two-Pass)</option>
-                  <option value="two_pass_gva">Two-Pass GVA</option>
-                  <option value="silent_locked">Silent Locked / Ambient</option>
+                  <option value="solo">Solo Performance (Single Pass)</option>
+                  <option value="duet_method_a">Stereo Duet (Method A - Single Pass)</option>
+                  <option value="duet_method_b">Two-Pass Duet (Split Screen)</option>
+                  <option value="silent_locked">Ambient / Cutaway (Silent)</option>
                 </select>
               </div>
 
@@ -187,6 +184,24 @@
                 </select>
               </div>
 
+              <div id="stereoDuetStemGroup" class="form-group form-group-stem" style="display: none;">
+                <label>Stereo Channels (L / R)</label>
+                <div style="display: flex; gap: 4px;">
+                  <select id="sceneStemLeft" title="Left Channel (Singer 1 / Left Actor)" style="flex: 1;">
+                    <option value="male">L: male</option>
+                    <option value="female">L: female</option>
+                    <option value="master">L: master</option>
+                    <option value="silent">L: silent</option>
+                  </select>
+                  <select id="sceneStemRight" title="Right Channel (Singer 2 / Right Actor)" style="flex: 1;">
+                    <option value="female">R: female</option>
+                    <option value="male">R: male</option>
+                    <option value="master">R: master</option>
+                    <option value="silent">R: silent</option>
+                  </select>
+                </div>
+              </div>
+
               <div id="singleSeedGroup" class="form-group form-group-seed">
                 <label for="sceneSeed">Seed</label>
                 <div style="display: flex; gap: 4px;">
@@ -205,17 +220,28 @@
               <div id="sceneMarkersList" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
             </div>
 
-            <div id="singlePromptGroup" class="form-group" style="margin-top: 8px;">
+            <!-- Prompt Mode Switcher Bar -->
+            <div id="promptModeHeaderBar" style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px; margin-bottom: 6px; padding: 6px 10px; background: rgba(15, 23, 42, 0.75); border: 1px solid #334155; border-radius: 6px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px;">Prompt Editor Mode</span>
+                <div style="display: inline-flex; background: #0f172a; padding: 2px; border-radius: 5px; border: 1px solid #334155;">
+                  <button type="button" class="btn" id="btnPromptModeRaw" style="padding: 2px 10px; font-size: 11px; border-radius: 4px; background: #2563eb; color: #fff; border: none;">📝 Raw Prompt</button>
+                  <button type="button" class="btn" id="btnPromptModeComponents" style="padding: 2px 10px; font-size: 11px; border-radius: 4px; background: transparent; color: #94a3b8; border: none;">🧩 Modular Components</button>
+                </div>
+              </div>
+              <span id="promptMarkerInsertHelp" style="font-size: 10px; color: var(--text-muted);">Use <code>&lt;marker name&gt;</code> for relative timing</span>
+            </div>
+
+            <div id="singlePromptGroup" class="form-group" style="margin-top: 4px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                 <label style="margin: 0;">Scene Prompt</label>
-                <span id="promptMarkerInsertHelp" style="font-size: 10px; color: var(--text-muted);">Use <code>&lt;marker name&gt;</code> for relative timing</span>
               </div>
               <textarea id="scenePrompt" rows="6" style="font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 140px; overflow-y: hidden; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
               <div id="refTraySingle" class="ref-chip-tray" style="margin-top: 6px;"></div>
             </div>
 
             <!-- Two Pass prompts & settings (visible in two-pass/duet mode) -->
-            <div id="duetPromptsGroup" style="display: none; margin-top: 10px;">
+            <div id="duetPromptsGroup" style="display: none; margin-top: 6px;">
               <div class="inspector-controls-row duet-controls-row" style="margin-bottom: 10px;">
                 <div class="form-group form-group-duet-col">
                   <label for="sceneStemM">Pass 1 Audio Stem (Left)</label>
@@ -261,7 +287,7 @@
                 </div>
               </div>
 
-              <div class="duet-prompts-grid">
+              <div class="duet-prompts-grid" id="duetRawPromptsGrid">
                 <div class="form-group">
                   <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                     <label style="margin: 0;">Pass 1 Prompt (Left)</label>
@@ -277,6 +303,124 @@
                   </div>
                   <textarea id="scenePromptF" rows="6" style="font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 140px; overflow-y: hidden; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
                   <div id="refTrayPass2" class="ref-chip-tray" style="margin-top: 6px;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Modular Prompt Components Panel (visible when prompt_mode == 'components') -->
+            <div id="modularPromptsGroup" style="display: none; margin-top: 6px; padding: 12px; background: rgba(15, 23, 42, 0.55); border: 1px solid #334155; border-radius: 6px;">
+              <!-- 1. Camera & Framing -->
+              <div class="form-group" style="margin-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 4px;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <label for="compCamera" style="margin: 0; color: #38bdf8; font-weight: 600;">🎥 Camera &amp; Framing</label>
+                    <label id="duetLockCameraWrap" style="display: none; align-items: center; gap: 4px; font-size: 10px; color: #94a3b8; cursor: pointer;">
+                      <input type="checkbox" id="chkDuetLockCamera" checked style="accent-color: #38bdf8;">
+                      <span>🔗 Shared across Pass 1 &amp; Pass 2</span>
+                    </label>
+                  </div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 4px;" id="cameraPresetChips">
+                    <button type="button" class="btn-mini comp-cam-chip" data-cam="Locked-off stationary tripod shot, fixed horizon line, zero camera pan, tilt, or zoom." style="font-size: 10px; padding: 1px 6px;">🔒 Tripod Locked</button>
+                    <button type="button" class="btn-mini comp-cam-chip" data-cam="Slow, steady cinematic dolly push-in toward the subject." style="font-size: 10px; padding: 1px 6px;">🔍 Slow Push-In</button>
+                    <button type="button" class="btn-mini comp-cam-chip" data-cam="Subtle, smooth orbital camera drift around the performance." style="font-size: 10px; padding: 1px 6px;">🔄 Subtle Orbit</button>
+                    <button type="button" class="btn-mini comp-cam-chip" data-cam="A seamless, continuous wide-angle master shot across the studio floor." style="font-size: 10px; padding: 1px 6px;">↔️ Wide Master</button>
+                  </div>
+                </div>
+                <textarea id="compCamera" rows="2" placeholder="e.g. Locked-off tripod wide shot across the studio floor, zero camera movement." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;"></textarea>
+              </div>
+
+              <!-- 2. Setting & Lighting -->
+              <div class="form-group" style="margin-bottom: 10px;">
+                <label for="compAtmosphere" style="color: #fbbf24; font-weight: 600; margin-bottom: 4px; display: block;">💡 Setting &amp; Lighting (Atmosphere)</label>
+                <input type="text" id="compAtmosphere" placeholder="e.g. Inside the dark recording soundstage with glowing sapphire-blue and golden Venn floor circles." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;">
+              </div>
+
+              <!-- 3. Subject & Vocal Performance -->
+              <div id="compPerformanceSingleWrap" class="form-group" style="margin-bottom: 10px;">
+                <label for="compPerformance" style="color: #a78bfa; font-weight: 600; margin-bottom: 4px; display: block;">🎭 Lead Subject &amp; Vocal Performance</label>
+                <textarea id="compPerformance" rows="3" placeholder="e.g. {MALE_STUDIO_DESC} sings passionately into the vintage brass microphone with open eyes and synchronized lip movements." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;"></textarea>
+              </div>
+
+              <div id="compPerformanceDuetWrap" class="duet-prompts-grid" style="display: none; margin-bottom: 10px;">
+                <div class="form-group">
+                  <label for="compPerformanceM" style="color: #a78bfa; font-weight: 600; margin-bottom: 4px; display: block;">🎭 Pass 1 Subject Action (Left)</label>
+                  <textarea id="compPerformanceM" rows="3" placeholder="e.g. On the left, {MALE_STUDIO_DESC} sings toward her with open eyes and synchronized lip movements." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;"></textarea>
+                </div>
+                <div class="form-group">
+                  <label for="compPerformanceF" style="color: #f472b6; font-weight: 600; margin-bottom: 4px; display: block;">🎭 Pass 2 Subject Action (Right)</label>
+                  <textarea id="compPerformanceF" rows="3" placeholder="e.g. On the right, {FEMALE_STUDIO_DESC} listens quietly with open eyes and closed mouth." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;"></textarea>
+                </div>
+              </div>
+
+              <!-- 4. Diegetic Musicians & Cue Indicators -->
+              <div class="form-group" style="margin-bottom: 10px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <label for="compMusicians" style="margin: 0; color: #34d399; font-weight: 600;">🎻 Diegetic Musicians &amp; Instrument Cues</label>
+                  <span style="font-size: 10px; color: var(--text-muted);">Visual instrument state &amp; <code>&lt;marker:frame&gt;</code> entries</span>
+                </div>
+                <textarea id="compMusicians" rows="2" placeholder="e.g. Only the pianist is playing while other musicians wait motionless until <drums come in here:frame>." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;"></textarea>
+              </div>
+
+              <!-- 5. Audio Soundscape -->
+              <div id="compSoundscapeSingleWrap" class="form-group" style="margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; margin-bottom: 4px;">
+                  <label for="compSoundscape" style="margin: 0; color: #60a5fa; font-weight: 600;">🔊 Audio Soundscape (overall_soundscape)</label>
+                  <div style="display: flex; gap: 4px;">
+                    <button type="button" class="btn-mini comp-snd-chip" data-snd="Studio room tone under the vocal performance." style="font-size: 10px; padding: 1px 6px;">🎤 Vocal + Room Tone</button>
+                    <button type="button" class="btn-mini comp-snd-chip" data-snd="Quiet studio room tone, no singing or speech." style="font-size: 10px; padding: 1px 6px;">🤫 Silent / No Singing</button>
+                    <button type="button" class="btn-mini comp-snd-chip" data-snd="Quiet studio room tone and live acoustic instruments, no singing." style="font-size: 10px; padding: 1px 6px;">🎻 Instrumental Only</button>
+                  </div>
+                </div>
+                <input type="text" id="compSoundscape" placeholder="Studio room tone under the vocal performance." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;">
+              </div>
+
+              <div id="compSoundscapeDuetWrap" class="duet-prompts-grid" style="display: none; margin-bottom: 8px;">
+                <div class="form-group">
+                  <label for="compSoundscapeM" style="color: #60a5fa; font-weight: 600; margin-bottom: 4px; display: block;">🔊 Pass 1 Soundscape (Left)</label>
+                  <input type="text" id="compSoundscapeM" placeholder="Studio room tone and male vocal." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;">
+                </div>
+                <div class="form-group">
+                  <label for="compSoundscapeF" style="color: #60a5fa; font-weight: 600; margin-bottom: 4px; display: block;">🔊 Pass 2 Soundscape (Right)</label>
+                  <input type="text" id="compSoundscapeF" placeholder="Quiet studio room tone, no speech." style="font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box;">
+                </div>
+              </div>
+
+              <details id="compCompiledPreviewDetails" style="margin-top: 6px; font-size: 11px; color: #94a3b8;">
+                <summary style="cursor: pointer; user-select: none; font-weight: 600; color: #cbd5e1;">👁️ Preview Compiled H3 Engine Prompt</summary>
+                <pre id="compCompiledPreviewText" style="margin-top: 6px; padding: 8px; background: #0f172a; border: 1px solid #1e293b; border-radius: 4px; white-space: pre-wrap; font-family: monospace; font-size: 11px; color: #e2e8f0;"></pre>
+              </details>
+            </div>
+
+            <!-- Scene-Specific Negative Prompt Card -->
+            <div id="sceneNegativePromptGroup" style="margin-top: 10px; padding: 10px 12px; background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 11px; font-weight: 700; color: #fca5a5; text-transform: uppercase; letter-spacing: 0.5px;">🚫 Scene Negative Prompt</span>
+                  <span id="sceneNegBadge" style="font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 4px; background: #1e293b; color: #94a3b8;">Inheriting Global</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <label for="sceneNegativeMode" style="margin: 0; font-size: 10px; color: var(--text-muted);">Mode:</label>
+                  <select id="sceneNegativeMode" style="font-size: 11px; padding: 2px 6px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                    <option value="inherit">Inherit &amp; Combine with Global</option>
+                    <option value="override">Override Global Negative Prompt</option>
+                  </select>
+                </div>
+              </div>
+              <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px;" id="sceneNegPresetChips">
+                <button type="button" class="btn-mini scene-neg-chip" data-neg="camera pan, camera movement, zoom, tilt, camera drift, handheld shake, orbiting" style="font-size: 10px; padding: 2px 7px;">+ 🚫 Lock Camera</button>
+                <button type="button" class="btn-mini scene-neg-chip" data-neg="singing, open mouth, talking, lip movement, vocalizing, teeth showing" style="font-size: 10px; padding: 2px 7px;">+ 🚫 No Singing / Closed Mouth</button>
+                <button type="button" class="btn-mini scene-neg-chip" data-neg="extra people, crowd, background bystander, duplicate person, extra limbs" style="font-size: 10px; padding: 2px 7px;">+ 🚫 No Extra People</button>
+                <button type="button" class="btn-mini scene-neg-chip" data-neg="face warping, morphing, flickering, blurry eyes, deformed hands" style="font-size: 10px; padding: 2px 7px;">+ 🚫 Anti-Artifact</button>
+              </div>
+              <textarea id="sceneNegativePrompt" rows="2" placeholder="Scene-specific negative tokens (e.g. camera pan, zoom, camera drift, singing, open mouth)..." style="font-family: monospace; font-size: 11px; line-height: 1.4; width: 100%; box-sizing: border-box;"></textarea>
+              <div id="sceneNegativeDuetRow" class="duet-prompts-grid" style="display: none; margin-top: 6px;">
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label for="sceneNegativePromptM" style="font-size: 10px; color: #94a3b8; margin-bottom: 2px; display: block;">Pass 1 Extra Negatives (Left)</label>
+                  <input type="text" id="sceneNegativePromptM" placeholder="Optional Pass 1 negatives..." style="font-family: monospace; font-size: 11px; width: 100%; box-sizing: border-box;">
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                  <label for="sceneNegativePromptF" style="font-size: 10px; color: #94a3b8; margin-bottom: 2px; display: block;">Pass 2 Extra Negatives (Right)</label>
+                  <input type="text" id="sceneNegativePromptF" placeholder="e.g. singing, open mouth, lip movement" style="font-family: monospace; font-size: 11px; width: 100%; box-sizing: border-box;">
                 </div>
               </div>
             </div>
@@ -393,8 +537,48 @@
             </div>
           </div>
 
-          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Resolution Option (Video Output Size)</h3>
+          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Scene Render Resolution (GPU Diffusion Size)</h3>
           <div class="res-grid" id="resolutionCardsContainer"></div>
+
+          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Master Video Delivery &amp; Upscaling (Stage 3 Assembly)</h3>
+          <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">Scale rendered scenes to broadcast Full HD or 4K during Master Video assembly without altering GPU diffusion motion or choreography.</p>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="cfgMasterResolution">Master Output Resolution</label>
+              <select id="cfgMasterResolution">
+                <option value="match">Match Scene Render Resolution (1:1 Native)</option>
+                <option value="1280x720">720p HD (1280x720 Widescreen)</option>
+                <option value="1344x768">768p WXGA (1344x768 Native DiT)</option>
+                <option value="1920x1080">1080p Full HD (1920x1080 Broadcast Standard)</option>
+                <option value="2560x1440">1440p 2K QHD (2560x1440 HiDPI)</option>
+                <option value="3840x2160">2160p 4K UHD (3840x2160 Cinema)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfgMasterScaleAlgo">Upscale Interpolation Filter</label>
+              <select id="cfgMasterScaleAlgo">
+                <option value="lanczos">Lanczos (Sharpest Sinc — Recommended)</option>
+                <option value="bicubic">Bicubic (Balanced Smooth)</option>
+                <option value="spline">Spline (Natural Gradients)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfgMasterSharpen">Post-Scale Detail Sharpening</label>
+              <select id="cfgMasterSharpen">
+                <option value="0">Off (0.00)</option>
+                <option value="0.25">Subtle Crispness (0.25 — Recommended)</option>
+                <option value="0.5">Medium Sharpening (0.50)</option>
+                <option value="0.8">Strong Sharpening (0.80)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="cfgProgressiveStitchMode">Batch Queue Auto-Stitch Mode</label>
+              <select id="cfgProgressiveStitchMode">
+                <option value="always_master">Always Stitch at Master Resolution</option>
+                <option value="fast_preview">Fast Preview During Queue (Upscale on Manual Stitch)</option>
+              </select>
+            </div>
+          </div>
 
           <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Model Profiles</h3>
           <div class="form-grid">
@@ -514,11 +698,20 @@
         <!-- 4. MASTER VIDEO TAB -->
         <div id="tab-master" class="tab-pane" style="padding: 16px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-shrink: 0;">
-            <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <h2 style="font-size: 16px; color: var(--text-main); margin: 0;">Master Video Player</h2>
               <span id="masterVideoBadge" style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; background: #64748b; color: #fff;">Checking...</span>
+              <span id="masterScaleInfoBadge" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #1e293b; border: 1px solid #334155; color: #38bdf8; font-family: monospace;"></span>
             </div>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <select id="masterTabResSelect" title="Master Video Delivery Resolution (Independent of Scene Render Resolution)" style="font-size: 11px; padding: 4px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                <option value="match">Master Res: Match Render</option>
+                <option value="1280x720">Master Res: 720p (1280x720)</option>
+                <option value="1344x768">Master Res: 768p (1344x768)</option>
+                <option value="1920x1080">Master Res: 1080p Full HD</option>
+                <option value="2560x1440">Master Res: 1440p 2K QHD</option>
+                <option value="3840x2160">Master Res: 4K UHD</option>
+              </select>
               <button type="button" class="btn" id="btnRefreshMasterVideo" title="Reload master video player">🔄 Reload</button>
               <button type="button" class="btn btn-primary" id="btnStitchMasterFromTab" title="Re-stitch all clips and anchors into a full master video">🧵 Stitch Master Video</button>
             </div>

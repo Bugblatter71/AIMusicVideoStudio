@@ -358,19 +358,15 @@ function redrawTimeline() {
     const hasClip = !!(clips[sc.id] || strips[sc.id] || Object.keys(clips).some((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`));
 
     // Base block gradient style
-    let grad;
-    if (sc.mode === "duet_method_b" || sc.mode === "two_pass_gva") {
-      grad = ctx.createLinearGradient(sx, trackTop, sx + sw, trackTop + trackHeight);
-      grad.addColorStop(0, "#4c1d95");
-      grad.addColorStop(1, "#2e1065");
-    } else if (sc.mode === "silent_locked") {
-      grad = ctx.createLinearGradient(sx, trackTop, sx + sw, trackTop + trackHeight);
-      grad.addColorStop(0, "#78350f");
-      grad.addColorStop(1, "#451a03");
+    const grad = ctx.createLinearGradient(sx, trackTop, sx + sw, trackTop + trackHeight);
+    if (["duet", "duet_method_b", "two_pass_gva", "gva_male_left_silent_right"].includes(sc.mode)) {
+      grad.addColorStop(0, "#4c1d95"); grad.addColorStop(1, "#2e1065");
+    } else if (["duet_method_a", "duet_a"].includes(sc.mode)) {
+      grad.addColorStop(0, "#0f766e"); grad.addColorStop(1, "#134e4a");
+    } else if (["silent", "silent_locked", "ambient"].includes(sc.mode)) {
+      grad.addColorStop(0, "#78350f"); grad.addColorStop(1, "#451a03");
     } else {
-      grad = ctx.createLinearGradient(sx, trackTop, sx + sw, trackTop + trackHeight);
-      grad.addColorStop(0, "#0369a1");
-      grad.addColorStop(1, "#082f49");
+      grad.addColorStop(0, "#0369a1"); grad.addColorStop(1, "#082f49");
     }
 
     ctx.fillStyle = grad;
@@ -490,10 +486,10 @@ function redrawTimeline() {
 
     // Status badge (Top right of block)
     if (badgeW > 0) {
-      let bBg = hasClip ? (isQueued ? "rgba(245, 158, 11, 0.95)" : "rgba(16, 185, 129, 0.95)") : "rgba(56, 189, 248, 0.85)";
-      let bTxt = hasClip ? (isQueued ? "▶ QUEUED" : "▶ VIDEO") : `⚓ ${aid}`;
-      let tCol = hasClip ? "#ffffff" : "#000000";
+      let bBg = "rgba(56, 189, 248, 0.85)", bTxt = `⚓ ${aid}`, tCol = "#000000";
       if (isRendering) { bBg = "rgba(56, 189, 248, 0.95)"; bTxt = "⚡ RENDERING"; tCol = "#ffffff"; }
+      else if (isQueued) { bBg = "rgba(245, 158, 11, 0.95)"; bTxt = "▶ QUEUED"; tCol = "#ffffff"; }
+      else if (hasClip) { bBg = "rgba(16, 185, 129, 0.95)"; bTxt = "▶ VIDEO"; tCol = "#ffffff"; }
       ctx.fillStyle = bBg;
       const bx = sx + sw - badgeW;
       if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, trackTop + 2, badgeW - 4, 14, 2); ctx.fill(); }
@@ -507,7 +503,7 @@ function redrawTimeline() {
     let borderCol = "rgba(255, 255, 255, 0.25)";
     if (isSelected) borderCol = "#38bdf8";
     else if (isRendering) borderCol = "rgba(56, 189, 248, 0.8)";
-    else if (hasClip && isQueued) borderCol = "rgba(245, 158, 11, 0.75)";
+    else if (isQueued) borderCol = "rgba(245, 158, 11, 0.75)";
     else if (hasClip) borderCol = "rgba(16, 185, 129, 0.55)";
     ctx.strokeStyle = borderCol;
     ctx.lineWidth = isSelected ? 2.5 : 1;

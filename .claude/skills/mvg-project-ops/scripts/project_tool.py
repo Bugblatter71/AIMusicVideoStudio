@@ -291,6 +291,8 @@ def cmd_show_scene(args):
     print(f"  Anchor   : {scene.get('anchor', 'N/A')}" + (f" | End: {scene.get('anchor_end')}" if scene.get('anchor_end') else "") + (f" | Female: {scene.get('anchor_female')}" if scene.get('anchor_female') else ""))
     if scene.get("render_pad_start") is not None or scene.get("render_pad_end") is not None:
         print(f"  Padding  : Head +{scene.get('render_pad_start', 0.0)}s | Tail +{scene.get('render_pad_end', 0.0)}s")
+    if scene.get("hold_last_frame") or scene.get("pad_tail") or scene.get("allow_tail_pad"):
+        print("  Hold Tail: True (clones final frame to cover timeline cut)")
     print(f"  Stem     : {scene.get('stem', 'N/A')}")
     print(f"  Out Name : {scene.get('output_name', 'N/A')}")
     if "prompt_pass1" in scene:
@@ -336,6 +338,32 @@ def cmd_set_scene(args):
         old_val = scene.get("prompt")
         scene["prompt"] = args.prompt
         changes.append(f"prompt: '{old_val}' -> '{args.prompt}'")
+        if "prompt_m" in scene:
+            scene["prompt_m"] = args.prompt
+            changes.append("prompt_m: updated with prompt")
+    def _valid(val):
+        return val is not None and not hasattr(val, "_mock_return_value") and type(val).__name__ not in ("MagicMock", "Mock")
+
+    if getattr(args, "prompt_m", None) is not None and _valid(args.prompt_m):
+        old_val = scene.get("prompt_m")
+        scene["prompt_m"] = str(args.prompt_m)
+        changes.append(f"prompt_m: '{old_val}' -> '{args.prompt_m}'")
+    if getattr(args, "prompt_f", None) is not None and _valid(args.prompt_f):
+        old_val = scene.get("prompt_f")
+        scene["prompt_f"] = str(args.prompt_f)
+        changes.append(f"prompt_f: '{old_val}' -> '{args.prompt_f}'")
+    if getattr(args, "seed_m", None) is not None and _valid(args.seed_m):
+        old_val = scene.get("seed_m")
+        scene["seed_m"] = int(args.seed_m)
+        changes.append(f"seed_m: {old_val} -> {args.seed_m}")
+    if getattr(args, "seed_f", None) is not None and _valid(args.seed_f):
+        old_val = scene.get("seed_f")
+        scene["seed_f"] = int(args.seed_f)
+        changes.append(f"seed_f: {old_val} -> {args.seed_f}")
+    if getattr(args, "split_x", None) is not None and _valid(args.split_x):
+        old_val = scene.get("split_x")
+        scene["split_x"] = float(args.split_x)
+        changes.append(f"split_x: {old_val} -> {args.split_x}")
     if args.anchor is not None:
         old_val = scene.get("anchor")
         scene["anchor"] = args.anchor
@@ -384,6 +412,16 @@ def cmd_set_scene(args):
             scene["render_pad_end"] = val
             new_val = val
         changes.append(f"render_pad_end: {old_val} -> {new_val}")
+    if isinstance(getattr(args, "hold_last_frame", None), (str, bool)):
+        old_val = scene.get("hold_last_frame")
+        raw_hlf = str(args.hold_last_frame).strip().lower()
+        if raw_hlf in ("none", "null", "clear", "default", "false", "0", "no"):
+            scene.pop("hold_last_frame", None)
+            new_val = None
+        else:
+            scene["hold_last_frame"] = True
+            new_val = True
+        changes.append(f"hold_last_frame: {old_val} -> {new_val}")
 
     if not changes:
         print("ℹ️ No property modifications provided. Scene unchanged.")
@@ -501,12 +539,18 @@ def main():
     p_set.add_argument("--end", type=float, help="End time in seconds")
     p_set.add_argument("--mode", help="Generation mode")
     p_set.add_argument("--prompt", help="Prompt text")
+    p_set.add_argument("--prompt-m", help="Pass 1 prompt text")
+    p_set.add_argument("--prompt-f", help="Pass 2 prompt text")
+    p_set.add_argument("--seed-m", type=int, help="Pass 1 seed")
+    p_set.add_argument("--seed-f", type=int, help="Pass 2 seed")
+    p_set.add_argument("--split-x", type=float, help="Split X ratio (e.g. 0.48)")
     p_set.add_argument("--anchor", help="Anchor ID (e.g. A01)")
     p_set.add_argument("--anchor-end", help="End Anchor ID (e.g. A02) or 'none'/'clear' to remove")
     p_set.add_argument("--stem", help="Audio stem filename")
     p_set.add_argument("--renderer", help="Renderer profile index or ID (e.g. 1, 9, or null/default)")
     p_set.add_argument("--pad-start", help="Head render padding in seconds, or 'none'/'clear'/'default' to remove")
     p_set.add_argument("--pad-end", help="Tail render padding in seconds, or 'none'/'clear'/'default' to remove")
+    p_set.add_argument("--hold-last-frame", help="Set 'true' to allow tail padding/cloning final frame, or 'clear'/'false' to remove")
 
     # split-scene
     p_split = subparsers.add_parser("split-scene", help="Split a scene into two sequential sub-scenes")

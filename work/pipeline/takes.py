@@ -38,12 +38,25 @@ def get_takes_manifest_path(proj_dir: Path) -> Path:
     return Path(proj_dir) / "work" / "takes_manifest.json"
 
 
+def _find_strip(proj_dir: Path, sid: str, out_name: str) -> Path | None:
+    p = Path(proj_dir)
+    for d in (p / "work" / "frames_v3", p / "work" / "frames", p / "work" / "renders_v3"):
+        for cand in (d / f"{sid}_strip.jpg", d / f"{out_name}_strip.jpg"):
+            if cand.is_file() and cand.stat().st_size > 0: return cand
+    return None
+
+
+def _active_strip_path(proj_dir: Path, sid: str) -> Path:
+    p = Path(proj_dir)
+    fdir = p / "work" / "frames_v3"
+    if not fdir.is_dir() and (p / "work" / "frames").is_dir(): fdir = p / "work" / "frames"
+    return fdir / f"{sid}_strip.jpg"
+
+
 def get_state_hashes_file(proj_dir: Path) -> Path:
-    p1 = Path(proj_dir) / "work" / "state_hashes.json"
-    p2 = Path(proj_dir) / "work" / "jobs_v3" / "state_hashes.json"
-    if p1.is_file(): return p1
-    if p2.is_file(): return p2
-    return p1
+    p1, p2 = Path(proj_dir) / "work" / "state_hashes.json", Path(proj_dir) / "work" / "jobs_v3" / "state_hashes.json"
+    if p1.is_file() and p2.is_file(): return p1 if p1.stat().st_mtime >= p2.stat().st_mtime else p2
+    return p1 if p1.is_file() else (p2 if p2.is_file() else p1)
 
 
 def save_state_hashes_data(proj_dir: Path, data: dict) -> None:
@@ -139,9 +152,9 @@ def ensure_baseline_takes_seeded(proj_dir: Path, config_file: Path) -> dict:
         vault_mp4 = renders_dir / vault_rel_mp4
         safe_link_or_copy(mp4_path, vault_mp4)
 
-        strip_path = renders_dir / f"{out_name}_strip.jpg"
+        strip_path = _find_strip(proj_dir, sid, out_name)
         vault_rel_strip = None
-        if strip_path.is_file() and strip_path.stat().st_size > 1000:
+        if strip_path and strip_path.is_file() and strip_path.stat().st_size > 0:
             vault_rel_strip = f"takes/{sid}/{out_name}__{t_hash_prefix}_strip.jpg"
             safe_link_or_copy(strip_path, renders_dir / vault_rel_strip)
 
@@ -204,21 +217,20 @@ def before_scene_render(ctx, sc: dict, out_name: str, out_mp4: Path, state: dict
 def restore_previous_active_take_if_missing(ctx, sid: str, out_name: str, out_mp4: Path) -> bool:
     """Safety fallback: If a render fails or is canceled, re-links the active take to out_mp4."""
     out_mp4 = Path(out_mp4)
-    if out_mp4.exists():
+    if out_mp4.is_file() and out_mp4.stat().st_size > 1000:
         return True
-    manifest = load_takes_manifest(ctx.project_dir)
-    sc_entry = manifest.get("scenes", {}).get(sid, {})
-    pass_num = 1 if "_Pass1" in out_name else (2 if "_Pass2" in out_name else None)
-    pkey = _pass_key(pass_num)
-    active_id = sc_entry.get("active_takes", {}).get(pkey)
-    if not active_id:
-        return False
-    for t in sc_entry.get("takes", []):
-        if t.get("take_id") == active_id and t.get("out_name") == out_name:
-            v_path = ctx.project_dir / "work" / "renders_v3" / t["vault_rel_mp4"]
-            if v_path.is_file():
-                safe_link_or_copy(v_path, out_mp4)
-                return True
+    pdir = getattr(ctx, "project_dir", None) or Path(ctx)
+    sc_entry = load_takes_manifest(pdir).get("scenes", {}).get(sid, {})
+    takes = sc_entry.get("takes", [])
+    pkey = _pass_key(1 if "_Pass1" in out_name else (2 if "_Pass2" in out_name else None))
+    active_id = sc_entry.get("active_takes", {}).get(pkey) or sc_entry.get("active_take_id")
+    cands = [t for t in takes if t.get("take_id") == active_id and t.get("out_name") == out_name]
+    cands += [t for t in reversed(takes) if t.get("out_name") == out_name and t not in cands]
+    for t in cands:
+        v_path = pdir / "work" / "renders_v3" / (t.get("vault_rel_mp4") or "")
+        if v_path.is_file():
+            safe_link_or_copy(v_path, out_mp4)
+            return True
     return False
 
 
@@ -244,9 +256,9 @@ def after_scene_render(
         safe_link_or_copy(vault_mp4, out_mp4)
 
     # Handle filmstrip thumbnail
-    strip_src = renders_dir / f"{out_name}_strip.jpg"
+    strip_src = _find_strip(ctx.project_dir, sid, out_name)
     vault_rel_strip = None
-    if strip_src.is_file():
+    if strip_src and strip_src.is_file():
         vault_rel_strip = f"takes/{sid}/{out_name}__{t_hash_prefix}_strip.jpg"
         safe_link_or_copy(strip_src, renders_dir / vault_rel_strip)
 
@@ -318,6 +330,7 @@ def try_auto_promote_vault_hit(
         cur_anchor_hash = None
     # Convention B: (proj_dir, sid, pass_num, out_name, curr_hashes, sc_start, sc_end, cur_anchor_hash, state, state_file)
     else:
+        config_file = None
         sid = str(args[0]) if len(args) > 0 else kwargs.get("sid", "")
         pass_num = args[1] if len(args) > 1 else kwargs.get("pass_num")
         out_name = str(args[2]) if len(args) > 2 else kwargs.get("out_name")
@@ -351,9 +364,10 @@ def try_auto_promote_vault_hit(
         if not v_path.is_file() or v_path.stat().st_size < 50000:
             continue
         if sc_start is not None and sc_end is not None:
-            r_start = float(t.get("render_start", 0))
-            r_end = float(t.get("render_end", 0))
-            if not ((r_start <= sc_start + 0.05) and (r_end >= sc_end - 0.05)):
+            r_start, r_end = float(t.get("render_start", 0)), float(t.get("render_end", 0))
+            snap = t.get("scene_snapshot") or {}
+            allow_pad = bool(snap.get("hold_last_frame") or snap.get("pad_tail") or snap.get("allow_tail_pad") or kwargs.get("allow_tail_pad"))
+            if not ((r_start <= sc_start + 0.05) and (allow_pad or r_end >= sc_end - 0.05)):
                 continue
         if cur_anchor_hash and t.get("anchor_sha256") and t.get("anchor_sha256") != cur_anchor_hash:
             continue
@@ -365,7 +379,7 @@ def try_auto_promote_vault_hit(
 
         # Restore strip
         v_strip = renders_dir / (t.get("vault_rel_strip") or "")
-        active_strip = renders_dir / f"{target_out_name}_strip.jpg"
+        active_strip = _active_strip_path(proj_dir, sid)
         if v_strip.is_file():
             safe_link_or_copy(v_strip, active_strip)
 
@@ -480,12 +494,11 @@ def promote_take_to_active(
     safe_link_or_copy(vault_mp4, active_mp4)
 
     # 3. Strip thumbnail
-    active_strip = renders_dir / f"{out_name}_strip.jpg"
+    active_strip = _active_strip_path(proj_dir, sid)
     vault_strip = renders_dir / (target_take.get("vault_rel_strip") or "")
     if vault_strip.is_file():
         safe_link_or_copy(vault_strip, active_strip)
-    # Clean stale dynamic thumbnail caches
-    for stale in renders_dir.glob(f"{out_name}_strip_*f.jpg"):
+    for stale in (active_strip.parent.glob(f"{sid}_strip_*f.jpg")):
         stale.unlink(missing_ok=True)
 
     # 4. Harmonize mtime above anchor(s) & Pass 1
@@ -690,7 +703,7 @@ def rollback_project_checkpoint(
                             safe_link_or_copy(v_mp4, a_mp4)
                             restored_count += 1
                         v_strip = renders_dir / (t_obj.get("vault_rel_strip") or "")
-                        a_strip = renders_dir / f"{t_obj['out_name']}_strip.jpg"
+                        a_strip = _active_strip_path(proj_dir, t_obj.get("scene_id", ""))
                         if v_strip.is_file():
                             safe_link_or_copy(v_strip, a_strip)
                         sc_entry.setdefault("active_takes", {})[pkey] = tid
@@ -787,20 +800,15 @@ def handle_takes_api(handler, action: str, path: str = "", body: dict | None = N
 
     if action == "activate":
         body = body or {}
-        p_slug = body.get("project") or body.get("slug")
-        sid = body.get("scene_id")
-        tid = body.get("take_id")
+        p_slug, sid, tid = body.get("project") or body.get("slug"), body.get("scene_id"), body.get("take_id")
         if not p_slug or not sid or not tid:
-            handler.send_error_json("project, scene_id, and take_id are required")
-            return
+            handler.send_error_json("project, scene_id, and take_id are required"); return
         pdir, cfile = _resolve_proj(p_slug)
         if not pdir or not cfile:
-            handler.send_error_json("Project or config not found", status=HTTPStatus.NOT_FOUND)
-            return
+            handler.send_error_json("Project or config not found", status=HTTPStatus.NOT_FOUND); return
         try:
             res = promote_take_to_active(pdir, cfile, sid, tid)
-            if srv and hasattr(srv, "compute_fast_project_queue"):
-                srv.compute_fast_project_queue(p_slug, force_recheck=True)
+            if srv and hasattr(srv, "compute_fast_project_queue"): srv.compute_fast_project_queue(p_slug, force_recheck=True)
             handler.send_json({"success": True, **res})
         except Exception as e:
             handler.send_error_json(str(e))
@@ -809,36 +817,27 @@ def handle_takes_api(handler, action: str, path: str = "", body: dict | None = N
     if action == "create":
         body = body or {}
         p_slug = body.get("project") or body.get("slug")
-        name = body.get("name", "").strip() or "Manual Checkpoint"
-        comment = body.get("comment", "").strip()
-        if not p_slug:
-            handler.send_error_json("project is required"); return
+        name, comment = body.get("name", "").strip() or "Manual Checkpoint", body.get("comment", "").strip()
+        if not p_slug: handler.send_error_json("project is required"); return
         pdir, cfile = _resolve_proj(p_slug)
-        if not pdir or not cfile:
-            handler.send_error_json("Project or config not found", status=HTTPStatus.NOT_FOUND); return
+        if not pdir or not cfile: handler.send_error_json("Project or config not found", status=HTTPStatus.NOT_FOUND); return
         try:
             cp = create_project_checkpoint(pdir, cfile, name=name, trigger="manual", comment=comment)
             handler.send_json({"success": True, "checkpoint": cp})
-        except Exception as e:
-            handler.send_error_json(str(e))
+        except Exception as e: handler.send_error_json(str(e))
         return
 
     if action == "rollback":
         body = body or {}
-        p_slug = body.get("project") or body.get("slug")
-        cid = body.get("checkpoint_id")
-        if not p_slug or not cid:
-            handler.send_error_json("project and checkpoint_id are required"); return
+        p_slug, cid = body.get("project") or body.get("slug"), body.get("checkpoint_id")
+        if not p_slug or not cid: handler.send_error_json("project and checkpoint_id are required"); return
         pdir, _ = _resolve_proj(p_slug)
-        if not pdir:
-            handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND); return
+        if not pdir: handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND); return
         try:
             res = rollback_project_checkpoint(pdir, cid)
-            if srv and hasattr(srv, "compute_fast_project_queue"):
-                srv.compute_fast_project_queue(p_slug, force_recheck=True)
+            if srv and hasattr(srv, "compute_fast_project_queue"): srv.compute_fast_project_queue(p_slug, force_recheck=True)
             handler.send_json({"success": True, **res})
-        except Exception as e:
-            handler.send_error_json(str(e))
+        except Exception as e: handler.send_error_json(str(e))
         return
 
     handler.send_error_json(f"Unknown takes API action: {action}")

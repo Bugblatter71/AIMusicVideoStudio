@@ -570,7 +570,7 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
   const alpha = Number(state.calibrationAlpha) || 1.0;
 
   const mode = sc.mode || "solo";
-  const isTwoPass = ["gva_male_left_silent_right", "duet_method_b", "two_pass_gva"].includes(mode);
+  const isTwoPass = ["duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"].includes(mode);
   const vModels = state.models?.video_renderers || {};
   const projVModels = models.video_renderers || {};
   const defRid = String(models.default_video_renderer || 1);

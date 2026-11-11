@@ -473,6 +473,22 @@ class TestSceneRenderPadding(unittest.TestCase):
         frames_idx = trim_cmds[0].index("-frames:v")
         self.assertEqual(trim_cmds[0][frames_idx + 1], "120", "Target frames must match timeline cut duration (5s * 24fps)")
 
+    def test_11_hold_last_frame_tail_pad_coverage(self):
+        """Scenes with hold_last_frame=True allow physical renders that end early (fade to black) without flagging TIMELINE CHANGED."""
+        ctx = ProjectContext(self.project_json)
+        out_name = "S01_solo_960x544"
+        mp4_path = self.renders_dir / f"{out_name}.mp4"
+        mp4_path.write_bytes(b"0" * 60000)
+
+        # Physical render covers [10.0, 13.5] while timeline spans [10.0, 15.0]
+        scene_renders = {out_name: {"render_start": 10.0, "render_end": 13.5}}
+
+        cov_no_pad, _, _ = check_scene_render_coverage(ctx.ffmpeg, mp4_path, scene_renders, out_name, 10.0, 15.0, allow_tail_pad=False)
+        self.assertFalse(cov_no_pad, "Without allow_tail_pad, shorter render must not cover timeline")
+
+        cov_with_pad, _, _ = check_scene_render_coverage(ctx.ffmpeg, mp4_path, scene_renders, out_name, 10.0, 15.0, allow_tail_pad=True)
+        self.assertTrue(cov_with_pad, "With allow_tail_pad=True, shorter render must be accepted for tail-padding")
+
 
 if __name__ == "__main__":
     unittest.main()

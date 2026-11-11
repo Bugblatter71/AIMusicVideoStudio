@@ -54,6 +54,19 @@ def derive_target_arg(out_name: str) -> str:
     return sid
 
 
+def _restore_if_unlinked(p_dir: Path, out_name: str | None, sid: str | None = None) -> None:
+    if not out_name:
+        return
+    clean_name = Path(out_name).stem
+    s_id = sid or derive_scene_id(clean_name)
+    if clean_name and s_id:
+        try:
+            from pipeline.takes import restore_previous_active_take_if_missing
+            restore_previous_active_take_if_missing(p_dir, s_id, clean_name, p_dir / "work" / "renders_v3" / f"{clean_name}.mp4")
+        except Exception:
+            pass
+
+
 def kill_active_render(target_slug: str | None = None):
     """Signals graceful Wan2GP cancellation via cancel_request.json and terminates the render process tree."""
     srv = _srv()
@@ -130,19 +143,22 @@ def kill_active_render(target_slug: str | None = None):
     # Clean up any lingering "rendering" status in the active project queue file and engine_status.json
     try:
         if active_proj:
-            q_file = srv.PROJECTS_DIR / active_proj / "work" / "jobs_v3" / "v3_queue.json"
+            p_dir = srv.PROJECTS_DIR / active_proj
+            q_file = p_dir / "work" / "jobs_v3" / "v3_queue.json"
             if q_file.is_file():
                 q_items = json.loads(q_file.read_text(encoding="utf-8"))
                 for q_it in q_items:
                     if q_it.get("status") == "rendering":
                         q_it["status"] = "queued" if q_it.get("needs_render") else "skipped"
                         q_it["reason"] = "STOPPED BY USER"
+                        _restore_if_unlinked(p_dir, q_it.get("output_filename") or q_it.get("filename"), q_it.get("scene_id"))
                 q_file.write_text(json.dumps(q_items, indent=2), encoding="utf-8")
             for jobs_sub in ("work/jobs_v3", "work/jobs"):
-                st_file = srv.PROJECTS_DIR / active_proj / jobs_sub / "engine_status.json"
+                st_file = p_dir / jobs_sub / "engine_status.json"
                 if st_file.is_file():
                     try:
                         st_data = json.loads(st_file.read_text(encoding="utf-8"))
+                        _restore_if_unlinked(p_dir, st_data.get("output_filename") or st_data.get("filename"))
                         st_data["state"] = "cancelled"
                         st_data["phase"] = "cancelled"
                         st_data["raw_phase"] = "Stopped by user"
@@ -422,6 +438,18 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                         break
 
                 if not next_task:
+                    # Re-check project queue in case newly saved scene edits or anchor updates arrived on disk
+                    try:
+                        items = srv_w.compute_fast_project_queue(project_slug, force_recheck=False)
+                        for idx, item in enumerate(items):
+                            if item.get("status") == "queued" and item.get("needs_render"):
+                                next_task = item
+                                next_idx = idx
+                                break
+                    except Exception:
+                        pass
+
+                if not next_task:
                     if rendered_any and getattr(srv_w, "queue_worker_active", False) and srv_w.current_worker_id == my_worker_id:
                         srv_w.broadcast_log("[Studio UI Queue] All queued passes completed! Restitching master video...")
                         run_stitch_worker(config_path, project_slug)
@@ -437,6 +465,13 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
 
                 # 3. Mark as rendering and persist
                 items[next_idx]["status"] = "rendering"
+                if hasattr(srv_w, "normalize_queue_units"):
+                    srv_w.normalize_queue_units(items, srv_w)
+                if hasattr(srv_w, "normalize_queue_units"):
+                    try:
+                        srv_w.normalize_queue_units(items, srv_w)
+                    except Exception:
+                        pass
                 try:
                     queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
                 except Exception:
@@ -448,6 +483,8 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                 t_single_start = time.time()
                 cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
                 code = execute_single_render(cmd_args, project_slug)
+                if code != 0:
+                    _restore_if_unlinked(proj_dir, out_fn, next_task.get("scene_id"))
                 t_single_elapsed = round(time.time() - t_single_start, 1)
                 t_single_completed = round(time.time(), 3)
                 if not getattr(srv_w, "queue_worker_active", False) or srv_w.current_worker_id != my_worker_id:
@@ -473,6 +510,20 @@ def run_queue_worker(project_slug: str, force_restart: bool = False):
                             item["status"] = "failed"
                         break
 
+                if code == 0 and ("_Pass1_Left" in out_fn or next_task.get("pass") == 1):
+                    sid = next_task.get("scene_id") or derive_scene_id(out_fn)
+                    for item in items:
+                        if (item.get("scene_id") == sid or derive_scene_id(item.get("output_filename", "")) == sid) and item.get("pass") == 2:
+                            if item.get("status") != "rendering":
+                                item.update({"status": "queued", "needs_render": True, "reason": "PASS 1 NEWER ON DISK"})
+                                item.pop("user_skipped_hash", None)
+                                item.pop("user_skipped_anchor_mtime", None)
+
+                if hasattr(srv_w, "normalize_queue_units"):
+                    try:
+                        srv_w.normalize_queue_units(items, srv_w)
+                    except Exception:
+                        pass
                 try:
                     queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
                 except Exception:

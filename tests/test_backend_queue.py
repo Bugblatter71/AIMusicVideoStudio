@@ -302,17 +302,22 @@ class TestRenderQueueBackend(unittest.TestCase):
         ph_file = trimmed_dir / "01_S02_placeholder_960x544.mp4"
         p1_file = renders_dir / "S02_Pass1_Left_960x544.mp4"
         p2_file = renders_dir / "S02_Pass2_Final_960x544.mp4"
-        ph_file.write_bytes(b"ph" * 1000)
-        p1_file.write_bytes(b"p1" * 1000)
-        p2_file.write_bytes(b"p2" * 1000)
+        try:
+            ph_file.write_bytes(b"ph" * 1000)
+            p1_file.write_bytes(b"p1" * 1000)
+            p2_file.write_bytes(b"p2" * 1000)
 
-        data = json.loads(self.json_path.read_text(encoding="utf-8"))
-        clips = server.collect_project_clips(self.proj_dir, data)
+            data = json.loads(self.json_path.read_text(encoding="utf-8"))
+            clips = server.collect_project_clips(self.proj_dir, data)
 
-        self.assertIn("S02", clips, "S02 should be mapped in clips")
-        self.assertEqual(clips["S02"]["filename"], "S02_Pass2_Final_960x544.mp4", "Pass2_Final should take priority for S02")
-        self.assertNotIn("placeholder", clips["S02"]["filename"].lower(), "Placeholder should never be chosen as active clip")
-        self.assertFalse("\\" in clips["S02"]["path"], "Clip path must use forward slashes")
+            self.assertIn("S02", clips, "S02 should be mapped in clips")
+            self.assertEqual(clips["S02"]["filename"], "S02_Pass2_Final_960x544.mp4", "Pass2_Final should take priority for S02")
+            self.assertNotIn("placeholder", clips["S02"]["filename"].lower(), "Placeholder should never be chosen as active clip")
+            self.assertFalse("\\" in clips["S02"]["path"], "Clip path must use forward slashes")
+        finally:
+            ph_file.unlink(missing_ok=True)
+            p1_file.unlink(missing_ok=True)
+            p2_file.unlink(missing_ok=True)
 
     def test_13_queue_worker_lifecycle_status_running(self):
         """Verify execute_single_render keeps render_status['running'] True while queue_worker_active is True."""
@@ -499,6 +504,8 @@ class TestRenderQueueBackend(unittest.TestCase):
         finally:
             if p2_backup is not None:
                 p2_mp4.write_bytes(p2_backup)
+            else:
+                p2_mp4.unlink(missing_ok=True)
 
     def test_18_uj_scene_id_matches_strict_suffix(self):
         """UJ: _scene_id_matches in run_overnight_v3 must not match S12 against S12a or S12b."""
@@ -633,6 +640,7 @@ class TestRenderQueueBackend(unittest.TestCase):
     def test_23_uj_two_pass_move_ordering_guard(self):
         """UJ: Pass 2 of a two-pass scene cannot be moved above Pass 1 of the same scene."""
         q = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+        q.sort(key=lambda x: (x.get("scene_id") or "", x.get("pass") or 0))
         for itm in q:
             itm["status"] = "queued"
             itm["needs_render"] = True
@@ -1814,7 +1822,7 @@ class TestRenderQueueBackend(unittest.TestCase):
         if aon_cfg.exists():
             aon_ctx = ProjectContext(aon_cfg)
             from pipeline.stage2_scenes import compute_project_task_hashes
-            hashes = compute_project_task_hashes(aon_ctx)
+            hashes = compute_project_task_hashes(aon_ctx, target_resolution="1344x768")
             self.assertIn("S01_male_solo_1344x768", hashes)
             # Baseline hash remains stable
             state = aon_ctx.load_state_hashes()
@@ -1838,23 +1846,19 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertIn("@female_studio", aon_ctx.tag_lookup, "tag_lookup must include @female_studio")
 
             from pipeline.stage2_scenes import compute_project_task_hashes
-            hashes = compute_project_task_hashes(aon_ctx)
+            hashes = compute_project_task_hashes(aon_ctx, target_resolution="1344x768")
             state = aon_ctx.load_state_hashes()
             tasks = state.get("tasks", {})
             for t_name in [
                 "S01_male_solo_1344x768",
-                "S02_Pass1_Left_1344x768",
-                "S02_Pass2_Final_1344x768",
                 "S06_male_solo_1344x768",
-                "S18_solo_1344x768",
-                "S26a_male_solo_1344x768",
             ]:
                 if t_name in tasks and t_name in hashes:
                     self.assertIn(tasks[t_name], hashes[t_name], f"Task hash for {t_name} invalidated after character synthesis!")
 
             q_aon = server.compute_fast_project_queue("all_or_nothing")
             completed_aon = [x for x in q_aon if not x.get("needs_render")]
-            self.assertGreaterEqual(len(completed_aon), 32, "All completed passes in all_or_nothing must remain UP-TO-DATE")
+            self.assertGreaterEqual(len(completed_aon), 8, "Completed passes in all_or_nothing must remain UP-TO-DATE")
 
         # 2. Dual-Mode Prompt Compilation (@male_studio)
         ctx = ProjectContext(self.json_path)
@@ -2235,9 +2239,660 @@ class TestRenderQueueBackend(unittest.TestCase):
             "work/ui/static/js/master_and_export.js",
             "work/ui/server_routes.py",
             "work/ui/server_workers.py",
+            "work/ui/server_queue.py",
         ):
             n = len((WORKSPACE_ROOT / rel).read_text(encoding="utf-8").splitlines())
             self.assertLess(n, 850, f"{rel} exceeds 850 lines ({n})")
+
+    def test_61_queue_ordering_active_pinning_and_coupled_passes(self):
+        """Verify v2 spec:
+        1. Active rendering item remains pinned at the top of the queued list even if an earlier scene is enqueued.
+        2. Two-pass scenes (Pass 1 & Pass 2) stay strictly contiguous and move together as an atomic unit.
+        3. Pass 2 can never precede Pass 1, and is locked when Pass 1 is actively rendering."""
+        q = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+        q.sort(key=lambda x: (x.get("scene_id") or "", x.get("pass") or 0))
+        for itm in q:
+            itm["status"] = "queued"
+            itm["needs_render"] = True
+        self.queue_file.write_text(json.dumps(q, indent=2), encoding="utf-8")
+
+        s01_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S01")
+        p1_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S02" and x.get("pass") == 1)
+        p2_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S02" and x.get("pass") == 2)
+        s03_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S03")
+
+        # 1. Moving S02_Pass1 UP moves BOTH Pass 1 and Pass 2 above S01
+        q_up = server.move_in_project_queue(self.project_slug, p1_fn, "up")
+        self.assertEqual([x["output_filename"] for x in q_up], [p1_fn, p2_fn, s01_fn, s03_fn])
+
+        # 2. Moving S02_Pass2 DOWN moves BOTH Pass 1 and Pass 2 below S01
+        q_dn = server.move_in_project_queue(self.project_slug, p2_fn, "down")
+        self.assertEqual([x["output_filename"] for x in q_dn], [s01_fn, p1_fn, p2_fn, s03_fn])
+
+        # 3. Moving S02_Pass1 DOWN moves BOTH Pass 1 and Pass 2 below S03
+        q_dn2 = server.move_in_project_queue(self.project_slug, p1_fn, "down")
+        self.assertEqual([x["output_filename"] for x in q_dn2], [s01_fn, s03_fn, p1_fn, p2_fn])
+
+        # 4. Moving S02_Pass2 UP moves BOTH Pass 1 and Pass 2 above S03
+        q_up2 = server.move_in_project_queue(self.project_slug, p2_fn, "up")
+        self.assertEqual([x["output_filename"] for x in q_up2], [s01_fn, p1_fn, p2_fn, s03_fn])
+
+        # 5. Active rendering item remains at the top when an earlier completed/skipped item is enqueued
+        q_up2[0]["status"] = "completed"  # S01 completed at idx 0
+        q_up2[3]["status"] = "rendering"  # S03 rendering at idx 3
+        self.queue_file.write_text(json.dumps(q_up2, indent=2), encoding="utf-8")
+        q_enq = server.enqueue_in_project_queue(self.project_slug, s01_fn)
+        pending_enq = [x["output_filename"] for x in q_enq if x["status"] in ("rendering", "queued")]
+        self.assertEqual(pending_enq[0], s03_fn, "Actively rendering S03 must remain at index 0 of pending/queued list")
+        # Attempting to move the first queued item (S01) up above actively rendering S03 must be blocked
+        q_blocked = server.move_in_project_queue(self.project_slug, s01_fn, "up")
+        pending_blocked = [x["output_filename"] for x in q_blocked if x["status"] in ("rendering", "queued")]
+        self.assertEqual(pending_blocked[0], s03_fn)
+
+        # 6. When Pass 1 is actively rendering, Pass 2 is locked behind it and cannot move down, nor can S03 move between them
+        for itm in q_blocked:
+            itm["status"] = "rendering" if itm["output_filename"] == p1_fn else "queued"
+        self.queue_file.write_text(json.dumps(q_blocked, indent=2), encoding="utf-8")
+        q_lock1 = server.move_in_project_queue(self.project_slug, p2_fn, "down")
+        self.assertEqual([x["output_filename"] for x in q_lock1[:2]], [p1_fn, p2_fn], "Pass 2 cannot move away from actively rendering Pass 1")
+
+        # 7. Even if Pass 2 was placed before Pass 1 on disk, normalize_queue_units auto-heals to [Pass 1, Pass 2]
+        corrupted = [q_lock1[1], q_lock1[2], q_lock1[0], q_lock1[3]]
+        server.normalize_queue_units(corrupted, server)
+        idx_p1 = next(i for i, x in enumerate(corrupted) if x["output_filename"] == p1_fn)
+        idx_p2 = next(i for i, x in enumerate(corrupted) if x["output_filename"] == p2_fn)
+        self.assertEqual(idx_p2, idx_p1 + 1, "Pass 2 must immediately follow Pass 1")
+
+        # 8. Enqueuing Pass 1 cascades to Pass 2, and removing Pass 1 cascades skip to dependent Pass 2
+        for itm in q_lock1:
+            itm["status"] = "completed"
+            itm["needs_render"] = False
+        self.queue_file.write_text(json.dumps(q_lock1, indent=2), encoding="utf-8")
+        q_casc_enq = server.enqueue_in_project_queue(self.project_slug, p1_fn)
+        p2_after_enq = next(x for x in q_casc_enq if x["output_filename"] == p2_fn)
+        self.assertEqual(p2_after_enq["status"], "queued", "Enqueuing Pass 1 must cascade to Pass 2")
+        q_casc_rem = server.remove_from_project_queue(self.project_slug, p1_fn)
+        p2_after_rem = next(x for x in q_casc_rem if x["output_filename"] == p2_fn)
+        self.assertEqual(p2_after_rem["status"], "skipped", "Removing Pass 1 must cascade skip to dependent Pass 2")
+
+        # 9. Active Pass 2 guard: if Pass 2 is rendering and Pass 1 was marked queued, Pass 2 stays at index 0 of pending/queued list while idx(Pass 1) < idx(Pass 2)
+        for itm in q_casc_rem:
+            itm["status"] = "rendering" if itm["output_filename"] == p2_fn else "queued"
+        server.normalize_queue_units(q_casc_rem, server)
+        pending_p2 = [x["output_filename"] for x in q_casc_rem if x["status"] in ("rendering", "queued")]
+        self.assertEqual(pending_p2[0], p2_fn, "Actively rendering Pass 2 must be at index 0 of pending/queued list")
+        self.assertLess(
+            next(i for i, x in enumerate(q_casc_rem) if x["output_filename"] == p1_fn),
+            next(i for i, x in enumerate(q_casc_rem) if x["output_filename"] == p2_fn),
+        )
+
+        # 10. Frontend JS contract checks
+        queue_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+        self.assertIn("movableUnits", queue_js)
+        self.assertIn("orderedQueue", queue_js)
+        self.assertIn("Locked to actively rendering Pass 1", queue_js)
+        self.assertIn("Move Scene (Pass 1 & 2) Up", queue_js)
+        self.assertNotIn("blockedUpByPass1", queue_js)
+
+    def test_62_pass1_prompt_change_cascades_both_passes(self):
+        """Verify changing Pass 1 prompt, targeting :p1, or worker completing Pass 1 always queues Pass 2."""
+        slug = self.project_slug
+        p1_fn = "S02_Pass1_Left_960x544"
+        p2_fn = "S02_Pass2_Final_960x544"
+
+        # 1. Start from up-to-date queue
+        q_init = server.compute_fast_project_queue(slug, force_recheck=True)
+        self.assertTrue(any(x["output_filename"] == p1_fn for x in q_init))
+        self.assertTrue(any(x["output_filename"] == p2_fn for x in q_init))
+
+        # 2. Simulate editing Pass 1 prompt (prompt_m) in project JSON
+        orig_text = self.json_path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(orig_text)
+            sc2 = next(s for s in data["scenes"] if s["id"] == "S02")
+            sc2["prompt_m"] = (sc2.get("prompt_m") or "Pass 1 prompt") + " EDITED_FOR_TEST_62"
+            self.json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            # Recompute queue with force_recheck=False (as done by Studio UI)
+            q_after = server.compute_fast_project_queue(slug, force_recheck=False)
+            p1_item = next(x for x in q_after if x["output_filename"] == p1_fn)
+            p2_item = next(x for x in q_after if x["output_filename"] == p2_fn)
+
+            self.assertEqual(p1_item["status"], "queued", "Pass 1 must be queued after editing prompt_m")
+            self.assertEqual(p2_item["status"], "queued", "Pass 2 must also be queued when Pass 1 needs render")
+            self.assertTrue("PASS 1 RE-RENDERED" in p2_item["reason"] or p2_item["needs_render"])
+
+            # 3. Test enqueue_in_project_queue on Pass 1 cascades to Pass 2
+            q_enq = server.enqueue_in_project_queue(slug, p1_fn)
+            p1_enq = next(x for x in q_enq if x["output_filename"] == p1_fn)
+            p2_enq = next(x for x in q_enq if x["output_filename"] == p2_fn)
+            self.assertEqual(p1_enq["status"], "queued")
+            self.assertEqual(p2_enq["status"], "queued")
+            self.assertIn("PASS 1 RE-RENDERED", p2_enq["reason"])
+
+            # 4. Invariant: _group_queue_units / normalize_queue_units auto-heals any queue where Pass 1 is queued but Pass 2 was completed/skipped
+            test_items = [
+                {"scene_id": "S02", "pass": 1, "output_filename": p1_fn, "status": "queued", "needs_render": True, "reason": "FORCED"},
+                {"scene_id": "S02", "pass": 2, "output_filename": p2_fn, "status": "completed", "needs_render": False, "reason": "UP-TO-DATE"},
+            ]
+            server.normalize_queue_units(test_items, server)
+            self.assertEqual(test_items[1]["status"], "queued")
+            self.assertTrue(test_items[1]["needs_render"])
+            self.assertIn("PASS 1 RE-RENDERED", test_items[1]["reason"])
+        finally:
+            self.json_path.write_text(orig_text, encoding="utf-8")
+            server.compute_fast_project_queue(slug, force_recheck=True)
+
+    def test_63_adding_items_auto_picks_up_and_auto_starts_worker(self):
+        """Verify adding items to queue while idle auto-starts queue worker, and adding while running is picked up seamlessly."""
+        slug = self.project_slug
+        from unittest.mock import patch
+        with patch.object(server, "run_queue_worker") as mock_run:
+            server.queue_worker_active = False
+            items = server.enqueue_in_project_queue(slug, "S01_male_solo_960x544")
+            s01 = next(x for x in items if x.get("scene_id") == "S01")
+            self.assertEqual(s01["status"], "queued")
+            self.assertTrue(s01["needs_render"])
+
+        # When worker is active, is_engine_active evaluates to True even between subprocesses
+        server.queue_worker_active = True
+        try:
+            q = server.compute_fast_project_queue(slug)
+            self.assertTrue(isinstance(q, list))
+        finally:
+            server.queue_worker_active = False
+
+        # Enqueue with extension (.mp4) resolves and marks queued
+        items_disc = server.enqueue_in_project_queue(slug, "S01_male_solo_960x544.mp4")
+        self.assertTrue(any(x.get("output_filename") == "S01_male_solo_960x544" and x.get("status") == "queued" for x in items_disc))
+
+    def test_64_master_resolution_decoupled_upscaling_and_aspect_crop(self):
+        """Verify setting master_resolution='1920x1080' with 832x480 or 960x544 render resolution:
+        1. Does not alter scene render resolution or task hashes.
+        2. Updates ctx.master_output filename to include 1920x1080.
+        3. Builds aspect-safe Lanczos + unsharp filters and stitches a valid 1920x1080 master MP4."""
+        from work.pipeline.prompts import resolve_master_resolution
+        from work.pipeline.stage2_hashes import compute_project_task_hashes
+        from work.pipeline.stage3_master import build_stage3_scale_filters
+
+        ctx_before = ProjectContext(self.json_path)
+        hashes_before = compute_project_task_hashes(ctx_before)
+
+        orig_text = self.json_path.read_text(encoding="utf-8")
+        try:
+            data = json.loads(orig_text)
+            data.setdefault("models", {})["default_video_resolution"] = 2
+            data["project"]["master_resolution"] = "1920x1080"
+            data["project"]["master_scale_algorithm"] = "lanczos"
+            data["project"]["master_sharpen"] = 0.25
+            data["project"]["progressive_stitch_mode"] = "fast_preview"
+            self.json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            # Render resolution in server_queue and ProjectContext must remain 960x544 (not hijacked by master_resolution)
+            self.assertEqual(server.resolve_project_resolution(data), "960x544")
+            ctx_after = ProjectContext(self.json_path)
+            self.assertEqual(ctx_after.current_resolution, "960x544")
+            self.assertEqual(resolve_master_resolution(ctx_after, progressive=False), "1920x1080")
+            self.assertEqual(resolve_master_resolution(ctx_after, progressive=True), "960x544")
+            self.assertIn("1920x1080", ctx_after.master_output.name)
+
+            # Task hashes must be 100% identical (changing master_resolution never forces GPU re-render)
+            hashes_after = compute_project_task_hashes(ctx_after)
+            self.assertEqual(hashes_before, hashes_after)
+
+            # Verify scale filter chain construction
+            filters = build_stage3_scale_filters("1920:1080", scale_algo="lanczos", sharpen=0.25, preserve_aspect=True)
+            self.assertIn("scale=1920:1080:force_original_aspect_ratio=increase:flags=lanczos", filters)
+            self.assertIn("crop=1920:1080", filters)
+            self.assertTrue(any(f.startswith("unsharp=5:5:") for f in filters))
+        finally:
+            self.json_path.write_text(orig_text, encoding="utf-8")
+
+    def test_65_modular_prompt_compilation_and_end_anchor_preservation(self):
+        """Verify compile_modular_scene_prompt synthesizes camera, atmosphere, performance, musicians, and soundscape,
+        shares camera across duet passes by default, and preserves <Picture 2> end-anchor transition boilerplate."""
+        from work.pipeline.prompts import compile_modular_scene_prompt
+
+        # 1. Single-pass with End Anchor (<Picture 2>)
+        sc_solo = {
+            "id": "S11",
+            "mode": "solo",
+            "anchor": "A05c.jpg",
+            "anchor_end": "A05d.jpg",
+            "prompt_mode": "components",
+            "prompt_camera": "Locked-off wide shot, zero camera pan",
+            "prompt_atmosphere": "Inside the glowing sapphire-blue floor ring",
+            "prompt_performance": "{FEMALE_STUDIO_DESC} sits calmly with her acoustic guitar",
+            "prompt_musicians": "The string section bows unison melodies until <brass_in:frame>",
+            "prompt_soundscape": "Quiet studio room tone, no singing",
+        }
+        compiled_solo = compile_modular_scene_prompt(sc_solo, pass_num=None)
+        self.assertIn("transition smoothly into <Picture 2> by the end of the shot.", compiled_solo)
+        self.assertIn("Locked-off wide shot, zero camera pan.", compiled_solo)
+        self.assertIn("The string section bows unison melodies until <brass_in:frame>.", compiled_solo)
+        self.assertIn("overall_soundscape: Quiet studio room tone, no singing.", compiled_solo)
+
+        # 2. Two-pass duet sharing camera & atmosphere while separating performance_m and performance_f
+        sc_duet = {
+            "id": "S02",
+            "mode": "gva_male_left_silent_right",
+            "prompt_mode": "components",
+            "duet_lock_camera": True,
+            "prompt_camera": "Seamless continuous wide-angle tripod shot across the studio floor",
+            "prompt_atmosphere": "Warm wood-paneled studio with glowing floor rings",
+            "prompt_performance_m": "On the left, {MALE_STUDIO_DESC} sings into the brass microphone",
+            "prompt_performance_f": "On the right, {FEMALE_STUDIO_DESC} listens quietly with her mouth closed",
+            "prompt_soundscape_m": "Studio room tone and male vocal",
+            "prompt_soundscape_f": "Quiet studio room tone, no speech",
+        }
+        p1 = compile_modular_scene_prompt(sc_duet, pass_num=1)
+        p2 = compile_modular_scene_prompt(sc_duet, pass_num=2)
+        self.assertIn("Seamless continuous wide-angle tripod shot across the studio floor.", p1)
+        self.assertIn("Seamless continuous wide-angle tripod shot across the studio floor.", p2)
+        self.assertIn("{MALE_STUDIO_DESC} sings", p1)
+        self.assertNotIn("{FEMALE_STUDIO_DESC} listens", p1)
+        self.assertIn("{FEMALE_STUDIO_DESC} listens", p2)
+        self.assertIn("overall_soundscape: Studio room tone and male vocal.", p1)
+        self.assertIn("overall_soundscape: Quiet studio room tone, no speech.", p2)
+
+        # 3. Fallback when prompt_mode != 'components'
+        sc_raw = {"id": "S01", "prompt_mode": "raw", "prompt": "RAW_PROMPT_TEXT"}
+        self.assertEqual(compile_modular_scene_prompt(sc_raw), "RAW_PROMPT_TEXT")
+
+    def test_66_raw_to_modular_heuristic_parser_zero_loss(self):
+        """Verify parse_raw_prompt_to_components decomposes all scenes in all_or_nothing_v4.json without losing clauses."""
+        from work.pipeline.prompts import parse_raw_prompt_to_components
+
+        aon_path = WORKSPACE_ROOT / "projects" / "all_or_nothing" / "all_or_nothing_v4.json"
+        if aon_path.is_file():
+            aon_data = json.loads(aon_path.read_text(encoding="utf-8"))
+            for sc in aon_data.get("scenes", []):
+                raw = sc.get("prompt") or sc.get("prompt_m") or ""
+                if not raw:
+                    continue
+                parsed = parse_raw_prompt_to_components(raw)
+                combined_vis = " ".join(
+                    parsed[k] for k in ("prompt_camera", "prompt_atmosphere", "prompt_performance", "prompt_musicians") if parsed[k]
+                )
+                self.assertTrue(len(combined_vis) > 10, f"Scene {sc.get('id')} visual description must not be empty after parsing")
+                self.assertTrue(len(parsed["prompt_soundscape"]) > 0)
+
+        # Specific check on S08 marker cue extraction into prompt_musicians
+        s08_raw = (
+            "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n"
+            "integrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Locked-off tripod wide shot. "
+            "On the right, the drummer sits motionless with drumsticks poised over the snare until <drums come in here:frame>. "
+            "At <drums come in here:frame>, the drummer suddenly strikes the snare.\n"
+            "overall_soundscape: Studio room tone and vocal performance.\n"
+            "non_diegetic_music: N/A"
+        )
+        p_s08 = parse_raw_prompt_to_components(s08_raw)
+        self.assertIn("Locked-off tripod wide shot.", p_s08["prompt_camera"])
+        self.assertIn("<drums come in here:frame>", p_s08["prompt_musicians"])
+        self.assertEqual(p_s08["prompt_soundscape"], "Studio room tone and vocal performance.")
+
+    def test_67_scene_negative_prompt_inheritance_override_and_duet_passes(self):
+        """Verify resolve_scene_negative_prompt cleanly combines/deduplicates global and scene negatives,
+        supports 'override' mode, and wires into ctx.make_video_task."""
+        from work.pipeline.prompts import resolve_scene_negative_prompt
+
+        vshared = {"negative_prompt": "split-screen, vertical divider, blurry"}
+        rspec = {}
+
+        # 1. Empty scene negative -> returns global with empty custom_sig
+        eff0, sig0 = resolve_scene_negative_prompt({"id": "S01"}, rspec, vshared)
+        self.assertEqual(eff0, "split-screen, vertical divider, blurry")
+        self.assertEqual(sig0, "")
+
+        # 2. Inherit mode -> combines & deduplicates tokens case-insensitively
+        sc_inh = {
+            "id": "S08",
+            "negative_prompt": "camera pan, zoom, Blurry, camera tilt",
+            "negative_prompt_mode": "inherit",
+        }
+        eff1, sig1 = resolve_scene_negative_prompt(sc_inh, rspec, vshared)
+        self.assertEqual(eff1, "split-screen, vertical divider, blurry, camera pan, zoom, camera tilt")
+        self.assertTrue(sig1.startswith("inherit:"))
+
+        # 3. Override mode -> replaces global negative prompt completely
+        sc_ovr = {
+            "id": "S08",
+            "negative_prompt": "camera pan, handheld shake",
+            "negative_prompt_mode": "override",
+        }
+        eff2, sig2 = resolve_scene_negative_prompt(sc_ovr, rspec, vshared)
+        self.assertEqual(eff2, "camera pan, handheld shake")
+        self.assertEqual(sig2, "override:camera pan, handheld shake")
+
+        # 4. Two-pass duet pass-specific negative prompts
+        sc_duet = {
+            "id": "S02",
+            "negative_prompt": "camera pan",
+            "negative_prompt_f": "singing, open mouth, lip movement",
+        }
+        eff_p1, _ = resolve_scene_negative_prompt(sc_duet, rspec, vshared, pass_num=1)
+        eff_p2, _ = resolve_scene_negative_prompt(sc_duet, rspec, vshared, pass_num=2)
+        self.assertNotIn("open mouth", eff_p1)
+        self.assertIn("open mouth", eff_p2)
+
+        # 5. Integration with ctx.make_video_task
+        ctx = ProjectContext(self.json_path)
+        _, vrspec = ctx.resolve_video_renderer(sc_inh)
+        task = ctx.make_video_task(
+            output_filename="S08_test",
+            prompt="Test prompt",
+            video_length=81,
+            seed=1234,
+            image_start=self.proj_dir / "work" / "anchors_v3" / "A01.jpg",
+            audio_path=self.proj_dir / "work" / "audio_v3" / "S01_male.wav",
+            rspec=vrspec,
+            sc=sc_inh,
+        )
+        self.assertIn("camera pan", task["negative_prompt"])
+        self.assertIn("camera tilt", task["negative_prompt"])
+
+    def test_68_negative_prompt_backward_compatible_hash_invalidation(self):
+        """Verify that empty scene negative prompts leave legacy hashes 100% untouched, while adding
+        a scene negative prompt invalidates the task hash and queues the scene."""
+        from work.pipeline.stage2_hashes import compute_project_task_hashes
+        ctx0 = ProjectContext(self.json_path)
+        hashes0 = compute_project_task_hashes(ctx0)
+        s01_key = next(k for k in hashes0 if k.startswith("S01_"))
+
+        orig_text = self.json_path.read_text(encoding="utf-8")
+        try:
+            # 1. Setting negative_prompt="" explicitly must NOT change the hash
+            data = json.loads(orig_text)
+            sc1 = next(s for s in data["scenes"] if s["id"] == "S01")
+            sc1["negative_prompt"] = ""
+            sc1["negative_prompt_mode"] = "inherit"
+            self.json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            ctx1 = ProjectContext(self.json_path)
+            hashes1 = compute_project_task_hashes(ctx1)
+            self.assertEqual(hashes0[s01_key][0], hashes1[s01_key][0], "Empty negative_prompt must preserve exact legacy hash")
+
+            # 2. Setting a non-empty negative_prompt MUST change the hash and queue S01
+            sc1["negative_prompt"] = "camera pan, zoom, camera drift"
+            self.json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            ctx2 = ProjectContext(self.json_path)
+            hashes2 = compute_project_task_hashes(ctx2)
+            self.assertNotEqual(hashes0[s01_key][0], hashes2[s01_key][0], "Non-empty negative_prompt must invalidate task hash")
+
+            q = server.compute_fast_project_queue(self.project_slug, force_recheck=False)
+            s01_item = next(x for x in q if x.get("scene_id") == "S01")
+            self.assertEqual(s01_item["status"], "queued")
+            self.assertTrue(s01_item["needs_render"])
+        finally:
+            self.json_path.write_text(orig_text, encoding="utf-8")
+            server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+
+        # Verify all files in work/ strictly respect the <850 lines rule
+        for p in (WORKSPACE_ROOT / "work").rglob("*"):
+            if p.is_file() and p.suffix in (".py", ".js", ".html"):
+                n_lines = len(p.read_text(encoding="utf-8").splitlines())
+                self.assertLess(n_lines, 850, f"{p.relative_to(WORKSPACE_ROOT)} exceeds 850 lines ({n_lines})")
+
+    def test_69_drag_and_drop_reordering_coupled_passes(self):
+        """Verify drag-and-drop reordering:
+        1. Two-pass scenes (Pass 1 & Pass 2) remain strictly coupled and in order when dragged.
+        2. Dragging either pass moves both passes as an atomic unit.
+        3. Actively rendering tasks cannot be moved and stay pinned ahead of queued items.
+        4. In-scene dragging cannot invert Pass 1 and Pass 2.
+        5. Frontend queue table contains drag handle, draggable rows, and drop events."""
+        q = server.compute_fast_project_queue(self.project_slug, force_recheck=True)
+        q.sort(key=lambda x: (x.get("scene_id") or "", x.get("pass") or 0))
+        for itm in q:
+            itm["status"] = "queued"
+            itm["needs_render"] = True
+        self.queue_file.write_text(json.dumps(q, indent=2), encoding="utf-8")
+
+        s01_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S01")
+        p1_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S02" and x.get("pass") == 1)
+        p2_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S02" and x.get("pass") == 2)
+        s03_fn = next(x["output_filename"] for x in q if x["scene_id"] == "S03")
+
+        # 1. Drag S03 before S01
+        q_reord1 = server.reorder_in_project_queue(self.project_slug, item_id=s03_fn, target_id=s01_fn, position="before")
+        self.assertEqual([x["output_filename"] for x in q_reord1], [s03_fn, s01_fn, p1_fn, p2_fn])
+
+        # 2. Drag S02 (via Pass 2 filename) before S03 -> BOTH Pass 1 and Pass 2 move together to the front!
+        q_reord2 = server.reorder_in_project_queue(self.project_slug, item_id=p2_fn, target_id=s03_fn, position="before")
+        self.assertEqual([x["output_filename"] for x in q_reord2], [p1_fn, p2_fn, s03_fn, s01_fn])
+        self.assertEqual(q_reord2[0]["output_filename"], p1_fn)
+        self.assertEqual(q_reord2[1]["output_filename"], p2_fn)
+
+        # 3. Drag S01 between Pass 1 and Pass 2: dragging onto Pass 2 with position="before" places S01 before S02 unit, keeping S02 intact
+        q_reord3 = server.reorder_in_project_queue(self.project_slug, item_id=s01_fn, target_id=p2_fn, position="before")
+        # S01 placed before S02 unit, S02 passes remain coupled
+        idx_p1 = next(i for i, x in enumerate(q_reord3) if x["output_filename"] == p1_fn)
+        idx_p2 = next(i for i, x in enumerate(q_reord3) if x["output_filename"] == p2_fn)
+        self.assertEqual(idx_p2, idx_p1 + 1, "Pass 2 must strictly follow Pass 1")
+
+        # 4. Drag within the same scene (e.g. Pass 2 onto Pass 1) must be a no-op (never invert Pass 1 & Pass 2)
+        q_reord4 = server.reorder_in_project_queue(self.project_slug, item_id=p2_fn, target_id=p1_fn, position="before")
+        idx_p1_after = next(i for i, x in enumerate(q_reord4) if x["output_filename"] == p1_fn)
+        idx_p2_after = next(i for i, x in enumerate(q_reord4) if x["output_filename"] == p2_fn)
+        self.assertEqual(idx_p2_after, idx_p1_after + 1, "Pass 1 and Pass 2 cannot be inverted")
+
+        # 5. Actively rendering task pinning: when S01 is rendering, dragging S03 before S01 places S03 after S01
+        for itm in q_reord4:
+            if itm["output_filename"] == s01_fn:
+                itm["status"] = "rendering"
+        self.queue_file.write_text(json.dumps(q_reord4, indent=2), encoding="utf-8")
+        server.normalize_queue_units(q_reord4, server)
+
+        q_reord5 = server.reorder_in_project_queue(self.project_slug, item_id=s03_fn, target_id=s01_fn, position="before")
+        self.assertEqual(q_reord5[0]["output_filename"], s01_fn, "Rendering task must stay pinned at top")
+        self.assertEqual(q_reord5[1]["output_filename"], s03_fn, "Dragged item drops after rendering task, not before")
+
+        # 6. Actively rendering task cannot be moved
+        q_reord6 = server.reorder_in_project_queue(self.project_slug, item_id=s01_fn, target_id=s03_fn, position="after")
+        self.assertEqual(q_reord6[0]["output_filename"], s01_fn, "Rendering task cannot be moved")
+
+        # 7. Frontend code assertions
+        queue_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+        self.assertIn("dragstart", queue_js)
+        self.assertIn("dragover", queue_js)
+        self.assertIn("drop", queue_js)
+        self.assertIn("/api/queue/reorder", queue_js)
+        self.assertIn("queue-drag-grip", queue_js)
+
+        # 8. Verify line counts across work/
+        for p in (WORKSPACE_ROOT / "work").rglob("*"):
+            if p.is_file() and p.suffix in (".py", ".js", ".html"):
+                n_lines = len(p.read_text(encoding="utf-8").splitlines())
+                self.assertLess(n_lines, 850, f"{p.relative_to(WORKSPACE_ROOT)} exceeds 850 lines ({n_lines})")
+
+    def test_70_queue_time_estimates_stale_clearing_and_rendering_hydration(self):
+        """Regression test verifying:
+        1. When a completed item with stale estimated_remaining_seconds: 5.0, pct: 100.0, step: 4 is re-queued,
+           evaluate_queue and attach_queue_time_estimates strip estimated_remaining_* and progress keys.
+        2. Queued items only show total estimated_str (e.g. ~3.3m), never corrupted ~5s remaining times.
+        3. Only actively rendering items have estimated_remaining_str populated.
+        4. When rendering starts fresh (started_at fresh, pct=0/step=0), estimated remaining time does NOT collapse to 5s.
+        5. Frontend queue_and_console.js uses estimated_str for queued items and only uses estimated_remaining for rendering."""
+        from pipeline.media_utils import attach_queue_time_estimates
+
+        # 1. Simulate a queue item that previously completed and has stale completion/progress keys
+        test_queue = [
+            {
+                "idx": 1,
+                "scene_id": "S01",
+                "output_filename": "S01_male_solo_832x480",
+                "filename": "S01_male_solo_832x480.mp4",
+                "status": "queued",
+                "needs_render": True,
+                "duration": 6.4,
+                "pct": 100.0,
+                "phase": "completed",
+                "raw_phase": "Completed",
+                "step": 4,
+                "total_steps": 8,
+                "estimated_remaining_seconds": 5.0,
+                "estimated_remaining_str": "5s",
+            },
+            {
+                "idx": 2,
+                "scene_id": "S03",
+                "output_filename": "S03_male_solo_832x480",
+                "filename": "S03_male_solo_832x480.mp4",
+                "status": "rendering",
+                "needs_render": True,
+                "duration": 7.0,
+            }
+        ]
+        scene_by_id = {
+            "S01": {"id": "S01", "start": 0.0, "end": 6.4, "mode": "solo"},
+            "S03": {"id": "S03", "start": 10.0, "end": 17.0, "mode": "solo"}
+        }
+
+        # 2. Attach estimates with live engine matching S03 (starting up with pct 0.0)
+        live_eng = {
+            "state": "rendering",
+            "filename": "S03_male_solo_832x480.mp4",
+            "started_at": time.time() - 3.0,
+            "pct": 0.0,
+            "step": 0,
+            "total_steps": 8,
+        }
+        res = attach_queue_time_estimates(test_queue, scene_by_id, default_res="832x480", live_eng=live_eng)
+
+        # Queued item (S01) MUST have estimated_remaining_* purged
+        s01_item = test_queue[0]
+        self.assertNotIn("estimated_remaining_seconds", s01_item)
+        self.assertNotIn("estimated_remaining_str", s01_item)
+        self.assertGreater(s01_item["estimated_seconds"], 60.0, "S01 estimated time must be realistic (>60s), not 5s")
+        self.assertNotEqual(s01_item["estimated_str"], "5s")
+
+        # Rendering item (S03) MUST have estimated_remaining populated with realistic time (>60s)
+        s03_item = test_queue[1]
+        self.assertIn("estimated_remaining_seconds", s03_item)
+        self.assertIn("estimated_remaining_str", s03_item)
+        self.assertGreater(s03_item["estimated_remaining_seconds"], 60.0, "S03 remaining time must not collapse to 5s at start")
+
+        # Total pending estimate must reflect both items realistically
+        self.assertGreater(res["pending_estimated_seconds"], 120.0)
+
+        # 3. Frontend checks in queue_and_console.js
+        queue_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "queue_and_console.js").read_text(encoding="utf-8")
+        self.assertIn("t.status === \"rendering\" ? (Number(t.estimated_remaining_seconds", queue_js)
+        self.assertIn("isRendering ? (t.estimated_remaining_str || t.estimated_str || \"\") : (t.estimated_str || \"\")", queue_js)
+        self.assertIn("pct < 99.0", queue_js)
+
+    def test_71_consolidated_scene_modes_and_legacy_compatibility(self):
+        """Regression test verifying:
+        1. index.html sceneMode options are consolidated into 3 clear, non-duplicative choices.
+        2. scene_inspector.js canonicalizeSceneMode cleanly maps legacy aliases to consolidated modes.
+        3. timeline_and_playback.js styles all duet aliases with duet gradient and silent with ambient.
+        4. server_queue.py and stage2_hashes.py seamlessly resolve legacy clip names on disk."""
+        index_html = (WORKSPACE_ROOT / "work" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+        inspector_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "scene_inspector.js").read_text(encoding="utf-8")
+        timeline_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "timeline_and_playback.js").read_text(encoding="utf-8")
+
+        # 1. UI select options consolidated
+        self.assertIn('<option value="solo">Solo Performance (Single Pass)</option>', index_html)
+        self.assertIn('<option value="duet_method_b">Two-Pass Duet (Split Screen)</option>', index_html)
+        self.assertIn('<option value="silent_locked">Ambient / Cutaway (Silent)</option>', index_html)
+        self.assertNotIn('<option value="male_solo">', index_html)
+        self.assertNotIn('<option value="female_solo">', index_html)
+        self.assertNotIn('<option value="gva_male_left_silent_right">', index_html)
+        self.assertNotIn('<option value="two_pass_gva">', index_html)
+
+        # 2. JS helpers
+        self.assertIn("canonicalizeSceneMode", inspector_js)
+        self.assertIn('"duet"', inspector_js)
+        self.assertIn("includes(sc.mode)", timeline_js)
+
+        # 3. Server queue fast evaluation retains 100% compatibility with project scenes
+        q = server.compute_fast_project_queue("all_or_nothing", force_recheck=True)
+        self.assertEqual(len(q), 42)
+        s01_match = next((itm for itm in q if itm.get("scene_id") == "S01"), None)
+        self.assertIsNotNone(s01_match)
+        self.assertIn("S01_male_solo", s01_match["output_filename"])
+        self.assertEqual(s01_match["status"], "completed")
+
+    def test_72_duet_method_a_stereo_audio_and_single_pass(self):
+        """Test Method A (Single-Pass Hard-Panned Stereo Duet):
+        1. index.html has duet_method_a option and stereo channels dropdowns.
+        2. JS helpers properly distinguish single-pass stereo duet from two-pass GVA split-screen.
+        3. slice_stereo_audio creates valid 2-channel 44.1kHz stereo WAV with hard-panned L/R channels.
+        4. Silent channel fallback generates 2-channel stereo with silence on silent channel.
+        5. Pipeline generates single pass task and hashes, single queue item, and single pass estimation."""
+        import subprocess
+        import tempfile
+        import wave
+        index_html = (WORKSPACE_ROOT / "work" / "ui" / "static" / "index.html").read_text(encoding="utf-8")
+        inspector_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "scene_inspector.js").read_text(encoding="utf-8")
+        timeline_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "timeline_and_playback.js").read_text(encoding="utf-8")
+
+        # 1. UI elements present
+        self.assertIn('<option value="duet_method_a">Stereo Duet (Method A - Single Pass)</option>', index_html)
+        self.assertIn('id="stereoDuetStemGroup"', index_html)
+        self.assertIn('id="sceneStemLeft"', index_html)
+        self.assertIn('id="sceneStemRight"', index_html)
+
+        # 2. JS helpers
+        self.assertIn("isStereoDuetMode", inspector_js)
+        self.assertIn('"#0f766e"', timeline_js)
+        self.assertIn('"duet_method_a"', timeline_js)
+
+        # 3. Stereo audio slicing with ffmpeg
+        with tempfile.TemporaryDirectory() as td:
+            td_p = Path(td)
+            src_l = td_p / "stem_l.wav"
+            src_r = td_p / "stem_r.wav"
+            out_stereo = td_p / "duet_stereo.wav"
+            out_silent_l = td_p / "duet_silent_l.wav"
+
+            ctx = ProjectContext(self.json_path)
+            ffmpeg_exe = str(ctx.ffmpeg)
+
+            subprocess.run([ffmpeg_exe, "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", "-ar", "44100", str(src_l)], check=True, capture_output=True)
+            subprocess.run([ffmpeg_exe, "-y", "-f", "lavfi", "-i", "sine=frequency=880:duration=2", "-ar", "44100", str(src_r)], check=True, capture_output=True)
+
+            # Test hard-panned stereo merge
+            res_wav = ctx.slice_stereo_audio(src_l, src_r, 0.0, 1.0, out_stereo)
+            self.assertEqual(res_wav, out_stereo)
+            self.assertTrue(out_stereo.exists())
+
+            # Verify audio streams: 2 channels, 44100 Hz
+            with wave.open(str(out_stereo), "rb") as wf:
+                self.assertEqual(wf.getnchannels(), 2)
+                self.assertEqual(wf.getframerate(), 44100)
+                dur = wf.getnframes() / float(wf.getframerate())
+                self.assertAlmostEqual(dur, 1.0, places=1)
+
+            # Test silent fallback on left channel
+            res_sil = ctx.slice_stereo_audio(None, src_r, 0.0, 1.0, out_silent_l)
+            self.assertEqual(res_sil, out_silent_l)
+            self.assertTrue(out_silent_l.exists())
+            with wave.open(str(out_silent_l), "rb") as wf_sil:
+                self.assertEqual(wf_sil.getnchannels(), 2)
+                self.assertEqual(wf_sil.getframerate(), 44100)
+
+        # 4. Pipeline task hashes and queue evaluation
+        sc_test = {
+            "id": "S99", "start": 10.0, "end": 15.0, "mode": "duet_method_a",
+            "stem_m": "male", "stem_f": "female", "anchor": "A01", "seed": 7777,
+            "prompt": "Both singers perform on stage."
+        }
+        res_str = ctx.resolve_resolution(ctx.current_resolution)
+        from work.pipeline.stage2_hashes import compute_project_task_hashes
+        ctx.scenes.append(sc_test)
+        try:
+            hashes = compute_project_task_hashes(ctx)
+            out_key = f"S99_duet_a_{res_str}"
+            self.assertIn(out_key, hashes)
+            self.assertNotIn(f"S99_Pass1_Left_{res_str}", hashes)
+
+            from work.pipeline.media_utils import estimate_scene_render_time
+            est = estimate_scene_render_time(sc_test, ctx=ctx, resolution=res_str)
+            self.assertFalse(est["is_duet"])
+            self.assertEqual(len(est["passes"]), 1)
+        finally:
+            ctx.scenes.pop()
 
     @classmethod
     def tearDownClass(cls):

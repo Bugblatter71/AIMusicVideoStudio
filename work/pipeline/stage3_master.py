@@ -10,9 +10,37 @@ from .media_utils import (
     probe_video_frames,
     resolve_rendered_clip_path,
 )
+from .prompts import resolve_master_resolution
 
 
-def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log_prefix: str = "") -> bool:
+def build_stage3_scale_filters(
+    res_str: str,
+    scale_algo: str = "lanczos",
+    sharpen: float = 0.0,
+    preserve_aspect: bool = True,
+) -> list[str]:
+    """Builds FFmpeg filter chain for scaling (aspect-safe fill & crop) and optional luma unsharp masking."""
+    w, h = [int(v) for v in res_str.split(":")]
+    algo = scale_algo if scale_algo in ("lanczos", "bicubic", "spline", "bilinear", "neighbor") else "lanczos"
+    filters = []
+    if preserve_aspect:
+        filters.append(f"scale={w}:{h}:force_original_aspect_ratio=increase:flags={algo}")
+        filters.append(f"crop={w}:{h}")
+    else:
+        filters.append(f"scale={w}:{h}:flags={algo}")
+    if sharpen > 0.001:
+        luma_amt = round(min(1.5, max(0.05, float(sharpen) * 1.2)), 2)
+        filters.append(f"unsharp=5:5:{luma_amt}:5:5:0.0")
+    filters.append("setsar=1:1")
+    return filters
+
+
+def assemble_progressive_master(
+    ctx: ProjectContext,
+    scene_meta: list[dict],
+    log_prefix: str = "",
+    progressive: bool = False,
+) -> bool:
     """Assembles a full-song master video from start to finish.
     Uses rendered AI video clips where available, and loops high-res anchor portraits as storyboard
     placeholders for scenes that have not yet been rendered.
@@ -23,31 +51,20 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
     scene_renders = state.setdefault("scene_renders", {})
     trim_cache = state.setdefault("trim_cache", {})
 
-    target_w, target_h = None, None
-    for sc in scene_meta:
-        src = resolve_rendered_clip_path(ctx.renders_dir, Path(sc["clip"]).stem, promote=True)
-        if src.exists():
-            dims = probe_video_dimensions(ctx.ffmpeg, src)
-            if dims:
-                target_w, target_h = dims
-                break
-
-    master_res = str(ctx.project_cfg.get("master_resolution", "")).strip()
-    if master_res and master_res.lower() not in ("", "match", "render", "auto", "default"):
-        resolved_master = ctx.resolve_resolution(master_res)
-        if resolved_master == "1920x1088":
-            res_str = "1920:1080"
-        else:
-            res_str = resolved_master.replace("x", ":")
-    else:
-        cfg_res = ctx.current_resolution
-        if cfg_res == "1920x1088":
-            res_str = "1920:1080"
-        else:
-            res_str = cfg_res.replace("x", ":")
+    ctx.update_master_output()
+    resolved_master = resolve_master_resolution(ctx, progressive=progressive)
+    res_str = resolved_master.replace("x", ":")
+    scale_algo = str(ctx.project_cfg.get("master_scale_algorithm") or "lanczos").strip().lower()
+    if scale_algo not in ("lanczos", "bicubic", "spline", "bilinear", "neighbor"):
+        scale_algo = "lanczos"
+    try:
+        sharpen = max(0.0, min(1.0, float(ctx.project_cfg.get("master_sharpen") or 0.0)))
+    except (ValueError, TypeError):
+        sharpen = 0.0
 
     res_tag = res_str.replace(":", "x")
     target_tw, target_th = [int(v) for v in res_str.split(":")]
+    scale_filters = build_stage3_scale_filters(res_str, scale_algo=scale_algo, sharpen=sharpen, preserve_aspect=True)
     concat_lines = []
     last_idx = len(scene_meta) - 1
     rendered_count = 0
@@ -92,7 +109,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
 
         # Head offset into the rendered clip to reach timeline edit start
         head_offset_s = max(0.0, sc_start - render_start) + ctx.trim_first_frame_s
-        trim_sig = f"{sc_start:.3f}_{sc_end:.3f}_{head_offset_s:.3f}_{target_frames}_{res_str}_{ctx.fps}"
+        trim_sig = f"{sc_start:.3f}_{sc_end:.3f}_{head_offset_s:.3f}_{target_frames}_{res_str}_{scale_algo}_{sharpen:.2f}_{ctx.fps}"
 
         if src_clip.exists() and src_clip.stat().st_size > 50000:
             rendered_count += 1
@@ -123,7 +140,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                     ])
                 vf_filters.extend([
                     "tpad=stop_mode=clone:stop=-1",
-                    f"scale={res_str}:flags=lanczos",
+                    *scale_filters,
                     f"fps={ctx.fps}",
                 ])
                 if i == last_idx and ctx.fade_out_last_s > 0:
@@ -169,7 +186,7 @@ def assemble_progressive_master(ctx: ProjectContext, scene_meta: list[dict], log
                             needs_encode = True
             if needs_encode:
                 vf_filters = [
-                    f"scale={res_str}:flags=lanczos",
+                    *scale_filters,
                     f"fps={ctx.fps}",
                 ]
                 if i == last_idx and ctx.fade_out_last_s > 0:

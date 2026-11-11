@@ -371,7 +371,23 @@ function updateProjectSettingsUI() {
   document.getElementById("cfgDefaultVideoRenderer").value = String(m.default_video_renderer || 1);
   document.getElementById("cfgNegativePrompt").value = m.video_shared_settings?.negative_prompt || "";
 
+  if (document.getElementById("cfgMasterResolution")) {
+    document.getElementById("cfgMasterResolution").value = p.master_resolution || "match";
+  }
+  if (document.getElementById("cfgMasterScaleAlgo")) {
+    document.getElementById("cfgMasterScaleAlgo").value = p.master_scale_algorithm || "lanczos";
+  }
+  if (document.getElementById("cfgMasterSharpen")) {
+    document.getElementById("cfgMasterSharpen").value = String(p.master_sharpen ?? 0);
+  }
+  if (document.getElementById("cfgProgressiveStitchMode")) {
+    document.getElementById("cfgProgressiveStitchMode").value = p.progressive_stitch_mode || "always_master";
+  }
+
   renderResolutionCards(m.default_video_resolution || 4);
+  if (typeof window.updateMasterResolutionInfoUI === "function") {
+    window.updateMasterResolutionInfoUI();
+  }
 }
 
 function renderResolutionCards(activeRes) {
@@ -408,6 +424,9 @@ function renderResolutionCards(activeRes) {
       if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
         window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
       }
+      if (typeof window.updateMasterResolutionInfoUI === "function") {
+        window.updateMasterResolutionInfoUI();
+      }
       if (typeof window.recordHistorySnapshot === "function") {
         window.recordHistorySnapshot(`Select Resolution Option #${k}`);
       }
@@ -431,9 +450,16 @@ function syncSettingsFormToState(id) {
   else if (id === "cfgRenderOverlap") p.render_overlap_seconds = parseFloat(val) ?? 1.0;
   else if (id === "cfgDefaultAnchorRenderer") m.default_anchor_renderer = parseInt(val) || 3;
   else if (id === "cfgDefaultVideoRenderer") m.default_video_renderer = parseInt(val) || 1;
+  else if (id === "cfgMasterResolution") p.master_resolution = val || "match";
+  else if (id === "cfgMasterScaleAlgo") p.master_scale_algorithm = val || "lanczos";
+  else if (id === "cfgMasterSharpen") p.master_sharpen = parseFloat(val) || 0;
+  else if (id === "cfgProgressiveStitchMode") p.progressive_stitch_mode = val || "always_master";
   else if (id === "cfgNegativePrompt") {
     m.video_shared_settings = m.video_shared_settings || {};
     m.video_shared_settings.negative_prompt = val;
+  }
+  if (typeof window.updateMasterResolutionInfoUI === "function") {
+    window.updateMasterResolutionInfoUI();
   }
   if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
     window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
@@ -444,6 +470,7 @@ function syncSettingsFormToState(id) {
 const settingsFieldIds = [
   "cfgProjectName", "cfgMasterAudio", "cfgFps", "cfgFadeOut", "cfgRenderOverlap",
   "cfgDefaultAnchorRenderer", "cfgDefaultVideoRenderer", "cfgNegativePrompt",
+  "cfgMasterResolution", "cfgMasterScaleAlgo", "cfgMasterSharpen", "cfgProgressiveStitchMode",
 ];
 
 settingsFieldIds.forEach((id) => {

@@ -3,7 +3,12 @@ from pathlib import Path
 
 from .context import ProjectContext, resolve_scene_padding
 from .media_utils import _file_sha256, _sha256
-from .prompts import resolve_marker_prompt, resolve_scene_refs
+from .prompts import (
+    compile_modular_scene_prompt,
+    resolve_marker_prompt,
+    resolve_scene_negative_prompt,
+    resolve_scene_refs,
+)
 
 
 def _scene_id_matches(tok: str, sid: str) -> bool:
@@ -70,11 +75,23 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
         default_head, default_tail = resolve_scene_padding({"start": start, "end": end, "anchor_end": sc.get("anchor_end")}, ctx.head_overlap_s, ctx.tail_overlap_s)
         has_custom_pad = (head_pad, tail_pad) != (default_head, default_tail)
 
-        if mode in ("solo", "male_solo", "female_solo", "silent_locked", "single_pass"):
+        if mode in ("solo", "male_solo", "female_solo", "silent_locked", "silent", "ambient", "single_pass", "duet_method_a", "duet_a"):
             vrid, vrspec = ctx.resolve_video_renderer(sc)
             vmodel = vrspec["model_type"]
             res_str = res_override or ctx.resolve_resolution(vrspec.get("resolution", ctx.current_resolution))
-            if mode == "male_solo":
+            if mode in ("duet_method_a", "duet_a"):
+                stem_l = sc.get("stem_m") or sc.get("stem_left") or sc.get("stem_l") or "male"
+                stem_r = sc.get("stem_f") or sc.get("stem_right") or sc.get("stem_r") or "female"
+                stem_key = f"{stem_l}_{stem_r}"
+                default_stem = stem_key
+                cand_name = None
+                if ctx and hasattr(ctx, "renders_dir") and not sc.get("output_name"):
+                    for c in (f"{sid}_duet_a", f"{sid}_duet_method_a", f"{sid}_duet_stereo"):
+                        if (ctx.renders_dir / f"{c}_{res_str}.mp4").exists():
+                            cand_name = c
+                            break
+                raw_out_name = sc.get("output_name", cand_name or f"{sid}_duet_a")
+            elif mode == "male_solo":
                 default_stem = "male"
                 stem_key = sc.get("stem", default_stem)
                 raw_out_name = sc.get("output_name", f"{sid}_male_solo")
@@ -82,14 +99,20 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
                 default_stem = "female"
                 stem_key = sc.get("stem", default_stem)
                 raw_out_name = sc.get("output_name", f"{sid}_female_solo")
-            elif mode == "silent_locked":
+            elif mode in ("silent_locked", "silent", "ambient"):
                 default_stem = "silent"
                 stem_key = "silent"
                 raw_out_name = sc.get("output_name", f"{sid}_silent")
             elif mode == "solo":
                 default_stem = "male"
                 stem_key = sc.get("stem", default_stem)
-                raw_out_name = sc.get("output_name", f"{sid}_solo")
+                cand_name = None
+                if ctx and hasattr(ctx, "renders_dir") and not sc.get("output_name"):
+                    for c in (f"{sid}_solo", f"{sid}_male_solo", f"{sid}_female_solo", f"{sid}_{stem_key}"):
+                        if (ctx.renders_dir / f"{c}_{res_str}.mp4").exists():
+                            cand_name = c
+                            break
+                raw_out_name = sc.get("output_name", cand_name or f"{sid}_solo")
             else:
                 default_stem = "silent"
                 stem_key = sc.get("stem", default_stem)
@@ -97,7 +120,7 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
 
             out_name = f"{raw_out_name}_{res_str}" if res_str not in raw_out_name else raw_out_name
 
-            raw_prompt = sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or ""
+            raw_prompt = compile_modular_scene_prompt(sc, pass_num=None)
             from .characters import compile_character_prompt, expand_prompt_with_characters, find_prompt_entities
 
             expanded_prompt, leg_prompt_raw = expand_prompt_with_characters(
@@ -128,6 +151,9 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
                 "config": vrspec.get("config", vshared.get("config", "")),
                 "skip_steps_cache_type": vrspec.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
             }
+            _, neg_sig = resolve_scene_negative_prompt(sc, vrspec, vshared, pass_num=None)
+            if neg_sig:
+                base_payload["neg_prompt"] = neg_sig
             if has_custom_pad:
                 base_payload["pad"] = [head_pad, tail_pad]
             is_ref2va = bool(
@@ -170,7 +196,7 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
 
             results[out_name] = tuple(valid_hashes)
 
-        elif mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
+        elif mode in ("duet", "duet_method_b", "two_pass_gva", "gva_male_left_silent_right"):
             vrid_p1, vrspec_p1 = ctx.resolve_video_renderer(sc, pass_num=1)
             vrid_p2, vrspec_p2 = ctx.resolve_video_renderer(sc, pass_num=2)
             vmodel_p1 = vrspec_p1["model_type"]
@@ -181,11 +207,11 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
 
             default_stem_m = "male"
             stem_m = sc.get("stem_m") or sc.get("stem_p1") or sc.get("stem") or default_stem_m
-            default_stem_f = "female" if mode == "duet_method_b" else "silent"
+            default_stem_f = "silent" if mode == "gva_male_left_silent_right" else "female"
             stem_f = sc.get("stem_f") or sc.get("stem_p2") or default_stem_f
 
-            raw_m = sc.get("prompt_m") or sc.get("prompt") or ""
-            raw_f = sc.get("prompt_f") or sc.get("prompt") or ""
+            raw_m = compile_modular_scene_prompt(sc, pass_num=1)
+            raw_f = compile_modular_scene_prompt(sc, pass_num=2)
             from .characters import compile_character_prompt, expand_prompt_with_characters, find_prompt_entities
 
             exp_prompt_m, leg_m_raw = expand_prompt_with_characters(raw_m, ctx.variables, getattr(ctx, "tag_lookup", None))
@@ -217,6 +243,9 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
                 "config": vrspec_p1.get("config", vshared.get("config", "")),
                 "skip_steps_cache_type": vrspec_p1.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
             }
+            _, neg_sig_p1 = resolve_scene_negative_prompt(sc, vrspec_p1, vshared, pass_num=1)
+            if neg_sig_p1:
+                p1_base["neg_prompt"] = neg_sig_p1
             if has_custom_pad:
                 p1_base["pad"] = [head_pad, tail_pad]
             is_ref2va_p1 = bool(
@@ -272,6 +301,9 @@ def compute_project_task_hashes(ctx: ProjectContext, target_resolution: str | No
                 "config": vrspec_p2.get("config", vshared.get("config", "")),
                 "skip_steps_cache_type": vrspec_p2.get("skip_steps_cache_type", vshared.get("skip_steps_cache_type", "")),
             }
+            _, neg_sig_p2 = resolve_scene_negative_prompt(sc, vrspec_p2, vshared, pass_num=2)
+            if neg_sig_p2:
+                p2_base["neg_prompt"] = neg_sig_p2
             if bool(vrspec_p2.get("supports_image_refs") or "ref2va" in vmodel_p2.lower() or "fasth3" in vmodel_p2.lower()):
                 cand_refs = ctx.resolve_scene_image_refs(sc, raw_f)
                 resolved_p2: list[Path] = []

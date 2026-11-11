@@ -18,9 +18,12 @@ from .media_utils import (
 from .prompts import (
     adapt_video_prompt,
     build_ref2va_prompt,
+    compile_modular_scene_prompt,
     expand_variables,
     extract_anchor_id,
     resolve_marker_prompt,
+    resolve_master_resolution,
+    resolve_scene_negative_prompt,
     resolve_scene_refs,
     strip_dangling_ref_tags,
 )
@@ -219,54 +222,12 @@ class ProjectContext:
 
         # Standard block-aligned 16:9 widescreen resolutions (exact multiples of 16 for DiT / VAE models)
         self.builtin_resolutions = {
-            "1": {
-                "name": "480p Fast Preview",
-                "resolution": "832x480",
-                "width": 832,
-                "height": 480,
-                "aspect": "16:9",
-                "description": "Fast generation (~1 min/s) for testing motion & framing",
-            },
-            "2": {
-                "name": "540p qHD Balanced",
-                "resolution": "960x544",
-                "width": 960,
-                "height": 544,
-                "aspect": "16:9",
-                "description": "Good speed/clarity balance for full song passes",
-            },
-            "3": {
-                "name": "720p HD Standard",
-                "resolution": "1280x720",
-                "width": 1280,
-                "height": 720,
-                "aspect": "16:9",
-                "description": "Standard 720p HD widescreen format",
-            },
-            "4": {
-                "name": "768p WXGA High-Res (Default)",
-                "resolution": "1344x768",
-                "width": 1344,
-                "height": 768,
-                "aspect": "16:9",
-                "description": "Recommended native DiT resolution for high detail",
-            },
-            "5": {
-                "name": "864p Near-1080p High Fidelity",
-                "resolution": "1536x864",
-                "width": 1536,
-                "height": 864,
-                "aspect": "16:9",
-                "description": "Near 1080p high fidelity generation",
-            },
-            "6": {
-                "name": "1080p Full HD Block-Aligned",
-                "resolution": "1920x1088",
-                "width": 1920,
-                "height": 1088,
-                "aspect": "16:9",
-                "description": "Native 1080p multiple-of-16, downscaled/muxed cleanly to 1920x1080",
-            },
+            "1": {"name": "480p Fast Preview", "resolution": "832x480", "width": 832, "height": 480, "aspect": "16:9", "description": "Fast generation (~1 min/s) for testing motion & framing"},
+            "2": {"name": "540p qHD Balanced", "resolution": "960x544", "width": 960, "height": 544, "aspect": "16:9", "description": "Good speed/clarity balance for full song passes"},
+            "3": {"name": "720p HD Standard", "resolution": "1280x720", "width": 1280, "height": 720, "aspect": "16:9", "description": "Standard 720p HD widescreen format"},
+            "4": {"name": "768p WXGA High-Res (Default)", "resolution": "1344x768", "width": 1344, "height": 768, "aspect": "16:9", "description": "Recommended native DiT resolution for high detail"},
+            "5": {"name": "864p Near-1080p High Fidelity", "resolution": "1536x864", "width": 1536, "height": 864, "aspect": "16:9", "description": "Near 1080p high fidelity generation"},
+            "6": {"name": "1080p Full HD Block-Aligned", "resolution": "1920x1088", "width": 1920, "height": 1088, "aspect": "16:9", "description": "Native 1080p multiple-of-16, downscaled/muxed cleanly to 1920x1080"},
         }
         self.video_resolutions = dict(self.builtin_resolutions)
         if "video_resolutions" in profiles_raw:
@@ -281,7 +242,7 @@ class ProjectContext:
             or raw_models.get("video_renderer")
             or 1
         )
-        # Project chooses the resolution (supports default_video_resolution or resolution)
+        # Project chooses the render resolution (supports default_video_resolution or resolution; falls back to legacy master_resolution only if models resolution is unset)
         raw_res = (
             raw_models.get("default_video_resolution")
             or raw_models.get("resolution")
@@ -423,11 +384,11 @@ class ProjectContext:
         return "-"
 
     def update_master_output(self):
-        """Updates master output path based on template and current resolution/fps."""
+        """Updates master output path based on template and master resolution/fps."""
         template = str(self.project_cfg.get("master_output", "All_Or_Nothing_Master_{resolution}_{fps}fps.mp4"))
         safe_name = re.sub(r'[^\w\-]+', '_', self.project_name).strip('_')
         template = template.replace("{project_name}", safe_name)
-        res_str = self.current_resolution
+        res_str = resolve_master_resolution(self, progressive=False)
         if "{resolution}" in template:
             formatted = template.replace("{resolution}", res_str).replace("{fps}", str(self.fps))
         elif "{fps}" in template:
@@ -467,11 +428,12 @@ class ProjectContext:
                     if section in disk and isinstance(disk[section], dict):
                         target = state.setdefault(section, {})
                         for k, v in disk[section].items():
-                            if k not in target:
-                                target[k] = v
+                            target.setdefault(k, v)
             except Exception:
                 pass
-        self.state_hash_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        payload, alt = json.dumps(state, indent=2), self.project_dir / "work" / "state_hashes.json"
+        self.state_hash_file.write_text(payload, encoding="utf-8")
+        if alt != self.state_hash_file and alt.is_file(): alt.write_text(payload, encoding="utf-8")
 
     def model_fps(self, rspec: dict | None = None) -> float:
         spec = rspec or {}
@@ -540,46 +502,57 @@ class ProjectContext:
         )
         return out_wav
 
+    def _find_stem_path(self, stem_key: str) -> Path | None:
+        skey = (stem_key or "").strip().lower()
+        if not skey or skey in ("silent", "none"): return None
+        if stem_key in self.stems: return Path(self.stems[stem_key])
+        if skey in ("master", "full"): return Path(self.master_audio)
+        for k, v in self.stems.items():
+            if k.lower() == skey: return Path(v)
+        cand = resolve_path(self.project_dir, stem_key)
+        if cand.exists() and cand.is_file(): return cand
+        for ext in ("", ".mp3", ".wav", ".flac", ".ogg", ".m4a"):
+            c = self.project_dir / "audio" / f"{stem_key}{ext}"
+            if c.exists() and c.is_file(): return c
+        return None
+
     def resolve_scene_audio(self, sid: str, stem_key: str, start_s: float, gen_dur: float, frames: int) -> Path:
         skey = (stem_key or "").strip().lower()
         if not skey or skey in ("silent", "none"):
             return self.ensure_silent_wav(gen_dur, frames)
-
-        # Match configured project stems or master audio
-        src = None
-        if stem_key in self.stems:
-            src = self.stems[stem_key]
-        elif skey in ("master", "full"):
-            src = self.master_audio
-        else:
-            for k, v in self.stems.items():
-                if k.lower() == skey:
-                    src = v
-                    break
-            if src is None:
-                cand = resolve_path(self.project_dir, stem_key)
-                if cand.exists() and cand.is_file():
-                    src = cand
-                else:
-                    for ext in ("", ".mp3", ".wav", ".flac", ".ogg", ".m4a"):
-                        c = self.project_dir / "audio" / f"{stem_key}{ext}"
-                        if c.exists() and c.is_file():
-                            src = c
-                            break
-
-        # If stem does not exist, log a clear warning with valid stems and fall back safely to silence
+        src = self._find_stem_path(stem_key)
         if src is None or not Path(src).exists():
             valid_keys = list(self.stems.keys()) + ["master", "silent"]
-            print(
-                f"  [Warning] Scene {sid}: Audio stem '{stem_key}' not found on disk (valid stems: {valid_keys}). "
-                f"Using silence so the render can proceed.",
-                flush=True,
-            )
+            print(f"  [Warning] Scene {sid}: Audio stem '{stem_key}' not found on disk (valid stems: {valid_keys}). Using silence so the render can proceed.", flush=True)
             return self.ensure_silent_wav(gen_dur, frames)
-
         safe_stem_tag = re.sub(r"[^a-zA-Z0-9_\-]", "_", stem_key)
         out_wav = self.audio_dir / f"{sid}_{safe_stem_tag}.wav"
         self.slice_audio(Path(src), start_s, gen_dur, out_wav)
+        return out_wav
+
+    def slice_stereo_audio(self, src_l: Path | None, src_r: Path | None, start_s: float, dur_s: float, out_wav: Path):
+        expected_size = round(dur_s * 176400) + 44
+        sig = f"{start_s:.3f}:{dur_s:.3f}:{src_l}:{src_r}"
+        meta = out_wav.with_suffix(".slice")
+        if out_wav.exists() and abs(out_wav.stat().st_size - expected_size) < 4000:
+            if not meta.exists() or meta.read_text(encoding="utf-8").strip() == sig: return
+        cmd = [str(self.ffmpeg), "-y"]
+        l_filt = "[0:a]pan=1c|c0=0.5*c0+0.5*c1[l]" if (src_l and Path(src_l).exists()) else "[0:a]pan=1c|c0=c0[l]"
+        r_filt = "[1:a]pan=1c|c0=0.5*c0+0.5*c1[r]" if (src_r and Path(src_r).exists()) else "[1:a]pan=1c|c0=c0[r]"
+        cmd += ["-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}", "-i", str(src_l)] if (src_l and Path(src_l).exists()) else ["-f", "lavfi", "-t", f"{dur_s:.3f}", "-i", "anullsrc=r=44100:cl=mono"]
+        cmd += ["-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}", "-i", str(src_r)] if (src_r and Path(src_r).exists()) else ["-f", "lavfi", "-t", f"{dur_s:.3f}", "-i", "anullsrc=r=44100:cl=mono"]
+        cmd += ["-filter_complex", f"{l_filt};{r_filt};[l][r]amerge=inputs=2,pan=stereo|c0=c0|c1=c1[a]", "-map", "[a]", "-ar", "44100", "-c:a", "pcm_s16le", str(out_wav)]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try: meta.write_text(sig, encoding="utf-8")
+        except OSError: pass
+        return out_wav
+
+    def resolve_scene_stereo_audio(self, sid: str, stem_l: str, stem_r: str, start_s: float, gen_dur: float, frames: int) -> Path:
+        src_l, src_r = self._find_stem_path(stem_l), self._find_stem_path(stem_r)
+        if not src_l and not src_r: return self.ensure_silent_wav(gen_dur, frames)
+        safe_l, safe_r = re.sub(r"[^a-zA-Z0-9_\-]", "_", stem_l or "silent"), re.sub(r"[^a-zA-Z0-9_\-]", "_", stem_r or "silent")
+        out_wav = self.audio_dir / f"{sid}_stereo_{safe_l}_{safe_r}.wav"
+        self.slice_stereo_audio(src_l, src_r, start_s, gen_dur, out_wav)
         return out_wav
 
     def ensure_right_mask(self, frames: int, split_x_pct: float = 0.50, resolution: str | None = None) -> Path:
@@ -613,7 +586,7 @@ class ProjectContext:
                 return []
             return [resolve_path(self.project_dir, p) for p in sc["image_refs"]]
 
-        raw_prompt = str(sc.get("prompt") or sc.get("prompt_m") or prompt)
+        raw_prompt = str(prompt or compile_modular_scene_prompt(sc) or sc.get("prompt") or sc.get("prompt_m") or "")
         anchor_name = str(sc.get("anchor") or "")
         if "NIGHTOUT" in raw_prompt or "A11" in anchor_name:
             nightout_dir = self.project_dir / "references" / "nightout"
@@ -647,12 +620,20 @@ class ProjectContext:
         video_mask: Path | None = None,
         image_refs: list[Path | str] | None = None,
         image_end: Path | None = None,
+        negative_prompt: str | None = None,
+        sc: dict | None = None,
+        pass_num: int | None = None,
     ) -> dict:
         vshared = self.video_shared_cfg
         expanded = expand_variables(prompt, self.variables)
         adapted_prompt = adapt_video_prompt(expanded, rspec.get("prompt_style", "h3"))
         pass2_vpt = rspec.get("pass2_video_prompt_type", "GVA")
-        neg_prompt = rspec.get("negative_prompt", vshared.get("negative_prompt", ""))
+        if negative_prompt is not None:
+            neg_prompt = str(negative_prompt)
+        elif sc is not None:
+            neg_prompt, _ = resolve_scene_negative_prompt(sc, rspec, vshared, pass_num=pass_num)
+        else:
+            neg_prompt = rspec.get("negative_prompt", vshared.get("negative_prompt", ""))
         mtype = rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd")
         is_ref2va = (
             str(rspec.get("frames_formula", "")).lower() == "h3_ref2va"

@@ -300,3 +300,220 @@ def adapt_video_prompt(prompt: str, prompt_style: str) -> str:
             continue
         lines.append(line)
     return " ".join(lines)
+
+
+def resolve_master_resolution(ctx, progressive: bool = False) -> str:
+    """Returns target 'WxH' for Stage 3 master assembly (normalizing 1920x1088 -> 1920x1080)."""
+    if progressive and str(ctx.project_cfg.get("progressive_stitch_mode", "always_master")).strip().lower() == "fast_preview":
+        raw = ctx.current_resolution
+    else:
+        master_cfg = str(ctx.project_cfg.get("master_resolution", "match")).strip()
+        if not master_cfg or master_cfg.lower() in ("match", "render", "auto", "default"):
+            raw = ctx.current_resolution
+        else:
+            raw = ctx.resolve_resolution(master_cfg)
+    return "1920x1080" if raw == "1920x1088" else raw
+
+
+def _ensure_sentence_period(text: str) -> str:
+    s = (text or "").strip()
+    if not s:
+        return ""
+    return s if s[-1] in ".!?" else f"{s}."
+
+
+def compile_modular_scene_prompt(sc: dict, pass_num: int | None = None) -> str:
+    """Compiles structured prompt components into the canonical H3 multimodal string.
+    If sc.get('prompt_mode') != 'components', returns the raw prompt for pass_num.
+    """
+    if not isinstance(sc, dict):
+        return ""
+    if sc.get("prompt_mode") != "components":
+        if pass_num == 1:
+            return str(sc.get("prompt_m") or sc.get("prompt") or "")
+        if pass_num == 2:
+            return str(sc.get("prompt_f") or sc.get("prompt") or "")
+        return str(sc.get("prompt") or sc.get("prompt_m") or sc.get("prompt_f") or "")
+
+    lock_cam = sc.get("duet_lock_camera", True)
+    if pass_num == 1 and not lock_cam and sc.get("prompt_camera_m"):
+        camera = str(sc["prompt_camera_m"]).strip()
+    elif pass_num == 2 and not lock_cam and sc.get("prompt_camera_f"):
+        camera = str(sc["prompt_camera_f"]).strip()
+    else:
+        camera = str(sc.get("prompt_camera") or "").strip()
+
+    atmo = str(sc.get("prompt_atmosphere") or "").strip()
+    if pass_num == 1:
+        perf = str(sc.get("prompt_performance_m") or sc.get("prompt_performance") or "").strip()
+        sound = str(sc.get("prompt_soundscape_m") or sc.get("prompt_soundscape") or "Studio room tone and vocal performance.").strip()
+    elif pass_num == 2:
+        perf = str(sc.get("prompt_performance_f") or sc.get("prompt_performance") or "").strip()
+        sound = str(sc.get("prompt_soundscape_f") or sc.get("prompt_soundscape") or "Quiet studio room tone, no speech.").strip()
+    else:
+        perf = str(sc.get("prompt_performance") or "").strip()
+        sound = str(sc.get("prompt_soundscape") or "Studio room tone under the vocal performance.").strip()
+
+    musicians = str(sc.get("prompt_musicians") or "").strip()
+    has_end_anchor = bool(sc.get("anchor_end")) and pass_num != 2
+    lead_in = (
+        "[Shot 1] Continue seamlessly from <Picture 1> and transition smoothly into <Picture 2> by the end of the shot."
+        if has_end_anchor
+        else "[Shot 1] Continue directly from <Picture 1>."
+    )
+
+    visual_clauses = [_ensure_sentence_period(p) for p in (camera, atmo, perf, musicians) if p and p.strip()]
+    visual_body = " ".join(visual_clauses)
+    sound_clean = _ensure_sentence_period(sound) if sound and sound.lower() != "n/a" else (sound or "Studio room tone.")
+
+    return (
+        "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\n"
+        f"integrated_multimodal_description: {lead_in}"
+        + (f" {visual_body}" if visual_body else "")
+        + f"\noverall_soundscape: {sound_clean}\n"
+        "non_diegetic_music: N/A"
+    )
+
+
+def parse_raw_prompt_to_components(raw_prompt: str) -> dict[str, str]:
+    """Non-destructively decomposes a raw H3 or freeform scene prompt into modular components:
+    prompt_camera, prompt_atmosphere, prompt_performance, prompt_musicians, prompt_soundscape.
+    Guarantees zero sentence loss across round-trip parsing.
+    """
+    res = {
+        "prompt_camera": "",
+        "prompt_atmosphere": "",
+        "prompt_performance": "",
+        "prompt_musicians": "",
+        "prompt_soundscape": "Studio room tone under the vocal performance.",
+    }
+    if not raw_prompt or not str(raw_prompt).strip():
+        return res
+
+    desc_lines: list[str] = []
+    sound_lines: list[str] = []
+    section = "desc"
+
+    for raw_line in str(raw_prompt).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        low = line.lower()
+        if low.startswith("for the target video,"):
+            continue
+        if low.startswith("non_diegetic_music:"):
+            section = "music"
+            continue
+        if low.startswith("overall_soundscape:"):
+            section = "sound"
+            val = line[len("overall_soundscape:") :].strip()
+            if val:
+                sound_lines.append(val)
+            continue
+        if low.startswith("integrated_multimodal_description:"):
+            section = "desc"
+            val = line[len("integrated_multimodal_description:") :].strip()
+            if val:
+                desc_lines.append(val)
+            continue
+        if section == "desc":
+            desc_lines.append(line)
+        elif section == "sound":
+            sound_lines.append(line)
+
+    if sound_lines:
+        res["prompt_soundscape"] = " ".join(sound_lines).strip()
+
+    full_desc = " ".join(desc_lines).strip()
+    full_desc = re.sub(
+        r"^\[Shot\s*1\]\s*Continue\s+(?:directly|seamlessly)\s+from\s+<Picture\s*1>"
+        r"(?:\s+and\s+transition\s+smoothly\s+into\s+<Picture\s*2>\s+by\s+the\s+end\s+of\s+the\s+shot)?\s*\.?\s*",
+        "",
+        full_desc,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    if not full_desc:
+        return res
+
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_desc) if s.strip()]
+    cam_parts: list[str] = []
+    atmo_parts: list[str] = []
+    perf_parts: list[str] = []
+    mus_parts: list[str] = []
+
+    cam_re = re.compile(
+        r"\b(camera|tripod|push-in|dolly|orbital|tracking\s+shot|pan|panning|tilt|zoom|wide-angle\s+shot|medium-wide\s+shot|crane\s+shot|fixed\s+horizon|locked-off)\b",
+        re.IGNORECASE,
+    )
+    lead_re = re.compile(r"(\{MALE_|\{FEMALE_|@[a-zA-Z0-9_-]+|\bsings\b|\bsinging\b|\blistening\b|\blip\s+movements\b)", re.IGNORECASE)
+    mus_re = re.compile(
+        r"(\bdrummer\b|\bdrum\s+kit\b|\bdrumsticks\b|\bpianist\b|\bwoodwind\b|\bbassoon|\bclarinet|\bbrass\b|\btrumpet|\btrombone|\bbass\s+guitar|\bwait\s+and\s+don't\s+play\b|<[^>]+>)",
+        re.IGNORECASE,
+    )
+    atmo_re = re.compile(
+        r"^(Across\s+the\s+unified\s+wooden\s+floor|Inside\s+the\s+dark\s+recording\s+soundstage|Surrounding\s+her\s+in\s+atmospheric\s+bokeh|On\s+the\s+wooden\s+floor)\b",
+        re.IGNORECASE,
+    )
+
+    for sent in sentences:
+        has_lead = bool(lead_re.search(sent))
+        has_cam = bool(cam_re.search(sent))
+        has_mus = bool(mus_re.search(sent))
+        if has_cam and not has_lead and not has_mus:
+            cam_parts.append(sent)
+        elif has_mus and not has_lead:
+            mus_parts.append(sent)
+        elif atmo_re.search(sent) and not has_lead and not has_mus:
+            atmo_parts.append(sent)
+        else:
+            perf_parts.append(sent)
+
+    res["prompt_camera"] = " ".join(cam_parts).strip()
+    res["prompt_atmosphere"] = " ".join(atmo_parts).strip()
+    res["prompt_performance"] = " ".join(perf_parts).strip()
+    res["prompt_musicians"] = " ".join(mus_parts).strip()
+    return res
+
+
+def resolve_scene_negative_prompt(
+    sc: dict,
+    rspec: dict | None = None,
+    vshared: dict | None = None,
+    pass_num: int | None = None,
+) -> tuple[str, str]:
+    """Returns (effective_negative_prompt, custom_neg_signature).
+    When the scene has no custom negative prompt and mode is 'inherit', custom_neg_signature is ''
+    so legacy scene task hashes remain 100% unchanged.
+    """
+    rspec = rspec or {}
+    vshared = vshared or {}
+    sc = sc or {}
+    global_neg = str(rspec.get("negative_prompt", vshared.get("negative_prompt", ""))).strip()
+    base_scene_neg = str(sc.get("negative_prompt") or "").strip()
+    pass_neg = ""
+    if pass_num == 1:
+        pass_neg = str(sc.get("negative_prompt_m") or "").strip()
+    elif pass_num == 2:
+        pass_neg = str(sc.get("negative_prompt_f") or "").strip()
+
+    scene_combined = ", ".join(p for p in (base_scene_neg, pass_neg) if p)
+    mode = str(sc.get("negative_prompt_mode") or "inherit").strip().lower()
+
+    if not scene_combined and mode != "override":
+        return global_neg, ""
+
+    raw_sources = [scene_combined] if mode == "override" else [global_neg, scene_combined]
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for src in raw_sources:
+        for tok in src.split(","):
+            t = tok.strip()
+            if t and t.lower() not in seen:
+                seen.add(t.lower())
+                deduped.append(t)
+
+    effective = ", ".join(deduped)
+    custom_sig = f"{mode}:{scene_combined}"
+    return effective, custom_sig
+

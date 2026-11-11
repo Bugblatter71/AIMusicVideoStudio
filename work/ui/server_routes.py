@@ -126,6 +126,9 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             with srv.render_lock:
                 st = dict(srv.render_status)
                 st["history_count"] = len(srv.log_history)
+                st["queue_worker_active"] = bool(getattr(srv, "queue_worker_active", False))
+                if st["queue_worker_active"]:
+                    st["running"] = True
             curr_proj = st.get("current_project")
             eng_status = srv.read_project_engine_status(curr_proj)
             if not eng_status and srv.PROJECTS_DIR.is_dir():
@@ -226,6 +229,23 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 self.send_error_json(str(e))
             return
 
+        # Queue management: Drag-and-drop reorder items/units
+        if path == "/api/queue/reorder":
+            slug = (body or {}).get("slug")
+            item_id = (body or {}).get("id") or (body or {}).get("item_id")
+            target_id = (body or {}).get("target_id")
+            position = (body or {}).get("position", "before")
+            order = (body or {}).get("order")
+            if not slug or (not order and (not item_id or not target_id)):
+                self.send_error_json("slug and (order or (id and target_id)) are required")
+                return
+            try:
+                items = srv.reorder_in_project_queue(slug, item_id=item_id, target_id=target_id, position=position, order=order)
+                self.send_json({"success": True, "queue": items})
+            except Exception as e:
+                self.send_error_json(str(e))
+            return
+
         # Queue management: Remove item from queue
         if path == "/api/queue/remove":
             slug = (body or {}).get("slug")
@@ -249,6 +269,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 return
             try:
                 items = srv.enqueue_in_project_queue(slug, item_id)
+                with srv.render_lock:
+                    is_worker_active = getattr(srv, "queue_worker_active", False)
+                if not is_worker_active:
+                    srv.run_queue_worker(slug, force_restart=False)
                 self.send_json({"success": True, "queue": items})
             except Exception as e:
                 self.send_error_json(str(e))
@@ -261,6 +285,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 self.send_error_json("slug is required")
                 return
             queue = srv.compute_fast_project_queue(slug, force_recheck=True)
+            with srv.render_lock:
+                is_worker_active = getattr(srv, "queue_worker_active", False)
+            if not is_worker_active:
+                srv.run_queue_worker(slug, force_restart=False)
             self.send_json({"success": True, "queue": queue})
             return
 

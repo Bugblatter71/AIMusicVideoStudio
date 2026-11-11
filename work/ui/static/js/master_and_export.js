@@ -46,7 +46,52 @@ async function triggerImmediateRestitch() {
   }
 }
 
+function updateMasterResolutionInfoUI() {
+  const p = state.projectData?.project || {};
+  const m = state.projectData?.models || {};
+  const resMap = { "1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1080" };
+  const renderResKey = String(m.default_video_resolution || "4");
+  const renderRes = resMap[renderResKey] || (renderResKey.includes("x") ? renderResKey : "1344x768");
+  const masterCfg = p.master_resolution || "match";
+  const targetMaster = (!masterCfg || masterCfg === "match") ? renderRes : masterCfg;
+  const algo = (p.master_scale_algorithm || "lanczos").toUpperCase();
+  const sharpen = Number(p.master_sharpen || 0);
+
+  const sel = document.getElementById("masterTabResSelect");
+  if (sel && sel.value !== masterCfg) {
+    sel.value = masterCfg;
+  }
+  const cfgSel = document.getElementById("cfgMasterResolution");
+  if (cfgSel && cfgSel.value !== masterCfg) {
+    cfgSel.value = masterCfg;
+  }
+
+  const infoBadge = document.getElementById("masterScaleInfoBadge");
+  if (infoBadge) {
+    if (targetMaster === renderRes) {
+      infoBadge.textContent = `Render: ${renderRes} → Master: ${targetMaster} (1:1 Native)`;
+    } else {
+      const sharpTxt = sharpen > 0 ? ` + Sharpen ${sharpen}` : "";
+      infoBadge.textContent = `Render: ${renderRes} → Master: ${targetMaster} (${algo}${sharpTxt})`;
+    }
+  }
+}
+window.updateMasterResolutionInfoUI = updateMasterResolutionInfoUI;
+
+document.getElementById("masterTabResSelect")?.addEventListener("change", (e) => {
+  if (!state.projectData) return;
+  const p = state.projectData.project || (state.projectData.project = {});
+  p.master_resolution = e.target.value || "match";
+  updateMasterResolutionInfoUI();
+  markProjectDirty();
+  if (typeof window.recordHistorySnapshot === "function") {
+    window.recordHistorySnapshot(`Change Master Resolution to ${p.master_resolution}`);
+  }
+  showToast(`Master video resolution set to ${p.master_resolution === "match" ? "Match Render" : p.master_resolution}`);
+});
+
 function updateMasterVideoUI() {
+  updateMasterResolutionInfoUI();
   const masters = state.assets?.master_videos || [];
   const player = document.getElementById("masterVideoPlayer");
   const meta = document.getElementById("masterVideoMeta");

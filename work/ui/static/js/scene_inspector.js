@@ -1,5 +1,18 @@
 function isTwoPassMode(mode) {
-  return ["duet_method_b", "two_pass_gva", "gva_male_left_silent_right"].includes(mode);
+  return ["duet", "duet_method_b", "two_pass_gva", "gva_male_left_silent_right"].includes(mode);
+}
+
+function isStereoDuetMode(mode) {
+  return ["duet_method_a", "duet_a"].includes(String(mode || "").toLowerCase().trim());
+}
+
+function canonicalizeSceneMode(mode) {
+  if (!mode) return "solo";
+  const m = String(mode).toLowerCase().trim();
+  if (isStereoDuetMode(m)) return "duet_method_a";
+  if (isTwoPassMode(m)) return "duet_method_b";
+  if (["silent", "silent_locked", "ambient"].includes(m)) return "silent_locked";
+  return "solo";
 }
 
 function isTwoPassScene(sc) {
@@ -7,6 +20,7 @@ function isTwoPassScene(sc) {
 }
 
 function getDefaultSinglePrompt(mode) {
+  if (mode === "duet_method_a") return "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. A seamless wide shot across the studio floor. Both {MALE_STUDIO_DESC} on the left and {FEMALE_STUDIO_DESC} on the right sing together into their microphones with synchronized lip movements.\noverall_soundscape: Studio room tone under the duet vocal performance.\nnon_diegetic_music: N/A";
   if (mode === "female_solo") return "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. {FEMALE_STUDIO_DESC} leans into the microphone with open eyes and natural posture, singing with expressive, synchronized lip movements.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A";
   if (mode === "silent_locked") return "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Atmospheric continuous shot across the studio floor. The performers and instruments remain in place with subtle natural breathing and room movement, with no singing or dialogue.\noverall_soundscape: Quiet studio room tone and ambient atmosphere.\nnon_diegetic_music: N/A";
   return "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. {MALE_STUDIO_DESC} leans into the brass microphone with open eyes and natural sway, singing an emotional phrase with synchronized lip movements.\noverall_soundscape: Studio room tone under the vocal performance.\nnon_diegetic_music: N/A";
@@ -26,12 +40,7 @@ function setSelectValueSafely(selectEl, value, defaultValue) {
   const targetVal = value || defaultValue;
   if (!targetVal) return;
   const exists = Array.from(selectEl.options).some((opt) => opt.value === targetVal || opt.value.toLowerCase() === targetVal.toLowerCase());
-  if (!exists) {
-    const opt = document.createElement("option");
-    opt.value = targetVal;
-    opt.textContent = `${targetVal} (custom)`;
-    selectEl.appendChild(opt);
-  }
+  if (!exists) selectEl.appendChild(new Option(`${targetVal} (custom)`, targetVal));
   selectEl.value = targetVal;
 }
 
@@ -54,11 +63,12 @@ function populateSceneVideoRenderer(sc) {
 }
 
 function updateSceneInspectorInputs(sc) {
-  const isTwoPass = isTwoPassScene(sc);
-  const showDuet = isTwoPass ? "block" : "none";
-  const showSingle = isTwoPass ? "none" : "block";
+  const isTwoPass = isTwoPassScene(sc), isStereo = isStereoDuetMode(sc?.mode);
+  const showDuet = isTwoPass ? "block" : "none", showSingle = isTwoPass ? "none" : "block";
   const el = (id) => document.getElementById(id);
-  ["singlePromptGroup", "singleSeedGroup", "singleStemGroup"].forEach((id) => { if (el(id)) el(id).style.display = showSingle; });
+  ["singlePromptGroup", "singleSeedGroup"].forEach((id) => { if (el(id)) el(id).style.display = showSingle; });
+  if (el("singleStemGroup")) el("singleStemGroup").style.display = (!isTwoPass && !isStereo) ? "block" : "none";
+  if (el("stereoDuetStemGroup")) el("stereoDuetStemGroup").style.display = (!isTwoPass && isStereo) ? "block" : "none";
   if (el("duetPromptsGroup")) el("duetPromptsGroup").style.display = showDuet;
 
   if (isTwoPass) {
@@ -75,7 +85,12 @@ function updateSceneInspectorInputs(sc) {
   } else {
     if (el("scenePrompt")) el("scenePrompt").value = sc.prompt || "";
     if (el("sceneSeed")) el("sceneSeed").value = sc.seed !== undefined ? sc.seed : 8201;
-    setSelectValueSafely(el("sceneStem"), sc.stem, sc.mode === "silent_locked" ? "silent" : sc.mode === "female_solo" ? "female" : "male");
+    if (isStereo) {
+      setSelectValueSafely(el("sceneStemLeft"), sc.stem_m || sc.stem_left, "male");
+      setSelectValueSafely(el("sceneStemRight"), sc.stem_f || sc.stem_right, "female");
+    } else {
+      setSelectValueSafely(el("sceneStem"), sc.stem, sc.mode === "silent_locked" ? "silent" : sc.mode === "female_solo" ? "female" : "male");
+    }
   }
 
   resizeAllPromptTextareas();
@@ -88,6 +103,7 @@ function handleSceneModeChange(sc, newMode) {
 
   const wasTwoPass = isTwoPassMode(oldMode);
   const isTwoPass = isTwoPassMode(newMode);
+  const isStereo = isStereoDuetMode(newMode);
 
   // 1. Single-Pass -> Two-Pass (e.g. male_solo -> gva_male_left_silent_right or duet_method_b)
   if (!wasTwoPass && isTwoPass) {
@@ -100,43 +116,41 @@ function handleSceneModeChange(sc, newMode) {
     sc.stem_f = (newMode === "gva_male_left_silent_right") ? "silent" : "female";
     delete sc.prompt; delete sc.seed; delete sc.stem;
   }
-  // 2. Two-Pass -> Single-Pass (e.g. gva_male_left_silent_right -> male_solo or silent_locked)
+  // 2. Two-Pass -> Single-Pass (e.g. duet_method_b -> male_solo or duet_method_a)
   else if (wasTwoPass && !isTwoPass) {
     if (!sc.prompt || !sc.prompt.trim()) {
-      if (newMode === "female_solo") {
-        sc.prompt = sc.prompt_f || sc.prompt_m || getDefaultSinglePrompt(newMode);
-      } else if (newMode === "silent_locked" && oldMode === "gva_male_left_silent_right") {
-        sc.prompt = sc.prompt_f || sc.prompt_m || getDefaultSinglePrompt(newMode);
-      } else {
-        sc.prompt = sc.prompt_m || sc.prompt_f || getDefaultSinglePrompt(newMode);
-      }
+      if (newMode === "female_solo") sc.prompt = sc.prompt_f || sc.prompt_m || getDefaultSinglePrompt(newMode);
+      else if (newMode === "silent_locked" && oldMode === "gva_male_left_silent_right") sc.prompt = sc.prompt_f || sc.prompt_m || getDefaultSinglePrompt(newMode);
+      else sc.prompt = sc.prompt_m || sc.prompt_f || getDefaultSinglePrompt(newMode);
     }
-    if (sc.seed === undefined) {
-      sc.seed = (newMode === "female_solo" ? sc.seed_f : sc.seed_m) || 8201;
+    if (sc.seed === undefined) sc.seed = (newMode === "female_solo" ? sc.seed_f : sc.seed_m) || 8201;
+    if (isStereo) {
+      sc.stem_m = sc.stem_m || "male";
+      sc.stem_f = sc.stem_f || "female";
+    } else {
+      if (newMode === "male_solo") sc.stem = "male";
+      else if (newMode === "female_solo") sc.stem = "female";
+      else if (newMode === "silent_locked") sc.stem = "silent";
+      else if (newMode === "solo") sc.stem = "lead_vocal";
+      else sc.stem = "silent";
+      delete sc.stem_m; delete sc.stem_f;
     }
-    if (newMode === "male_solo") sc.stem = "male";
-    else if (newMode === "female_solo") sc.stem = "female";
-    else if (newMode === "silent_locked") sc.stem = "silent";
-    else if (newMode === "solo") sc.stem = "lead_vocal";
-    else sc.stem = "silent";
-
-    delete sc.prompt_m; delete sc.prompt_f; delete sc.seed_m; delete sc.seed_f;
-    delete sc.split_x; delete sc.stem_m; delete sc.stem_f;
+    delete sc.prompt_m; delete sc.prompt_f; delete sc.seed_m; delete sc.seed_f; delete sc.split_x;
   }
-  // 3. Single-Pass -> Single-Pass (e.g. male_solo -> silent_locked or female_solo)
+  // 3. Single-Pass -> Single-Pass (e.g. solo -> duet_method_a or silent_locked)
   else if (!wasTwoPass && !isTwoPass) {
-    if (newMode === "silent_locked") {
-      sc.stem = "silent";
-    } else if (newMode === "male_solo") {
-      if (sc.stem === "silent" || sc.stem === "female") sc.stem = "male";
-    } else if (newMode === "female_solo") {
-      if (sc.stem === "silent" || sc.stem === "male") sc.stem = "female";
-    } else if (newMode === "solo") {
-      if (sc.stem === "silent") sc.stem = "lead_vocal";
+    if (isStereo) {
+      sc.stem_m = sc.stem_m || (sc.stem === "female" ? "female" : "male");
+      sc.stem_f = sc.stem_f || (sc.stem === "female" ? "male" : "female");
+      delete sc.stem;
+    } else {
+      if (newMode === "silent_locked") sc.stem = "silent";
+      else if (newMode === "male_solo") { if (sc.stem === "silent" || sc.stem === "female") sc.stem = "male"; }
+      else if (newMode === "female_solo") { if (sc.stem === "silent" || sc.stem === "male") sc.stem = "female"; }
+      else if (newMode === "solo") { if (sc.stem === "silent") sc.stem = "lead_vocal"; }
+      delete sc.stem_m; delete sc.stem_f;
     }
-    if (!sc.prompt || !sc.prompt.trim()) {
-      sc.prompt = getDefaultSinglePrompt(newMode);
-    }
+    if (!sc.prompt || !sc.prompt.trim()) sc.prompt = getDefaultSinglePrompt(newMode);
   }
   // 4. Two-Pass -> Two-Pass (e.g. gva_male_left_silent_right <-> duet_method_b)
   else if (wasTwoPass && isTwoPass) {
@@ -236,14 +250,8 @@ function selectScene(idx) {
 
     const modeSel = document.getElementById("sceneMode");
     if (modeSel) {
-      modeSel.value = sc.mode || "solo";
-      if (sc.mode && modeSel.value !== sc.mode) {
-        const opt = document.createElement("option");
-        opt.value = sc.mode;
-        opt.textContent = sc.mode;
-        modeSel.appendChild(opt);
-        modeSel.value = sc.mode;
-      }
+      modeSel.value = canonicalizeSceneMode(sc.mode);
+      if (!modeSel.value) modeSel.value = "solo";
     }
     
     // Resolve anchor dropdown by exact match or anchor ID (e.g. A01)
@@ -302,16 +310,22 @@ function updateSceneClipPreview(sc) {
   // Check matching clip in assets
   const clips = state.assets?.clips || {};
   const matchedKey = Object.keys(clips).find((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`);
-  const qItem = (state.renderQueue || []).find((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
-  const isQueued = qItem && (qItem.status === "queued" || qItem.needs_render);
-  const isRendering = qItem && qItem.status === "rendering";
+  const qItems = (state.renderQueue || []).filter((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
+  const renTask = qItems.find((t) => t.status === "rendering");
+  const queuedTask = qItems.find((t) => t.status === "queued" || t.needs_render);
+  const isRendering = Boolean(renTask);
+  const isQueued = Boolean(queuedTask);
+  const qItem = renTask || queuedTask || qItems[0];
+  const isRunning = Boolean(state.isEngineRunning || (state.renderQueue || []).some((t) => t.status === "rendering"));
+
+  if (badge) {
+    if (isRendering) { badge.textContent = "Rendering..."; badge.style.background = "#38bdf8"; }
+    else if (isQueued) { badge.textContent = matchedKey ? `Queued (${qItem?.reason || "Changed"})` : "Queued (New)"; badge.style.background = "#f59e0b"; }
+    else if (matchedKey) { badge.textContent = "Rendered"; badge.style.background = "#10b981"; }
+    else { badge.textContent = "Missing"; badge.style.background = "#ef4444"; }
+  }
 
   if (matchedKey) {
-    if (badge) {
-      if (isRendering) { badge.textContent = "Rendering..."; badge.style.background = "#38bdf8"; }
-      else if (isQueued) { badge.textContent = `Queued (${qItem.reason || "Changed"})`; badge.style.background = "#f59e0b"; }
-      else { badge.textContent = "Rendered"; badge.style.background = "#10b981"; }
-    }
     const mtime = clips[matchedKey].mtime || "";
     const newSrc = `/media/${state.currentSlug}/clip/${encodeURIComponent(matchedKey)}${mtime ? `?t=${mtime}` : ""}`;
     const currentSrc = videoPlayer.getAttribute("data-loaded-src") || videoPlayer.getAttribute("src") || "";
@@ -321,33 +335,42 @@ function updateSceneClipPreview(sc) {
       const prevTime = videoPlayer.currentTime;
       videoPlayer.setAttribute("data-loaded-src", newSrc);
       videoPlayer.src = newSrc;
-      if (wasPlaying) {
-        videoPlayer.currentTime = prevTime;
-        videoPlayer.play().catch(() => {});
-      }
+      if (wasPlaying) { videoPlayer.currentTime = prevTime; videoPlayer.play().catch(() => {}); }
     }
     const szMb = (clips[matchedKey].size_bytes / (1024 * 1024)).toFixed(1);
-    if (info) info.textContent = `${matchedKey} (${szMb} MB)`;
+    if (info) info.textContent = isRendering ? `${matchedKey} (Rendering now...)` : `${matchedKey} (${szMb} MB)`;
     if (meta) {
-      if (isQueued) {
-        meta.innerHTML = `<div style="color: #f59e0b; font-weight: 600; margin-bottom: 2px;">Clip on disk is outdated (${qItem.reason || "Settings/Timeline changed"})</div>
-          <div>Queued for rendering. Click <strong>▶ Run</strong> in the <strong>🚀 Render Console</strong> tab to render.</div>`;
+      if (isRendering) {
+        meta.innerHTML = `<div style="color: #38bdf8; font-weight: 600; margin-bottom: 2px;">⚡ Actively rendering on GPU</div>
+          <div>Inference progress is live in the <strong>🚀 Render Console</strong>.</div>`;
+      } else if (isQueued) {
+        const note = isRunning
+          ? "Rendering is actively running; this clip is queued and will render automatically."
+          : "Queued for rendering. Click <strong>▶ Run</strong> in the <strong>🚀 Render Console</strong> tab to render.";
+        meta.innerHTML = `<div style="color: #f59e0b; font-weight: 600; margin-bottom: 2px;">Clip on disk is outdated (${qItem?.reason || "Settings/Timeline changed"})</div>
+          <div>${note}</div>`;
       } else {
         meta.innerHTML = `<div style="color: var(--text-primary); font-weight: 600; margin-bottom: 2px;">Clip ready on disk</div>
           <div>Automatically syncs with the timeline scrubber and audio playback.</div>`;
       }
     }
   } else {
-    if (badge) {
-      badge.textContent = "Missing";
-      badge.style.background = "#ef4444";
-    }
-    videoPlayer.removeAttribute("src");
-    videoPlayer.load();
-    if (info) info.textContent = "Not rendered yet";
+    videoPlayer.removeAttribute("src"); videoPlayer.load();
+    if (info) info.textContent = isRendering ? "Rendering now..." : (isQueued ? "Queued for render" : "Not rendered yet");
     if (meta) {
-      meta.innerHTML = `<div style="color: #f59e0b; font-weight: 600; margin-bottom: 2px;">No rendered MP4 clip found on disk</div>
-        <div>Save changes and click <strong>▶ Run</strong> in the <strong>🚀 Render Console</strong> tab to generate this clip.</div>`;
+      if (isRendering) {
+        meta.innerHTML = `<div style="color: #38bdf8; font-weight: 600; margin-bottom: 2px;">⚡ Actively rendering on GPU</div>
+          <div>Inference progress is live in the <strong>🚀 Render Console</strong>.</div>`;
+      } else if (isQueued) {
+        const note = isRunning
+          ? "Rendering is actively running; this new clip will render automatically."
+          : "Queued for rendering. Click <strong>▶ Run</strong> in the <strong>🚀 Render Console</strong> tab to generate this clip.";
+        meta.innerHTML = `<div style="color: #f59e0b; font-weight: 600; margin-bottom: 2px;">⏳ New clip queued for rendering</div>
+          <div>${note}</div>`;
+      } else {
+        meta.innerHTML = `<div style="color: #ef4444; font-weight: 600; margin-bottom: 2px;">No rendered MP4 clip found on disk</div>
+          <div>Save changes and click <strong>▶ Run</strong> in the <strong>🚀 Render Console</strong> tab to generate this clip.</div>`;
+      }
     }
   }
 }
@@ -534,22 +557,16 @@ Object.entries(textInputLabels).forEach(([id, label]) => {
 
   el.addEventListener("blur", () => {
     const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-    if (sc) {
-      if (id === "sceneStart") el.value = sc.start;
-      if (id === "sceneEnd") el.value = sc.end;
-    }
+    if (sc) { if (id === "sceneStart") el.value = sc.start; if (id === "sceneEnd") el.value = sc.end; }
     window.commitEditSession?.();
   });
 });
 
 const selectLabels = {
-  sceneMode: "Mode",
-  sceneAnchor: "Anchor",
-  sceneAnchorEnd: "End Anchor",
-  sceneVideoRenderer: "Video Renderer",
-  sceneStem: "Stem",
-  sceneStemM: "Stem Pass 1",
-  sceneStemF: "Stem Pass 2",
+  sceneMode: "Mode", sceneAnchor: "Anchor", sceneAnchorEnd: "End Anchor",
+  sceneVideoRenderer: "Video Renderer", sceneStem: "Stem",
+  sceneStemLeft: "Left Stem", sceneStemRight: "Right Stem",
+  sceneStemM: "Stem Pass 1", sceneStemF: "Stem Pass 2",
 };
 
 Object.entries(selectLabels).forEach(([id, label]) => {
@@ -581,6 +598,8 @@ Object.entries(selectLabels).forEach(([id, label]) => {
       updateInspectorSceneHeader(sc);
     }
     else if (id === "sceneStem") sc.stem = val;
+    else if (id === "sceneStemLeft") sc.stem_m = val;
+    else if (id === "sceneStemRight") sc.stem_f = val;
     else if (id === "sceneStemM") sc.stem_m = val;
     else if (id === "sceneStemF") sc.stem_f = val;
     markProjectDirty();

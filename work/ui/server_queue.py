@@ -13,23 +13,16 @@ from pathlib import Path
 
 try:
     from pipeline.context import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data, resolve_scene_padding
-except ImportError:
-    try:
-        from work.pipeline.context import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data, resolve_scene_padding
-    except ImportError:
-        from run_overnight_v3 import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data, resolve_scene_padding
-
-try:
     from pipeline.takes import ensure_baseline_takes_seeded, try_auto_promote_vault_hit
     from pipeline.media_utils import attach_queue_time_estimates
 except ImportError:
     try:
+        from work.pipeline.context import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data, resolve_scene_padding
         from work.pipeline.takes import ensure_baseline_takes_seeded, try_auto_promote_vault_hit
         from work.pipeline.media_utils import attach_queue_time_estimates
     except ImportError:
-        ensure_baseline_takes_seeded = None
-        try_auto_promote_vault_hit = None
-        attach_queue_time_estimates = None
+        from run_overnight_v3 import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data, resolve_scene_padding
+        ensure_baseline_takes_seeded, try_auto_promote_vault_hit, attach_queue_time_estimates = None, None, None
 
 
 def _srv():
@@ -48,13 +41,10 @@ def extract_anchor_id(name_or_str: str | Path) -> str:
     """Extracts normalized anchor ID like 'A01', 'A05b' ... from any filename or string."""
     s = Path(str(name_or_str)).name.strip()
     m = re.match(r"^A(\d{1,2})([a-z]?)(?:[ _\-\.]|$)", s, re.IGNORECASE)
-    if m:
-        return f"A{int(m.group(1)):02d}{(m.group(2) or '').lower()}"
+    if m: return f"A{int(m.group(1)):02d}{(m.group(2) or '').lower()}"
     parts = re.split(r"[-_ \.]", s)
     m2 = re.match(r"^A(\d+)([a-z]?)$", parts[0].strip(), re.IGNORECASE) if parts else None
-    if m2:
-        return f"A{int(m2.group(1)):02d}{(m2.group(2) or '').lower()}"
-    return s.upper()
+    return f"A{int(m2.group(1)):02d}{(m2.group(2) or '').lower()}" if m2 else s.upper()
 
 
 def backup_project_json(json_path: Path, throttle_seconds: float = 0.0):
@@ -73,11 +63,9 @@ def backup_project_json(json_path: Path, throttle_seconds: float = 0.0):
 def resolve_project_resolution(data: dict) -> str:
     models = data.get("models", {})
     raw = (
-        models.get("default_video_resolution")
-        or models.get("resolution")
+        models.get("default_video_resolution") or models.get("resolution")
         or (models.get("video_shared_settings", {}).get("resolution") if isinstance(models.get("video_shared_settings"), dict) else None)
-        or data.get("project", {}).get("master_resolution")
-        or "4"
+        or data.get("project", {}).get("master_resolution") or "4"
     )
     res_map = {"1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1088"}
     s = str(raw).strip()
@@ -93,29 +81,16 @@ def collect_project_clips(proj_dir: Path, data: dict) -> dict[str, dict]:
     trimmed_dir = proj_dir / data.get("project", {}).get("directories", {}).get("trimmed", "work/trimmed")
     renders_dir = proj_dir / data.get("project", {}).get("directories", {}).get("renders", "work/renders")
 
-    clip_search_dirs = [
-        trimmed_dir,
-        renders_dir,
-        proj_dir / "work" / "trimmed_v3",
-        proj_dir / "work" / "renders_v3",
-    ]
+    clip_search_dirs = [trimmed_dir, renders_dir, proj_dir / "work" / "trimmed_v3", proj_dir / "work" / "renders_v3"]
 
     def _clip_score(cname: str, cpath: str) -> int:
-        low_name = cname.lower()
-        low_path = cpath.lower()
-        if "placeholder" in low_name:
-            return -100
-        if "pass2_final" in low_name:
-            return 50
-        if "pass2" in low_name:
-            return 45
-        if "renders" in low_path and "pass1" not in low_name:
-            return 40
-        if "pass1" in low_name:
-            return 30
-        if "trimmed" in low_path:
-            return 20
-        return 10
+        low_name, low_path = cname.lower(), cpath.lower()
+        if "placeholder" in low_name: return -100
+        if "pass2_final" in low_name: return 50
+        if "pass2" in low_name: return 45
+        if "renders" in low_path and "pass1" not in low_name: return 40
+        if "pass1" in low_name: return 30
+        return 20 if "trimmed" in low_path else 10
 
     existing_clips = {}
     canonical_scores = {}
@@ -245,28 +220,25 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
         if not sid:
             continue
         mode = sc.get("mode", "solo")
-        is_two_pass = mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
+        is_two_pass = mode in ("duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
         res_str = default_res
         if is_two_pass:
-            p1_name = f"{sid}_Pass1_Left_{res_str}"
-            p2_name = f"{sid}_Pass2_Final_{res_str}"
+            p1_name, p2_name = f"{sid}_Pass1_Left_{res_str}", f"{sid}_Pass2_Final_{res_str}"
             valid_p1_for_sid[sid] = p1_name
             valid_passes[p1_name] = {"scene_id": sid, "target_arg": f"{sid}:p1", "pass": 1, "resolution": res_str}
             valid_passes[p2_name] = {"scene_id": sid, "target_arg": f"{sid}:p2", "pass": 2, "resolution": res_str}
         else:
-            if mode == "male_solo":
-                raw_name = sc.get("output_name", f"{sid}_male_solo")
-            elif mode == "female_solo":
-                raw_name = sc.get("output_name", f"{sid}_female_solo")
-            elif mode == "silent_locked":
-                raw_name = sc.get("output_name", f"{sid}_silent")
+            if mode in ("duet_method_a", "duet_a"):
+                cand = next((c for c in (f"{sid}_duet_a", f"{sid}_duet_method_a", f"{sid}_duet_stereo") if (renders_dir / f"{c}_{res_str}.mp4").exists()), None) if not sc.get("output_name") else None
+                raw_name = sc.get("output_name", cand or f"{sid}_duet_a")
             else:
-                raw_name = sc.get("output_name", f"{sid}_{mode}")
+                def_mode = "male_solo" if mode == "male_solo" else ("female_solo" if mode == "female_solo" else ("silent" if mode in ("silent_locked", "silent", "ambient") else mode))
+                cand = next((c for c in (f"{sid}_{def_mode}", f"{sid}_solo", f"{sid}_male_solo", f"{sid}_female_solo") if (renders_dir / f"{c}_{res_str}.mp4").exists()), None) if not sc.get("output_name") and mode in ("solo", "male_solo", "female_solo") else None
+                raw_name = sc.get("output_name", cand or f"{sid}_{def_mode}")
             out_fn = f"{raw_name}_{res_str}" if res_str not in raw_name else raw_name
             valid_passes[out_fn] = {"scene_id": sid, "target_arg": sid, "pass": None, "resolution": res_str}
 
-    task_hashes_current = {}
-    ctx = None
+    task_hashes_current, ctx = {}, None
     ProjectContext = getattr(srv, "ProjectContext", None)
     compute_project_task_hashes = getattr(srv, "compute_project_task_hashes", None)
     resolve_rendered_clip_path = getattr(srv, "resolve_rendered_clip_path", None)
@@ -278,8 +250,7 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             ProjectContext = ProjectContext or _PC
             compute_project_task_hashes = compute_project_task_hashes or _CPTH
             resolve_rendered_clip_path = resolve_rendered_clip_path or _RRCP
-        except ImportError:
-            pass
+        except ImportError: pass
 
     if ProjectContext and compute_project_task_hashes and config_file.is_file():
         try:
@@ -296,15 +267,7 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             pass
 
     # Ensure Pass 1 of any two-pass scene in existing_items precedes Pass 2 of the same scene
-    for idx_a in range(len(existing_items)):
-        for idx_b in range(idx_a + 1, len(existing_items)):
-            ia, ib = existing_items[idx_a], existing_items[idx_b]
-            sa = ia.get("scene_id") or srv.derive_scene_id(ia.get("output_filename", ""))
-            sb = ib.get("scene_id") or srv.derive_scene_id(ib.get("output_filename", ""))
-            pa = ia.get("pass") or (2 if "Pass2" in ia.get("output_filename", "") else (1 if "Pass1" in ia.get("output_filename", "") else None))
-            pb = ib.get("pass") or (2 if "Pass2" in ib.get("output_filename", "") else (1 if "Pass1" in ib.get("output_filename", "") else None))
-            if sa and sa == sb and pa == 2 and pb == 1:
-                existing_items[idx_a], existing_items[idx_b] = existing_items[idx_b], existing_items[idx_a]
+    normalize_queue_units(existing_items, srv)
 
     queue = []
     seen = set()
@@ -312,7 +275,7 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
     live_eng = srv.read_project_engine_status(slug)
     eng_rendering = bool(isinstance(live_eng, dict) and live_eng.get("state") == "rendering")
     proc_active = bool(srv.active_process is not None and srv.active_process.poll() is None)
-    is_engine_active = proc_active or eng_rendering
+    is_engine_active = proc_active or eng_rendering or bool(getattr(srv, "queue_worker_active", False))
     active_eng_fn = str(live_eng.get("filename") or "") if (eng_rendering and isinstance(live_eng, dict)) else ""
 
     # Helper to evaluate pass state
@@ -345,11 +308,8 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             if cur_status == "queued" and (cur_reason == "FORCED" or cur_reason.startswith("TARGETED")):
                 return "queued", cur_reason, True, cur_task_hash, cur_anchor_mtime
             if cur_status == "skipped" and cur_reason == "SKIPPED BY USER":
-                skipped_hash = current_item.get("user_skipped_hash")
-                skipped_a_mtime = float(current_item.get("user_skipped_anchor_mtime") or 0.0)
-                hash_unchanged = (skipped_hash is not None and skipped_hash == cur_task_hash)
-                anchor_unchanged = (not anchor_info or not skipped_a_mtime or cur_anchor_mtime <= skipped_a_mtime + 0.001)
-                if hash_unchanged and anchor_unchanged:
+                s_h, s_m = current_item.get("user_skipped_hash"), float(current_item.get("user_skipped_anchor_mtime") or 0.0)
+                if (s_h == cur_task_hash) and (not anchor_info or not s_m or cur_anchor_mtime <= s_m + 0.001):
                     return "skipped", "SKIPPED BY USER", False, cur_task_hash, cur_anchor_mtime
 
         if not file_exists:
@@ -370,9 +330,10 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             has_custom = any(sc.get(k) is not None for k in ("render_pad_start", "render_pad_end", "pad_start", "pad_end", "render_overlap", "head_overlap", "tail_overlap"))
             h_pad, t_pad = (ctx.get_scene_render_padding(sc) if ctx else resolve_scene_padding(sc)) if has_custom else (0.0, 0.0)
             req_s, req_e = max(0.0, float(sc.get("start", 0)) - h_pad), float(sc.get("end", 0)) + t_pad
-            render_info = scene_renders.get(out_name)
-            if render_info and "render_start" in render_info and "render_end" in render_info:
-                if not ((float(render_info["render_start"]) <= req_s + 0.05) and (float(render_info["render_end"]) >= req_e - 0.05)):
+            r_info = scene_renders.get(out_name)
+            allow_pad = bool(sc.get("hold_last_frame") or sc.get("pad_tail") or sc.get("allow_tail_pad"))
+            if r_info and "render_start" in r_info and "render_end" in r_info:
+                if not ((float(r_info["render_start"]) <= req_s + 0.05) and (allow_pad or float(r_info["render_end"]) >= req_e - 0.05)):
                     return "queued", "TIMELINE CHANGED", True, cur_task_hash, cur_anchor_mtime
 
         for a_id, a_inf in ((aid, anchor_info), (aid_end, end_info)):
@@ -438,61 +399,44 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
         sc = scene_by_id.get(sid)
         if sc:
             item["duration"] = round(float(sc.get("end", 0)) - float(sc.get("start", 0)), 2)
-        item["scene_id"] = sid
-        item["target_arg"] = spec["target_arg"]
-        item["pass"] = pass_num
+        item.update({"scene_id": sid, "target_arg": spec["target_arg"], "pass": pass_num})
 
         status, reason, needs_render, t_hash, a_mtime = _evaluate_pass(out_name, sid, pass_num, current_item=item)
-        item["status"] = status
-        item["reason"] = reason
-        item["needs_render"] = needs_render
-        item["task_hash"] = t_hash
-        item["anchor_mtime"] = a_mtime
+        item.update({"status": status, "reason": reason, "needs_render": needs_render, "task_hash": t_hash, "anchor_mtime": a_mtime})
         if status != "skipped" or reason != "SKIPPED BY USER":
-            item.pop("user_skipped_hash", None)
-            item.pop("user_skipped_anchor_mtime", None)
+            item.pop("user_skipped_hash", None); item.pop("user_skipped_anchor_mtime", None)
+        if status != "rendering":
+            for k in ("pct", "phase", "raw_phase", "status_text", "step", "total_steps", "window_index", "window_count", "estimated_remaining_seconds", "estimated_remaining_str"):
+                item.pop(k, None)
 
         mp4_path = resolve_rendered_clip_path(renders_dir, out_name) if resolve_rendered_clip_path else (renders_dir / f"{out_name}.mp4")
-        if mp4_path.exists() and mp4_path.stat().st_size > 50000:
-            if not item.get("completed_at"):
-                item["completed_at"] = round(mp4_path.stat().st_mtime, 3)
+        if mp4_path.exists() and mp4_path.stat().st_size > 50000 and not item.get("completed_at"):
+            item["completed_at"] = round(mp4_path.stat().st_mtime, 3)
         render_info = scene_renders.get(out_name)
         if render_info:
-            if not item.get("completed_at") and render_info.get("completed_at"):
-                item["completed_at"] = render_info.get("completed_at")
-            if not item.get("elapsed") and render_info.get("elapsed"):
-                item["elapsed"] = render_info.get("elapsed")
+            if not item.get("completed_at") and render_info.get("completed_at"): item["completed_at"] = render_info.get("completed_at")
+            if not item.get("elapsed") and render_info.get("elapsed"): item["elapsed"] = render_info.get("elapsed")
 
-        if pass_num == 1 and needs_render:
-            p1_needs_rerender[sid] = reason
-
+        if pass_num == 1 and needs_render: p1_needs_rerender[sid] = reason
         queue.append(item)
 
     # 2. Add any project passes not already in the queue
     for out_name, spec in valid_passes.items():
-        if out_name in seen:
-            continue
-        seen.add(out_name)
-        sid = spec["scene_id"]
-        tgt_arg = spec["target_arg"]
-        pass_num = spec["pass"]
-        res_str = spec["resolution"]
+        if out_name in seen: continue
+        seen.add(out_name); sid, tgt_arg, pass_num, res_str = spec["scene_id"], spec["target_arg"], spec["pass"], spec["resolution"]
         sc = scene_by_id.get(sid)
         dur_val = round(float(sc.get("end", 0)) - float(sc.get("start", 0)), 2) if sc else 0.0
 
         status, reason, needs_render, t_hash, a_mtime = _evaluate_pass(out_name, sid, pass_num)
-        if pass_num == 1 and needs_render:
-            p1_needs_rerender[sid] = reason
+        if pass_num == 1 and needs_render: p1_needs_rerender[sid] = reason
 
         mp4_path = resolve_rendered_clip_path(renders_dir, out_name) if resolve_rendered_clip_path else (renders_dir / f"{out_name}.mp4")
         completed_at = round(mp4_path.stat().st_mtime, 3) if mp4_path.exists() and mp4_path.stat().st_size > 50000 else None
         elapsed_val = None
         render_info = scene_renders.get(out_name)
         if render_info:
-            if render_info.get("completed_at"):
-                completed_at = render_info.get("completed_at")
-            if render_info.get("elapsed"):
-                elapsed_val = render_info.get("elapsed")
+            if render_info.get("completed_at"): completed_at = render_info.get("completed_at")
+            if render_info.get("elapsed"): elapsed_val = render_info.get("elapsed")
 
         queue.append({
             "idx": len(queue) + 1, "id": out_name, "scene_id": sid, "target_arg": tgt_arg,
@@ -503,16 +447,18 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
             "model_type": "minimax_h3_fl2va_pruned_pdd", "resolution": res_str,
         })
 
+    normalize_queue_units(queue, srv)
     live_eng = srv.read_project_engine_status(slug) if is_engine_active else None
     for i, itm in enumerate(queue, 1):
-        itm["idx"] = i
-        itm["total"] = len(queue)
+        itm["idx"], itm["total"] = i, len(queue)
         if itm.get("status") == "rendering" and isinstance(live_eng, dict):
             eng_fn = live_eng.get("filename") or ""
             if not eng_fn or eng_fn in (itm.get("filename"), itm.get("output_filename")):
                 for k in ("pct", "phase", "raw_phase", "status_text", "step", "total_steps", "window_index", "window_count"):
-                    if k in live_eng and live_eng[k] is not None:
-                        itm[k] = live_eng[k]
+                    if k in live_eng and live_eng[k] is not None: itm[k] = live_eng[k]
+        elif itm.get("status") != "rendering":
+            for k in ("pct", "phase", "raw_phase", "status_text", "step", "total_steps", "window_index", "window_count", "estimated_remaining_seconds", "estimated_remaining_str"):
+                itm.pop(k, None)
 
     if attach_queue_time_estimates:
         try:
@@ -523,18 +469,14 @@ def compute_fast_project_queue(slug: str, force_recheck: bool = False) -> list[d
     if hashes_changed[0] and hashes_file.is_file():
         try:
             h_data = json.loads(hashes_file.read_text(encoding="utf-8"))
-            h_tasks = h_data.setdefault("tasks", {})
-            h_tasks.update(hashes)
-            h_th = h_data.setdefault("task_hashes", {})
-            h_th.update(hashes)
-            hashes_file.write_text(json.dumps(h_data, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+            h_data.setdefault("tasks", {}).update(hashes); h_data.setdefault("task_hashes", {}).update(hashes)
+            h_txt, alt_h = json.dumps(h_data, indent=2), proj_dir / "work" / "state_hashes.json"
+            hashes_file.write_text(h_txt, encoding="utf-8")
+            if alt_h != hashes_file and alt_h.is_file(): alt_h.write_text(h_txt, encoding="utf-8")
+        except Exception: pass
 
-    try:
-        queue_file.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    try: queue_file.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+    except Exception: pass
 
     return queue
 
@@ -558,140 +500,205 @@ def is_scene_match(sid: str, out_fn: str, target_base: str) -> bool:
     # Normalized zero-padded match: e.g. S1 <-> S01
     m_tgt = re.match(r"^S0*(\d+)([A-Z]?)$", target_base)
     if m_tgt:
-        tgt_num = int(m_tgt.group(1))
-        tgt_sub = m_tgt.group(2)
+        tgt_num, tgt_sub = int(m_tgt.group(1)), m_tgt.group(2)
         m_sid = re.match(r"^S0*(\d+)([A-Z]?)$", sid_clean)
-        if m_sid:
-            sid_num = int(m_sid.group(1))
-            sid_sub = m_sid.group(2)
-            if tgt_num == sid_num and tgt_sub == sid_sub:
-                return True
-        out_prefix = out_clean.split("_")[0]
-        m_out = re.match(r"^S0*(\d+)([A-Z]?)$", out_prefix)
-        if m_out:
-            out_num = int(m_out.group(1))
-            out_sub = m_out.group(2)
-            if tgt_num == out_num and tgt_sub == out_sub:
-                return True
-
+        if m_sid and tgt_num == int(m_sid.group(1)) and tgt_sub == m_sid.group(2): return True
+        m_out = re.match(r"^S0*(\d+)([A-Z]?)$", out_clean.split("_")[0])
+        if m_out and tgt_num == int(m_out.group(1)) and tgt_sub == m_out.group(2): return True
     return False
 
 
-def move_in_project_queue(slug: str, item_id: str, direction: str = "up") -> list[dict]:
-    """Moves a queued item up or down among queued items, enforcing that Pass 1 of a two-pass scene always precedes Pass 2."""
-    srv = _srv()
-    proj_dir = srv.PROJECTS_DIR / slug
-    queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
-    if not queue_file.is_file():
-        compute_fast_project_queue(slug)
-
-    items = json.loads(queue_file.read_text(encoding="utf-8"))
-    clean_id = str(item_id).replace(".mp4", "")
-    idx = next(
-        (
-            i for i, x in enumerate(items)
-            if x.get("output_filename") in (item_id, clean_id)
-            or x.get("filename") in (item_id, clean_id)
-            or x.get("id") in (item_id, clean_id)
-        ),
-        None,
-    )
-    if idx is not None:
-        moving_item = items[idx]
-        moving_sid = moving_item.get("scene_id") or srv.derive_scene_id(moving_item.get("output_filename", ""))
-        moving_pass = moving_item.get("pass")
-        if moving_pass is None:
-            if "Pass1" in moving_item.get("output_filename", ""):
-                moving_pass = 1
-            elif "Pass2" in moving_item.get("output_filename", ""):
-                moving_pass = 2
-
-        swap_idx = None
-        if direction == "up":
-            for i in range(idx - 1, -1, -1):
-                if items[i].get("status") == "queued":
-                    swap_idx = i
-                    break
+def _group_queue_units(items: list[dict], srv=None) -> list[list[dict]]:
+    """Groups queue items into atomic SceneUnits, keeping Pass 1 and Pass 2 of any two-pass scene contiguous
+    in [Pass 1, Pass 2] order, and pins any unit containing an actively rendering task ahead of all queued units."""
+    srv = srv or _srv()
+    by_sid: dict[str, list[dict]] = {}
+    units: list[list[dict]] = []
+    for itm in items:
+        out_fn = itm.get("output_filename") or itm.get("filename") or ""
+        sid = str(itm.get("scene_id") or srv.derive_scene_id(out_fn) or "").strip()
+        if sid:
+            itm["scene_id"] = sid
+        p_num = itm.get("pass")
+        if p_num is None:
+            p_num = 1 if "pass1" in out_fn.lower() else (2 if "pass2" in out_fn.lower() else None)
+            if p_num is not None:
+                itm["pass"] = p_num
+        sid_k = sid.upper()
+        if sid_k and p_num in (1, 2):
+            if sid_k not in by_sid:
+                by_sid[sid_k] = []
+                units.append(by_sid[sid_k])
+            by_sid[sid_k].append(itm)
         else:
-            for i in range(idx + 1, len(items)):
-                if items[i].get("status") == "queued":
-                    swap_idx = i
-                    break
+            units.append([itm])
+    for u in by_sid.values():
+        u.sort(key=lambda x: x.get("pass") or 0)
+        if len(u) == 2:
+            p1, p2 = u[0], u[1]
+            if p2.get("status") == "rendering" and p1.get("status") == "queued":
+                p1.update({"status": "completed", "needs_render": False})
+            elif p1.get("status") in ("queued", "rendering") or p1.get("needs_render"):
+                if p2.get("status") not in ("queued", "rendering") or not p2.get("needs_render"):
+                    r = p1.get("reason") or "QUEUED"
+                    p2.update({"status": "queued", "needs_render": True, "reason": f"PASS 1 RE-RENDERED ({r})"})
+                    p2.pop("user_skipped_hash", None)
+                    p2.pop("user_skipped_anchor_mtime", None)
+    ren_idx = next((i for i, u in enumerate(units) if any(x.get("status") == "rendering" for x in u)), None)
+    first_q = next((i for i, u in enumerate(units) if i != ren_idx and any(x.get("status") == "queued" for x in u)), None)
+    if ren_idx is not None and first_q is not None and ren_idx > first_q:
+        units.insert(first_q, units.pop(ren_idx))
+    return units
 
-        if swap_idx is not None:
-            # Guard: Pass 2 cannot move above Pass 1 of the same scene; Pass 1 cannot move below Pass 2 of the same scene
-            blocked = False
-            if direction == "up" and moving_pass == 2:
-                for k in range(swap_idx, idx):
-                    other_sid = items[k].get("scene_id") or srv.derive_scene_id(items[k].get("output_filename", ""))
-                    other_pass = items[k].get("pass") or (1 if "Pass1" in items[k].get("output_filename", "") else None)
-                    if other_sid == moving_sid and other_pass == 1:
-                        blocked = True
-                        break
-            elif direction != "up" and moving_pass == 1:
-                for k in range(idx + 1, swap_idx + 1):
-                    other_sid = items[k].get("scene_id") or srv.derive_scene_id(items[k].get("output_filename", ""))
-                    other_pass = items[k].get("pass") or (2 if "Pass2" in items[k].get("output_filename", "") else None)
-                    if other_sid == moving_sid and other_pass == 2:
-                        blocked = True
-                        break
 
-            if not blocked:
-                items[idx], items[swap_idx] = items[swap_idx], items[idx]
-                for i, itm in enumerate(items, 1):
-                    itm["idx"] = i
-                queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
+def normalize_queue_units(items: list[dict], srv=None) -> list[dict]:
+    """Flattens grouped SceneUnits back into `items` in-place and re-numbers 1-based `idx`."""
+    flat = [itm for u in _group_queue_units(items, srv) for itm in u]
+    for i, itm in enumerate(flat, 1):
+        itm["idx"], itm["total"] = i, len(flat)
+    items[:] = flat
     return items
 
 
-def remove_from_project_queue(slug: str, item_id: str) -> list[dict]:
-    """Marks a queued item as explicitly skipped by user, recording its current task_hash so it stays skipped until edited."""
+def reorder_in_project_queue(
+    slug: str, item_id: str = "", target_id: str = "", position: str = "before", order: list[str] | None = None
+) -> list[dict]:
+    """Reorders queued items by moving item_id's SceneUnit before/after target_id's SceneUnit,
+    or according to sequence in order. Multiple passes of the same scene remain strictly coupled in [Pass 1, Pass 2] order.
+    Actively rendering items remain pinned at the top of the queue.
+    """
     srv = _srv()
-    proj_dir = srv.PROJECTS_DIR / slug
-    queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+    queue_file = srv.PROJECTS_DIR / slug / "work" / "jobs_v3" / "v3_queue.json"
     if not queue_file.is_file():
         compute_fast_project_queue(slug)
-
     items = json.loads(queue_file.read_text(encoding="utf-8"))
+    units = _group_queue_units(items, srv)
+    is_ren = lambda u: any(x.get("status") == "rendering" for x in u)
+    is_q = lambda u: (not is_ren(u)) and any(x.get("status") == "queued" for x in u)
+
+    if order:
+        order_keys = [str(x).replace(".mp4", "").upper() for x in order]
+        def _unit_rank(u):
+            for x in u:
+                for k in (x.get("scene_id", ""), x.get("output_filename", ""), x.get("filename", ""), x.get("id", "")):
+                    k_clean = str(k).replace(".mp4", "").upper()
+                    if k_clean in order_keys:
+                        return order_keys.index(k_clean)
+            return 999999
+        ren_units = [u for u in units if is_ren(u)]
+        q_units = [u for u in units if is_q(u)]
+        other_units = [u for u in units if not is_ren(u) and not is_q(u)]
+        q_units.sort(key=_unit_rank)
+        units = ren_units + q_units + other_units
+    elif item_id and target_id:
+        clean_src = str(item_id).replace(".mp4", "")
+        clean_dst = str(target_id).replace(".mp4", "")
+        def _match_unit(val, cval):
+            return next((i for i, u in enumerate(units) if any(x.get("output_filename") in (val, cval) or x.get("filename") in (val, cval) or x.get("id") in (val, cval) or str(x.get("scene_id", "")).upper() == cval.upper() for x in u)), None)
+        src_idx = _match_unit(item_id, clean_src)
+        dst_idx = _match_unit(target_id, clean_dst)
+        if src_idx is not None and dst_idx is not None and src_idx != dst_idx and is_q(units[src_idx]):
+            src_u = units.pop(src_idx)
+            dst_idx = _match_unit(target_id, clean_dst)
+            if dst_idx is not None:
+                if is_ren(units[dst_idx]):
+                    insert_pos = dst_idx + 1
+                elif position == "after":
+                    insert_pos = dst_idx + 1
+                else:
+                    insert_pos = dst_idx
+                units.insert(insert_pos, src_u)
+
+    flat = [itm for u in _group_queue_units([x for u in units for x in u], srv) for itm in u]
+    for i, itm in enumerate(flat, 1):
+        itm["idx"], itm["total"] = i, len(flat)
+    queue_file.write_text(json.dumps(flat, indent=2), encoding="utf-8")
+    return flat
+
+
+def move_in_project_queue(slug: str, item_id: str, direction: str = "up") -> list[dict]:
+    """Moves a queued item (and its coupled pass, if two-pass) up or down as an atomic unit among queued units,
+    keeping active renders pinned at the top of the queued list and Pass 1 strictly before Pass 2."""
+    srv = _srv()
+    queue_file = srv.PROJECTS_DIR / slug / "work" / "jobs_v3" / "v3_queue.json"
+    if not queue_file.is_file():
+        compute_fast_project_queue(slug)
+    items = json.loads(queue_file.read_text(encoding="utf-8"))
+    units = _group_queue_units(items, srv)
+    clean_id = str(item_id).replace(".mp4", "")
+    u_idx = next((i for i, u in enumerate(units) if any(x.get("output_filename") in (item_id, clean_id) or x.get("filename") in (item_id, clean_id) or x.get("id") in (item_id, clean_id) for x in u)), None)
+    if u_idx is not None:
+        is_ren = lambda u: any(x.get("status") == "rendering" for x in u)
+        is_q = lambda u: (not is_ren(u)) and any(x.get("status") == "queued" for x in u)
+        if is_q(units[u_idx]):
+            swap_u = None
+            if direction == "up":
+                for i in range(u_idx - 1, -1, -1):
+                    if is_ren(units[i]): break
+                    if is_q(units[i]):
+                        swap_u = i
+                        break
+            else:
+                for i in range(u_idx + 1, len(units)):
+                    if is_q(units[i]):
+                        swap_u = i
+                        break
+            if swap_u is not None:
+                tgt_id = units[swap_u][0].get("output_filename") or units[swap_u][0].get("id")
+                return reorder_in_project_queue(slug, item_id=item_id, target_id=tgt_id, position="before" if direction == "up" else "after")
+    flat = [itm for u in units for itm in u]
+    for i, itm in enumerate(flat, 1):
+        itm["idx"], itm["total"] = i, len(flat)
+    queue_file.write_text(json.dumps(flat, indent=2), encoding="utf-8")
+    return flat
+
+
+def remove_from_project_queue(slug: str, item_id: str) -> list[dict]:
+    """Marks a queued item as explicitly skipped by user, cascading to Pass 2 if Pass 1 is missing on disk or Pass 2 depends on it."""
+    srv, proj_dir = _srv(), _srv().PROJECTS_DIR / slug
+    queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+    if not queue_file.is_file(): compute_fast_project_queue(slug)
+    items = json.loads(queue_file.read_text(encoding="utf-8"))
+    normalize_queue_units(items, srv)
     clean_id = str(item_id).replace(".mp4", "")
     for item in items:
-        if (
-            item.get("output_filename") in (item_id, clean_id)
-            or item.get("filename") in (item_id, clean_id)
-            or item.get("id") in (item_id, clean_id)
-        ):
-            item["status"] = "skipped"
-            item["needs_render"] = False
-            item["reason"] = "SKIPPED BY USER"
-            item["user_skipped_hash"] = item.get("task_hash", "")
-            item["user_skipped_anchor_mtime"] = item.get("anchor_mtime", 0.0)
+        if item.get("output_filename") in (item_id, clean_id) or item.get("filename") in (item_id, clean_id) or item.get("id") in (item_id, clean_id):
+            item.update({"status": "skipped", "needs_render": False, "reason": "SKIPPED BY USER", "user_skipped_hash": item.get("task_hash", ""), "user_skipped_anchor_mtime": item.get("anchor_mtime", 0.0)})
+            if item.get("pass") == 1:
+                p1_mp4 = proj_dir / "work" / "renders_v3" / f"{item.get('output_filename', '')}.mp4"
+                p1_exists = p1_mp4.is_file() and p1_mp4.stat().st_size > 50000
+                for sib in items:
+                    if sib.get("scene_id") == item.get("scene_id") and sib.get("pass") == 2 and sib.get("status") == "queued":
+                        if not p1_exists or str(sib.get("reason") or "").startswith("PASS 1"):
+                            sib.update({"status": "skipped", "needs_render": False, "reason": "SKIPPED BY USER", "user_skipped_hash": sib.get("task_hash", ""), "user_skipped_anchor_mtime": sib.get("anchor_mtime", 0.0)})
             break
+    normalize_queue_units(items, srv)
     queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
     return items
 
 
 def enqueue_in_project_queue(slug: str, item_id: str) -> list[dict]:
-    """Forces an item into the render queue."""
+    """Forces an item into the render queue, cascading Pass 1 -> Pass 2 and keeping any active render pinned ahead of queued items."""
     srv = _srv()
-    proj_dir = srv.PROJECTS_DIR / slug
-    queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
-    if not queue_file.is_file():
-        compute_fast_project_queue(slug)
-
+    queue_file = srv.PROJECTS_DIR / slug / "work" / "jobs_v3" / "v3_queue.json"
+    if not queue_file.is_file(): compute_fast_project_queue(slug)
     items = json.loads(queue_file.read_text(encoding="utf-8"))
+    normalize_queue_units(items, srv)
     clean_id = str(item_id).replace(".mp4", "")
-    for item in items:
-        if (
-            item.get("output_filename") in (item_id, clean_id)
-            or item.get("filename") in (item_id, clean_id)
-            or item.get("id") in (item_id, clean_id)
-        ):
-            item["status"] = "queued"
-            item["needs_render"] = True
-            item["reason"] = "FORCED"
-            item.pop("user_skipped_hash", None)
-            item.pop("user_skipped_anchor_mtime", None)
-            break
+    target_item = next((it for it in items if it.get("output_filename") in (item_id, clean_id) or it.get("filename") in (item_id, clean_id) or it.get("id") in (item_id, clean_id)), None)
+    if not target_item:
+        items = compute_fast_project_queue(slug, force_recheck=True)
+        target_item = next((it for it in items if it.get("output_filename") in (item_id, clean_id) or it.get("filename") in (item_id, clean_id) or it.get("id") in (item_id, clean_id)), None)
+    if target_item:
+        target_item.update({"status": "queued", "needs_render": True, "reason": "FORCED"})
+        target_item.pop("user_skipped_hash", None); target_item.pop("user_skipped_anchor_mtime", None)
+        sid = target_item.get("scene_id") or srv.derive_scene_id(target_item.get("output_filename", ""))
+        for sib in items:
+            sib_sid = sib.get("scene_id") or srv.derive_scene_id(sib.get("output_filename", ""))
+            if sib_sid == sid and sib is not target_item and sib.get("status") != "rendering":
+                sib.update({"status": "queued", "needs_render": True, "reason": "PASS 1 RE-RENDERED (FORCED)" if target_item.get("pass") == 1 else "COUPLED PASS (FORCED)"})
+                sib.pop("user_skipped_hash", None); sib.pop("user_skipped_anchor_mtime", None)
+    normalize_queue_units(items, srv)
     queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
     return items
 
@@ -699,19 +706,13 @@ def enqueue_in_project_queue(slug: str, item_id: str) -> list[dict]:
 def clear_project_queue(slug: str) -> list[dict]:
     """Marks all currently queued items as skipped by user until edited or Queue All is clicked."""
     srv = _srv()
-    proj_dir = srv.PROJECTS_DIR / slug
-    queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+    queue_file = srv.PROJECTS_DIR / slug / "work" / "jobs_v3" / "v3_queue.json"
     if not queue_file.is_file():
         compute_fast_project_queue(slug)
-
     items = json.loads(queue_file.read_text(encoding="utf-8"))
     for item in items:
         if item.get("status") == "queued":
-            item["status"] = "skipped"
-            item["needs_render"] = False
-            item["reason"] = "SKIPPED BY USER"
-            item["user_skipped_hash"] = item.get("task_hash", "")
-            item["user_skipped_anchor_mtime"] = item.get("anchor_mtime", 0.0)
+            item.update({"status": "skipped", "needs_render": False, "reason": "SKIPPED BY USER", "user_skipped_hash": item.get("task_hash", ""), "user_skipped_anchor_mtime": item.get("anchor_mtime", 0.0)})
     queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
     return items
 
@@ -795,20 +796,12 @@ def prepare_targeted_queue_items(slug: str, target_sid: str, is_worker_running: 
                 res_str = resolve_project_resolution(cfg_data)
                 sid = sc.get("id", target_base)
                 mode = sc.get("mode", "solo")
-                is_two_pass = mode in ("gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
-                if is_two_pass:
-                    targets = [
-                        (f"{sid}_Pass1_Left_{res_str}", f"{sid}:p1", 1),
-                        (f"{sid}_Pass2_Final_{res_str}", f"{sid}:p2", 2),
-                    ]
-                else:
-                    raw_name = sc.get("output_name", f"{sid}_{mode}")
-                    out_fn = f"{raw_name}_{res_str}" if res_str not in raw_name else raw_name
-                    targets = [(out_fn, sid, None)]
-
+                is_two = mode in ("duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva")
+                raw_name = sc.get("output_name", f"{sid}_duet_a" if mode in ("duet_method_a", "duet_a") else f"{sid}_{mode}")
+                s_fn = f"{raw_name}_{res_str}" if res_str not in raw_name else raw_name
+                targets = [(f"{sid}_Pass1_Left_{res_str}", f"{sid}:p1", 1), (f"{sid}_Pass2_Final_{res_str}", f"{sid}:p2", 2)] if is_two else [(s_fn, sid, None)]
                 for out_fn, tgt_arg, p_num in targets:
-                    if target_pass is not None and p_num != target_pass:
-                        continue
+                    if target_pass is not None and p_num != target_pass: continue
                     new_item = {
                         "idx": len(items) + 1, "id": out_fn, "scene_id": sid, "target_arg": tgt_arg,
                         "pass": p_num, "filename": f"{out_fn}.mp4", "output_filename": out_fn,
@@ -833,8 +826,7 @@ def prepare_targeted_queue_items(slug: str, target_sid: str, is_worker_running: 
                 items.insert(render_idx + 1, m)
             else:
                 items.insert(0, m)
-        for i, itm in enumerate(items, 1):
-            itm["idx"] = i
+        normalize_queue_units(items, srv)
 
     if attach_queue_time_estimates and config_file and config_file.is_file():
         try:
