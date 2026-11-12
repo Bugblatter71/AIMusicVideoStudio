@@ -796,6 +796,40 @@ class TestStudioWan2GPIntegrationAdapter(unittest.TestCase):
         finally:
             server.active_process = orig_proc
 
+    def test_10_multi_prompts_gen_type_and_newline_sanitization(self):
+        """Scenario 10: Verify multi_prompts_gen_type defaults to 'FG' (Frame Generation)
+        and consecutive newlines/empty lines are sanitized to prevent Wan2GP 'PG' multi-prompt errors."""
+        sc = self.ctx.scenes[0]
+        aid, anchor_path = self.ctx.resolve_anchor_path(sc.get("anchor", ""))
+        vrid, vrspec = self.ctx.resolve_video_renderer(sc)
+
+        # 1. Verify model_profiles.json specifies 'FG'
+        self.assertEqual(self.ctx.video_shared_cfg.get("multi_prompts_gen_type"), "FG")
+
+        # 2. Test make_video_task with a prompt containing paragraph breaks and trailing spaces
+        multiline_prompt = (
+            "Line 1 with text.\n\n"
+            "Line 2 with extra whitespace.   \n\n\n"
+            "Line 3 ending prompt."
+        )
+        task = self.ctx.make_video_task(
+            output_filename="test_multiline",
+            prompt=multiline_prompt,
+            video_length=81,
+            seed=1234,
+            image_start=anchor_path,
+            audio_path=Path(""),
+            rspec=vrspec,
+            sc=sc,
+        )
+
+        self.assertEqual(task.get("multi_prompts_gen_type"), "FG")
+        self.assertNotIn("\n\n", task.get("prompt"))
+        self.assertEqual(
+            task.get("prompt"),
+            "Line 1 with text.\nLine 2 with extra whitespace.\nLine 3 ending prompt.",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Live Wan2GP Validation (No GPU VRAM Needed) & Live GPU Integration Suite

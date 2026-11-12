@@ -151,7 +151,7 @@ function switchTab(tabName) {
   if (!main || !sidePane) return;
 
   if (tabName === "timeline") {
-    // 1. Full Screen Timeline
+    // 1. Full Screen Timeline Mode
     main.classList.remove("layout-split");
     main.classList.add("layout-full");
     sidePane.style.display = "none";
@@ -161,7 +161,7 @@ function switchTab(tabName) {
     });
     document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
   } else {
-    // 2. Split Screen: Timeline on left, tab pane on right
+    // 2. Tab Below Timeline: Full-width Timeline on top, full-width tab below
     main.classList.remove("layout-full");
     main.classList.add("layout-split");
     sidePane.style.display = "flex";

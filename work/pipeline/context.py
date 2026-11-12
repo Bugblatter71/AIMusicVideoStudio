@@ -676,6 +676,9 @@ class ProjectContext:
         else:
             adapted_prompt = strip_dangling_ref_tags(adapted_prompt)
 
+        adapted_prompt = re.sub(r"[ \t]+\n", "\n", adapted_prompt)
+        adapted_prompt = re.sub(r"\n{2,}", "\n", adapted_prompt).strip()
+
         raw_ipt = str(rspec.get("image_prompt_type", vshared.get("image_prompt_type", "S")))
         if has_end and "E" not in raw_ipt:
             raw_ipt = "SE" if ("S" in raw_ipt or not raw_ipt) else f"{raw_ipt}E"
@@ -692,7 +695,7 @@ class ProjectContext:
             "guidance_phases": rspec.get("guidance_phases", vshared.get("guidance_phases", 1)),
             "sample_solver": rspec.get("sample_solver", vshared.get("sample_solver", "euler")),
             "repeat_generation": rspec.get("repeat_generation", vshared.get("repeat_generation", 1)),
-            "multi_prompts_gen_type": rspec.get("multi_prompts_gen_type", vshared.get("multi_prompts_gen_type", "PG")),
+            "multi_prompts_gen_type": rspec.get("multi_prompts_gen_type", vshared.get("multi_prompts_gen_type", "FG")),
             "image_mode": rspec.get("image_mode", vshared.get("image_mode", 0)),
             "image_prompt_type": raw_ipt,
             "video_prompt_type": video_prompt_type,

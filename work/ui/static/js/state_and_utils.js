@@ -217,6 +217,11 @@ function setupTabs() {
   document.getElementById("btnSidePaneClose")?.addEventListener("click", () => {
     switchTab("timeline");
   });
+
+  // Clicking active scene badge returns to timeline inspector
+  document.getElementById("activeSceneBadge")?.addEventListener("click", () => {
+    switchTab("timeline");
+  });
 }
 
 function setupKeyboardShortcuts() {

@@ -14,7 +14,7 @@
  },
  "video_shared_settings": {
   "repeat_generation": 1,
-  "multi_prompts_gen_type": "PG",
+  "multi_prompts_gen_type": "FG",
   "image_mode": 0,
   "image_prompt_type": "S",
   "sliding_window_discard_last_frames": 0,

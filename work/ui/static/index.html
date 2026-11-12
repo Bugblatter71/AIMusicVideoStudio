@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Music Video Generation Studio</title>
-  <link rel="stylesheet" href="css/studio.css?v=23">
+  <link rel="stylesheet" href="css/studio.css?v=25">
 </head>
 <body>
 
@@ -34,10 +34,8 @@
   </header>
 
   <main id="appMain" class="layout-full">
-    <!-- LEFT: TIMELINE (Always active & visible) -->
-    <div id="timelinePane" class="timeline-pane">
-      <!-- 1. TIMELINE STUDIO -->
-      <div id="tab-timeline" class="timeline-view">
+    <!-- TOP: FULL-WIDTH TIMELINE (Transport Control Bar & Waveform Canvas) -->
+    <div id="timelineTop" class="timeline-top">
       <!-- Transport Control Bar -->
       <div class="transport-bar">
         <div class="transport-left">
@@ -66,9 +64,12 @@
         <canvas id="waveformCanvas" height="160"></canvas>
         <div class="playhead" id="timelinePlayhead" style="left: 0px;"></div>
       </div>
+    </div><!-- End #timelineTop -->
 
-      <!-- Lower Workspace: Scene Inspector & Video Clip Preview -->
-      <div class="timeline-bottom">
+    <!-- LOWER WORKSPACE: Scene Inspector (Left) & Side Pane Tabs (Right) -->
+    <div id="lowerWorkspace" class="lower-workspace">
+      <!-- LEFT: Scene Settings / Inspector -->
+      <div id="timelineBottom" class="timeline-bottom">
         <div class="inspector-pane" id="sceneInspector">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <h3 id="inspectorSceneId" style="font-size: 16px; color: var(--primary);">Select a Scene</h3>
@@ -464,16 +465,14 @@
             Click any scene block in the timeline above to edit its timings, prompts, and anchor image.
           </div>
         </div>
-      </div>
-    </div><!-- End #tab-timeline -->
-    </div><!-- End #timelinePane -->
+      </div><!-- End #timelineBottom -->
 
-    <!-- RIGHT: SIDE PANEL FOR OTHER TABS -->
-    <aside id="sidePane" class="side-pane" style="display: none;">
-      <div class="side-pane-header">
-        <span id="sidePaneTitle" class="side-pane-title">Panel</span>
-        <button id="btnSidePaneClose" class="side-pane-close" title="Close panel and return to full-width Timeline">&times;</button>
-      </div>
+      <!-- RIGHT: Side Pane for Tabs (Characters, Anchors, Settings, Console, Master) -->
+      <aside id="sidePane" class="side-pane" style="display: none;">
+        <div class="side-pane-header">
+          <span id="sidePaneTitle" class="side-pane-title">Panel</span>
+          <button id="btnSidePaneClose" class="side-pane-close" title="Close panel and return to full-width Timeline">&times;</button>
+        </div>
       <div class="side-pane-body">
 
         <!-- 1b. CHARACTERS & REFS STUDIO TAB -->
@@ -729,6 +728,7 @@
 
       </div><!-- End .side-pane-body -->
     </aside><!-- End #sidePane -->
+  </div><!-- End #lowerWorkspace -->
   </main>
 
   <!-- Marker Edit Modal -->
