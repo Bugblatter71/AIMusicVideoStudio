@@ -217,10 +217,15 @@ class TestStudioWan2GPIntegrationAdapter(unittest.TestCase):
         shutil.copytree(self.src_proj_dir, self.proj_dir)
         self.json_path = self.proj_dir / "test_project.json"
 
-        # Remove any stale queue from the copied template directory so test is fully isolated
-        stale_q = self.proj_dir / "work" / "jobs_v3" / "v3_queue.json"
-        if stale_q.exists():
-            stale_q.unlink()
+        # Remove any stale queue/cancel/status files from the copied template directory so test is fully isolated
+        jobs_v3_dir = self.proj_dir / "work" / "jobs_v3"
+        if jobs_v3_dir.is_dir():
+            for pat in ("v3_queue.json", "cancel_request*.json", "engine_status*.json"):
+                for stale_f in jobs_v3_dir.glob(pat):
+                    try:
+                        stale_f.unlink()
+                    except OSError:
+                        pass
 
         # Point server.PROJECTS_DIR to our isolated temp root during the test
         self._orig_projects_dir = server.PROJECTS_DIR
@@ -914,6 +919,8 @@ class TestLiveWan2GPValidationNoGPU(unittest.TestCase):
             _, anchor_img = self.ctx.resolve_anchor_path(self.ctx.anchors[0])
             audio_wav = self.ctx.resolve_scene_audio("S01", "male", 0.0, 2.0, 107)
 
+            _strip_meta = lambda d: {k: v for k, v in d.items() if not str(k).startswith("_")}
+
             # 1. Validate all configured Video Renderers (Solo mode)
             for rid, rspec in self.ctx.video_renderers.items():
                 task = self.ctx.make_video_task(
@@ -925,7 +932,7 @@ class TestLiveWan2GPValidationNoGPU(unittest.TestCase):
                     audio_path=audio_wav,
                     rspec=rspec,
                 )
-                merged = session.merge_settings_with_defaults(task)
+                merged = session.merge_settings_with_defaults(_strip_meta(task))
                 norm_task = session._normalize_source(merged, caller_base_path=self.ctx.wgp_root)[0]
                 validated, err = wgp_mod.validate_task(norm_task, session._state)
                 self.assertIsNotNone(
@@ -950,7 +957,7 @@ class TestLiveWan2GPValidationNoGPU(unittest.TestCase):
                 video_guide=guide_mp4,
                 video_mask=mask_mp4,
             )
-            merged_gva = session.merge_settings_with_defaults(gva_task)
+            merged_gva = session.merge_settings_with_defaults(_strip_meta(gva_task))
             norm_gva = session._normalize_source(merged_gva, caller_base_path=self.ctx.wgp_root)[0]
             validated_gva, err_gva = wgp_mod.validate_task(norm_gva, session._state)
             self.assertIsNotNone(
@@ -969,7 +976,7 @@ class TestLiveWan2GPValidationNoGPU(unittest.TestCase):
                     seed=42,
                     image_refs=[str(anchor_img)],
                 )
-                merged_a = session.merge_settings_with_defaults(cfg_with_ref)
+                merged_a = session.merge_settings_with_defaults(_strip_meta(cfg_with_ref))
                 norm_a = session._normalize_source(merged_a, caller_base_path=self.ctx.wgp_root)[0]
                 validated_a, err_a = wgp_mod.validate_task(norm_a, session._state)
                 self.assertIsNotNone(
@@ -987,7 +994,7 @@ class TestLiveWan2GPValidationNoGPU(unittest.TestCase):
                 seed=42,
                 image_refs=[],
             )
-            merged_noref = session.merge_settings_with_defaults(cfg_no_ref)
+            merged_noref = session.merge_settings_with_defaults(_strip_meta(cfg_no_ref))
             norm_noref = session._normalize_source(merged_noref, caller_base_path=self.ctx.wgp_root)[0]
             validated_noref, err_noref = wgp_mod.validate_task(norm_noref, session._state)
             self.assertIsNotNone(
@@ -1055,7 +1062,7 @@ class TestLiveWan2GPEngineIntegration(unittest.TestCase):
 
         self.assertEqual(server.render_status.get("exit_code"), 0)
         self.assertTrue(len(observed_phases) >= 1, f"Expected live engine_status phases, saw {observed_phases}")
-        a01_path = self.ctx.anchors_dir / "A01_Anchor_Male.jpg"
+        a01_path = self.ctx.anchors_dir / self.ctx.anchors[0]["filename"]
         self.assertTrue(a01_path.exists() and a01_path.stat().st_size > 10000)
 
     def test_live_C_single_pass_video_render_and_metadata(self):
@@ -1092,8 +1099,8 @@ class TestLiveWan2GPEngineIntegration(unittest.TestCase):
             time.sleep(1.0)
 
         self.assertEqual(server.render_status.get("exit_code"), 0)
-        p1_mp4 = resolve_rendered_clip_path(self.ctx.renders_dir, "S02_Pass1_Left_832x480", promote=True)
-        p2_mp4 = resolve_rendered_clip_path(self.ctx.renders_dir, "S02_Pass2_Final_832x480", promote=True)
+        p1_mp4 = resolve_rendered_clip_path(self.ctx.renders_dir, f"S02_Pass1_Left_{self.ctx.current_resolution}", promote=True)
+        p2_mp4 = resolve_rendered_clip_path(self.ctx.renders_dir, f"S02_Pass2_Final_{self.ctx.current_resolution}", promote=True)
         self.assertTrue(p1_mp4.exists() and p1_mp4.stat().st_size > 50000)
         self.assertTrue(p2_mp4.exists() and p2_mp4.stat().st_size > 50000)
 
@@ -1107,10 +1114,13 @@ class TestLiveWan2GPEngineIntegration(unittest.TestCase):
         entered_inference = False
         while time.time() - t0 < 300:
             st = server.read_project_engine_status(self.slug)
-            if st and str(st.get("phase") or "").startswith("inference"):
+            ph = str((st or {}).get("phase") or "").lower()
+            if st and st.get("state") == "rendering" and (
+                ph.startswith(("inference", "denois", "sampl")) or st.get("step") is not None
+            ):
                 entered_inference = True
                 break
-            time.sleep(0.5)
+            time.sleep(0.25)
 
         self.assertTrue(entered_inference, "Timed out waiting for Wan2GP to enter inference phase")
         server.kill_active_render()

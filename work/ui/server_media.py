@@ -81,6 +81,63 @@ def stream_file_with_range(handler, file_path: Path):
         pass
 
 
+try:
+    from server_security import resolve_path_under_dir, resolve_project_dir_safe
+except ImportError:
+    try:
+        from work.ui.server_security import resolve_path_under_dir, resolve_project_dir_safe
+    except ImportError:
+        from ui.server_security import resolve_path_under_dir, resolve_project_dir_safe
+
+
+def _load_takes_manifest_raw(proj_dir: Path) -> dict:
+    mf = Path(proj_dir) / "work" / "takes_manifest.json"
+    if not mf.is_file():
+        return {}
+    try:
+        data = json.loads(mf.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def resolve_active_take_clip_path(proj_dir: Path, sid: str, manifest_data: dict | None = None) -> tuple[Path | None, dict | None]:
+    """Resolves a scene's active_take_id from takes_manifest.json to a concrete MP4 on disk."""
+    m_data = manifest_data if isinstance(manifest_data, dict) else _load_takes_manifest_raw(proj_dir)
+    sd = next((v for k, v in m_data.get("scenes", {}).items() if str(k).upper() == str(sid).upper()), {})
+    aid = sd.get("active_take_id")
+    t_obj = next((t for t in sd.get("takes", []) if t.get("take_id") == aid), None)
+    if not t_obj:
+        return None, None
+    act_rel = f"work/renders_v3/{t_obj['out_name']}.mp4" if t_obj.get("out_name") else ""
+    v_rel = f"work/renders_v3/{t_obj['vault_rel_mp4']}" if t_obj.get("vault_rel_mp4") else ""
+    for rp in (t_obj.get("file_path") or "", v_rel, act_rel):
+        if rp and (Path(proj_dir) / rp).is_file():
+            return Path(proj_dir) / rp, t_obj
+    return None, t_obj
+
+
+def apply_active_manifest_clips(proj_dir: Path, existing_clips: dict[str, dict]) -> None:
+    """Aligns canonical scene entries in collect_project_clips with takes_manifest.json active_take_id."""
+    m_data = _load_takes_manifest_raw(proj_dir)
+    for m_sid in m_data.get("scenes", {}):
+        fp, t_obj = resolve_active_take_clip_path(proj_dir, m_sid, m_data)
+        if not fp or not t_obj:
+            continue
+        cur = existing_clips.get(m_sid) or existing_clips.get(m_sid.upper())
+        if cur and "pass2" in str(cur.get("filename") or "").lower() and (t_obj.get("pass_num") == 1 or "pass1" in fp.name.lower()):
+            continue
+        act_name = f"{t_obj['out_name']}.mp4" if t_obj.get("out_name") else fp.name
+        c_inf = existing_clips.get(act_name) or {
+            "filename": fp.name,
+            "path": fp.relative_to(proj_dir).as_posix(),
+            "size_bytes": fp.stat().st_size,
+            "mtime": fp.stat().st_mtime,
+        }
+        for sv in (m_sid, m_sid.upper(), m_sid.lower()):
+            existing_clips[sv] = c_inf
+
+
 def handle_media_stream(handler, subpath: str):
     """Resolves and serves media streams (audio, anchor, clips, master) for a project."""
     srv = _srv()
@@ -91,8 +148,8 @@ def handle_media_stream(handler, subpath: str):
         return
 
     slug = parts[0]
-    proj_dir = srv.PROJECTS_DIR / slug
-    if not proj_dir.is_dir():
+    proj_dir = resolve_project_dir_safe(srv.PROJECTS_DIR, slug)
+    if proj_dir is None or not proj_dir.is_dir():
         handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND)
         return
 
@@ -140,28 +197,23 @@ def handle_media_stream(handler, subpath: str):
         pass
     elif category == "audio" and len(parts) >= 3:
         rel = "/".join(parts[2:])
-        target_file = proj_dir / "audio" / rel
-        if not target_file.exists():
-            target_file = proj_dir / rel
+        cand = resolve_path_under_dir(proj_dir / "audio", rel)
+        target_file = cand if (cand and cand.is_file()) else resolve_path_under_dir(proj_dir, rel)
     elif category == "ref" and len(parts) >= 3:
-        rel_target = "/".join(parts[2:])
-        cand = (proj_dir / rel_target).resolve()
-        try:
-            cand.relative_to(proj_dir.resolve())
-            if cand.is_file():
-                target_file = cand
-        except ValueError:
-            pass
-        if target_file is None:
-            for bdir in [proj_dir / "references", proj_dir / "work" / "ref_sheets", proj_dir]:
-                c2 = (bdir / rel_target).resolve()
-                try:
-                    c2.relative_to(proj_dir.resolve())
-                    if c2.is_file():
-                        target_file = c2
-                        break
-                except ValueError:
-                    pass
+        ref_parts = parts[2:]
+        if any(pt in ("..", "") for pt in ref_parts):
+            handler.send_error(403, "Forbidden path traversal")
+            return
+        rel_target = "/".join(ref_parts)
+        for bdir in [proj_dir, proj_dir / "references", proj_dir / "work" / "ref_sheets"]:
+            c2 = (bdir / rel_target).resolve()
+            try:
+                c2.relative_to(bdir.resolve())
+                if c2.is_file():
+                    target_file = c2
+                    break
+            except ValueError:
+                pass
     elif category == "anchor" and len(parts) >= 3:
         raw_target = "/".join(parts[2:])
         rel_cand = (proj_dir / raw_target).resolve()
@@ -278,7 +330,7 @@ def handle_media_stream(handler, subpath: str):
                 if not cdir.is_dir():
                     continue
                 for mp4 in cdir.glob("*.mp4"):
-                    if mp4.stem == target_stem or mp4.stem.startswith(f"{target_stem}_"):
+                    if mp4.stem == target_stem:
                         target_file = mp4
                         break
                 if target_file is not None:
@@ -288,32 +340,35 @@ def handle_media_stream(handler, subpath: str):
             m_scene = re.match(r"^(S\d{1,2}[a-z]?)", target_stem, re.IGNORECASE)
             if m_scene:
                 sid = m_scene.group(1).upper()
-                for cdir in candidate_dirs:
-                    if not cdir.is_dir():
-                        continue
+                target_file, _ = resolve_active_take_clip_path(proj_dir, sid)
+                if target_file is None:
                     matching_clips = [
-                        f for f in cdir.glob("*.mp4")
-                        if srv.is_scene_match(sid, f.stem, sid)
+                        f for cdir in candidate_dirs if cdir.is_dir()
+                        for f in cdir.glob("*.mp4")
+                        if f.stem.startswith(f"{target_stem}_") or srv.is_scene_match(sid, f.stem, sid)
                     ]
                     if matching_clips:
                         target_file = max(matching_clips, key=lambda f: (
-                            50 if "pass2_final" in f.name.lower() else (
-                                30 if "pass1" in f.name.lower() else (
-                                    20 if "trimmed" in str(f).lower() else 10
+                            -100 if "placeholder" in f.name.lower() else (
+                                50 if "pass2_final" in f.name.lower() else (
+                                    45 if "pass2" in f.name.lower() else (
+                                        30 if "pass1" in f.name.lower() else (
+                                            20 if "trimmed" in str(f).lower() else 40
+                                        )
+                                    )
                                 )
                             ),
                             f.stat().st_mtime
                         ))
-                        break
     elif category == "master":
         if len(parts) >= 3:
             master_name = "/".join(parts[2:])
-            cand = proj_dir / master_name
-            if cand.is_file():
+            cand = resolve_path_under_dir(proj_dir, master_name)
+            if cand and cand.is_file():
                 target_file = cand
             else:
-                cand_work = proj_dir / "work" / master_name
-                if cand_work.is_file():
+                cand_work = resolve_path_under_dir(proj_dir / "work", master_name)
+                if cand_work and cand_work.is_file():
                     target_file = cand_work
         if target_file is None:
             candidates = []
@@ -471,6 +526,11 @@ def handle_media_stream(handler, subpath: str):
 
     if target_file is None or not target_file.is_file():
         handler.send_error_json(f"File not found: {subpath}", status=HTTPStatus.NOT_FOUND)
+        return
+    try:
+        target_file.resolve().relative_to(proj_dir.resolve())
+    except ValueError:
+        handler.send_error_json("Forbidden path traversal", status=HTTPStatus.FORBIDDEN)
         return
 
     stream_file_with_range(handler, target_file)

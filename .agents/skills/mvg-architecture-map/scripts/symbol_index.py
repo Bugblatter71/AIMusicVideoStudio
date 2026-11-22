@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""MVG Symbol Indexer & Code Navigator.
+"""MVG Symbol Indexer, Code Navigator & Modularity Checker.
 
 Extracts functions, classes, and methods with precise line ranges across:
 - work/pipeline/*.py
 - work/ui/*.py
 - work/ui/static/js/*.js
-
-Enables subagents and models to locate code symbols without reading entire multi-thousand-line files.
+- tests/ (optional --tests flag)
+And validates <850 line limits across work/ via --check-limits.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+LINE_CEILING = 850
 
 
 def scan_python_file(path: Path) -> list[dict]:
@@ -73,11 +74,12 @@ def scan_javascript_file(path: Path) -> list[dict]:
 
     fn_regex = re.compile(r"^(?:async\s+)?function\s+([a-zA-Z0-9_$]+)\s*\(")
     const_fn_regex = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>")
+    win_fn_regex = re.compile(r"^window\.([a-zA-Z0-9_$]+)\s*=\s*(?:async\s*)?(?:function|\()")
     class_regex = re.compile(r"^(?:export\s+)?class\s+([a-zA-Z0-9_$]+)")
 
     for i, line in enumerate(lines, 1):
         sline = line.strip()
-        m = fn_regex.match(sline) or const_fn_regex.match(sline)
+        m = fn_regex.match(sline) or const_fn_regex.match(sline) or win_fn_regex.match(sline)
         if m:
             doc = ""
             if i > 1 and lines[i - 2].strip().startswith("//"):
@@ -86,7 +88,7 @@ def scan_javascript_file(path: Path) -> list[dict]:
                 "name": m.group(1),
                 "type": "function",
                 "line_start": i,
-                "line_end": i,  # Approximate
+                "line_end": i,
                 "doc": doc,
             })
             continue
@@ -103,13 +105,15 @@ def scan_javascript_file(path: Path) -> list[dict]:
     return symbols
 
 
-def build_full_index(root: Path) -> dict[str, dict]:
+def build_full_index(root: Path, include_tests: bool = False) -> dict[str, dict]:
     index = {}
     target_dirs = [
         root / "work" / "pipeline",
         root / "work" / "ui",
         root / "work" / "ui" / "static" / "js",
     ]
+    if include_tests:
+        target_dirs.append(root / "tests")
 
     for tdir in target_dirs:
         if not tdir.is_dir():
@@ -120,27 +124,61 @@ def build_full_index(root: Path) -> dict[str, dict]:
                     rel = p.relative_to(root).as_posix()
                     index[rel] = {
                         "path": rel,
-                        "lines": len(p.read_text(encoding="utf-8").splitlines()),
+                        "lines": len(p.read_text(encoding="utf-8", errors="ignore").splitlines()),
                         "symbols": scan_python_file(p),
                     }
                 elif p.suffix == ".js":
                     rel = p.relative_to(root).as_posix()
                     index[rel] = {
                         "path": rel,
-                        "lines": len(p.read_text(encoding="utf-8").splitlines()),
+                        "lines": len(p.read_text(encoding="utf-8", errors="ignore").splitlines()),
                         "symbols": scan_javascript_file(p),
                     }
     return index
+
+
+def check_line_limits(root: Path) -> int:
+    work_dir = root / "work"
+    violations = []
+    near_limit = []
+    for p in sorted(work_dir.rglob("*")):
+        if not p.is_file() or "Wan2GP" in p.parts or "__pycache__" in p.parts:
+            continue
+        if p.suffix.lower() not in (".py", ".js", ".html", ".css"):
+            continue
+        n_lines = len(p.read_text(encoding="utf-8", errors="ignore").splitlines())
+        rel = p.relative_to(root).as_posix()
+        if n_lines >= LINE_CEILING:
+            violations.append((rel, n_lines))
+        elif n_lines >= LINE_CEILING - 25:
+            near_limit.append((rel, n_lines))
+
+    if violations:
+        print(f"MODULARITY VIOLATIONS (>= {LINE_CEILING} lines):")
+        for rel, n in violations:
+            print(f"  FAIL {rel}: {n} lines")
+    else:
+        print(f"OK: All core work/ source files are strictly under {LINE_CEILING} lines.")
+    if near_limit:
+        print(f"Heads up (>= {LINE_CEILING - 25} lines):")
+        for rel, n in near_limit:
+            print(f"  WARN {rel}: {n} lines")
+    return 1 if violations else 0
 
 
 def main():
     parser = argparse.ArgumentParser(description="MVG Symbol Indexer & Code Navigator")
     parser.add_argument("--module", "-m", help="Filter by module / filename substring")
     parser.add_argument("--find", "-f", help="Find a specific symbol across all modules")
+    parser.add_argument("--tests", action="store_true", help="Include tests/ directory in symbol scan")
+    parser.add_argument("--check-limits", action="store_true", help="Check <850 line limit across work/")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     args = parser.parse_args()
 
-    index = build_full_index(WORKSPACE_ROOT)
+    if args.check_limits:
+        sys.exit(check_line_limits(WORKSPACE_ROOT))
+
+    index = build_full_index(WORKSPACE_ROOT, include_tests=args.tests)
 
     if args.find:
         query = args.find.lower()
@@ -193,11 +231,11 @@ def main():
         sym_count = len(file_info["symbols"])
         total_symbols += sym_count
         total_lines += file_info["lines"]
-        print(f"📄 {file_path:<40} {file_info['lines']:>5} lines | {sym_count:>3} symbols")
+        print(f"📄 {file_path:<42} {file_info['lines']:>5} lines | {sym_count:>3} symbols")
 
     print("-" * 80)
     print(f"Total: {len(index)} files, {total_lines} lines, {total_symbols} symbols indexed.")
-    print("Use --find <symbol> or --module <name> to inspect individual components.\n")
+    print("Use --find <symbol>, --module <name>, or --check-limits.\n")
 
 
 if __name__ == "__main__":

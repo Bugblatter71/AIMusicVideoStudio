@@ -24,16 +24,40 @@ def _srv():
 
 
 try:
+    from pipeline.media_utils import prepend_unique_env_path
     from pipeline.takes import create_project_checkpoint
 except ImportError:
     try:
+        from work.pipeline.media_utils import prepend_unique_env_path
         from work.pipeline.takes import create_project_checkpoint
     except ImportError:
+        prepend_unique_env_path = None
         create_project_checkpoint = None
 
 
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8:replace"
+    if prepend_unique_env_path is not None:
+        prepend_unique_env_path(env_map=env)
+    return env
+
+
 stitch_lock = threading.Lock()
+checkpoint_lock = threading.Lock()
 stitch_in_progress = False
+_stitch_spawning = False
+
+
+def _se():
+    try:
+        from work.ui import server_engines as se
+        return se
+    except ImportError:
+        import server_engines as se
+        return se
 
 
 def derive_scene_id(out_name: str) -> str:
@@ -67,161 +91,67 @@ def _restore_if_unlinked(p_dir: Path, out_name: str | None, sid: str | None = No
             pass
 
 
-def kill_active_render(target_slug: str | None = None):
-    """Signals graceful Wan2GP cancellation via cancel_request.json and terminates the render process tree."""
-    srv = _srv()
-    with srv.render_lock:
-        srv.queue_worker_active = False
-        srv.current_worker_id += 1
-        srv.render_job_queue.clear()
-        proc = srv.active_process
-        active_proj = srv.render_status.get("current_project") or target_slug
-
-    # 1. Write graceful cancel_request.json so Wan2GP's job.cancel() / _interrupt triggers cleanly
-    cancel_files: list[Path] = []
-    if active_proj:
-        for jobs_sub in ("work/jobs_v3", "work/jobs"):
-            jdir = srv.PROJECTS_DIR / active_proj / jobs_sub
-            if jdir.is_dir():
-                cfile = jdir / "cancel_request.json"
-                try:
-                    cfile.write_text(json.dumps({"requested_at": time.time(), "reason": "STOPPED BY USER"}), encoding="utf-8")
-                    cancel_files.append(cfile)
-                except Exception:
-                    pass
-
-    if proc is not None:
-        srv.broadcast_log("[Studio UI] Requesting graceful Wan2GP engine stop & terminating render process tree...")
-        if cancel_files and proc.poll() is None:
-            try:
-                proc.wait(timeout=0.35)
-            except Exception:
-                pass
-        try:
-            proc.kill()
-        except Exception:
-            pass
-        try:
-            pid = proc.pid
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=2,
-                )
-            else:
-                proc.terminate()
-        except Exception as e:
-            srv.broadcast_log(f"[Studio UI Warning] Process termination error: {e}")
-
-        try:
-            if proc.stdout:
-                proc.stdout.close()
-        except Exception:
-            pass
-
-        try:
-            proc.wait(timeout=2)
-        except Exception:
-            pass
-
-    for cfile in cancel_files:
-        try:
-            if cfile.exists():
-                cfile.unlink()
-        except Exception:
-            pass
-
-    with srv.render_lock:
-        active_proj = srv.render_status.get("current_project") or active_proj
-        srv.active_process = None
-        srv.render_status["running"] = False
-        if srv.render_status["exit_code"] is None:
-            srv.render_status["exit_code"] = -9
-
-    # Clean up any lingering "rendering" status in the active project queue file and engine_status.json
-    try:
-        if active_proj:
-            p_dir = srv.PROJECTS_DIR / active_proj
-            q_file = p_dir / "work" / "jobs_v3" / "v3_queue.json"
-            if q_file.is_file():
-                q_items = json.loads(q_file.read_text(encoding="utf-8"))
-                for q_it in q_items:
-                    if q_it.get("status") == "rendering":
-                        q_it["status"] = "queued" if q_it.get("needs_render") else "skipped"
-                        q_it["reason"] = "STOPPED BY USER"
-                        _restore_if_unlinked(p_dir, q_it.get("output_filename") or q_it.get("filename"), q_it.get("scene_id"))
-                q_file.write_text(json.dumps(q_items, indent=2), encoding="utf-8")
-            for jobs_sub in ("work/jobs_v3", "work/jobs"):
-                st_file = p_dir / jobs_sub / "engine_status.json"
-                if st_file.is_file():
-                    try:
-                        st_data = json.loads(st_file.read_text(encoding="utf-8"))
-                        _restore_if_unlinked(p_dir, st_data.get("output_filename") or st_data.get("filename"))
-                        st_data["state"] = "cancelled"
-                        st_data["phase"] = "cancelled"
-                        st_data["raw_phase"] = "Stopped by user"
-                        st_data["updated_at"] = round(time.time(), 3)
-                        st_file.write_text(json.dumps(st_data, indent=2), encoding="utf-8")
-                    except Exception:
-                        pass
-    except Exception:
-        pass
-
-    srv.broadcast_log("[Studio UI] Render process stopped.")
+def kill_active_render(target_slug: str | None = None, backend: str | None = None, filename: str | None = None):
+    """Signals graceful cancellation and terminates one job, one engine lane, or all active render processes."""
+    _se().kill_engine_render(_srv(), target_slug=target_slug, backend=backend, filename=filename)
 
 
-def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
+def execute_single_render(cmd_args: list[str], project_slug: str, engine_tag: str | None = None, slot_id: str | None = None, target_filename: str | None = None) -> int:
     """Executes a single engine task synchronously while streaming stdout/stderr."""
     srv = _srv()
+    se = _se()
+    se.ensure_engine_state(srv)
+    b_tag = se.norm_engine(engine_tag) if engine_tag else None
+    t_stem = se.clean_task_stem(target_filename)
     with srv.render_lock:
         srv.render_status["running"] = True
         srv.render_status["exit_code"] = None
         srv.render_status["current_project"] = project_slug
         srv.render_status["args"] = cmd_args
-        srv.render_status["start_time"] = time.time()
+        if not srv.render_status.get("start_time"):
+            srv.render_status["start_time"] = time.time()
+        siblings_active = sum(1 for k, s in srv.engine_slots[b_tag].items() if k != slot_id and s.get("running")) if b_tag else 0
 
-    # Clear any stale cancel_request.json before launching
     if project_slug:
+        with srv.render_lock:
+            stopping_global = any(s.get("stop_requested") for em in srv.engine_slots.values() for s in em.values())
         for jobs_sub in ("work/jobs_v3", "work/jobs"):
-            cfile = srv.PROJECTS_DIR / project_slug / jobs_sub / "cancel_request.json"
-            if cfile.exists():
+            if b_tag and t_stem:
+                names = [f"cancel_request_{b_tag}__{t_stem}.json"] + ([f"cancel_request_{b_tag}.json"] if siblings_active == 0 else [])
+            elif b_tag:
+                names = [f"cancel_request_{b_tag}.json"]
+            else:
+                names = ["cancel_request.json", "cancel_request_local.json", "cancel_request_fal.json", "cancel_request_minimax.json"]
+            if b_tag and not stopping_global and siblings_active == 0:
+                names.append("cancel_request.json")
+            for nm in names:
+                cf = srv.PROJECTS_DIR / project_slug / jobs_sub / nm
+                if cf.exists():
+                    try: cf.unlink()
+                    except Exception: pass
+
+        if create_project_checkpoint:
+            with checkpoint_lock:
                 try:
-                    cfile.unlink()
+                    p_dir = srv.PROJECTS_DIR / project_slug
+                    c_file = next((Path(a) for a in cmd_args if str(a).endswith(".json") and Path(a).is_file()), None)
+                    if not c_file and p_dir.is_dir():
+                        js = [j for j in sorted(p_dir.glob("*.json")) if not j.name.startswith("state_hashes")]
+                        if js: c_file = js[-1]
+                    if p_dir.is_dir() and c_file and c_file.is_file():
+                        tgt = "batch"
+                        if "--scene" in cmd_args:
+                            idx = cmd_args.index("--scene")
+                            if idx + 1 < len(cmd_args): tgt = cmd_args[idx + 1]
+                        elif len(cmd_args) > 1 and not cmd_args[1].startswith("-"):
+                            tgt = cmd_args[1]
+                        create_project_checkpoint(p_dir, c_file, name=f"Auto: Pre-render ({tgt})", trigger="pre_render")
                 except Exception:
                     pass
 
-        if create_project_checkpoint:
-            try:
-                p_dir = srv.PROJECTS_DIR / project_slug
-                c_file = None
-                for a in cmd_args:
-                    if str(a).endswith(".json") and Path(a).is_file():
-                        c_file = Path(a)
-                        break
-                if not c_file and p_dir.is_dir():
-                    js = [j for j in sorted(p_dir.glob("*.json")) if not j.name.startswith("state_hashes")]
-                    if js:
-                        c_file = js[-1]
-                if p_dir.is_dir() and c_file and c_file.is_file():
-                    tgt = "batch"
-                    if "--scene" in cmd_args:
-                        idx = cmd_args.index("--scene")
-                        if idx + 1 < len(cmd_args):
-                            tgt = cmd_args[idx + 1]
-                    elif len(cmd_args) > 1 and not cmd_args[1].startswith("-"):
-                        tgt = cmd_args[1]
-                    create_project_checkpoint(p_dir, c_file, name=f"Auto: Pre-render ({tgt})", trigger="pre_render")
-            except Exception:
-                pass
-
     srv.broadcast_log(f"[Studio UI] Executing: {' '.join(cmd_args)}")
-
     py_exec = srv.resolve_engine_python()
-
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
+    env = _subprocess_env()
     clean_cmd_args = [str(a) for a in cmd_args if a is not None and str(a).strip()]
     if getattr(srv, "dummy_render_mode", False) and "--dummy" not in clean_cmd_args:
         clean_cmd_args.append("--dummy")
@@ -236,34 +166,49 @@ def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             env=env,
         )
         with srv.render_lock:
-            srv.active_process = proc
+            if b_tag:
+                if slot_id and slot_id in srv.engine_slots[b_tag]:
+                    srv.engine_slots[b_tag][slot_id]["active_process"] = proc
+                srv.engine_workers[b_tag]["active_process"] = proc
+            if srv.active_process is None or b_tag in (None, "local"):
+                srv.active_process = proc
 
+        stop_triggered = False
         while True:
-            if not getattr(srv, "queue_worker_active", False) and srv.render_status.get("running") is False:
+            if b_tag:
+                slot_obj = srv.engine_slots[b_tag].get(slot_id) if slot_id else None
+                if (slot_obj.get("stop_requested") if slot_obj is not None else srv.engine_workers[b_tag]["stop_requested"]):
+                    stop_triggered = True
+                    break
+            elif not getattr(srv, "queue_worker_active", False) and srv.render_status.get("running") is False:
+                stop_triggered = True
                 break
             try:
                 line = proc.stdout.readline()
-                if not line:
-                    break
-                raw_clean = line.rstrip("\r\n")
-                if "[QUEUE_" in raw_clean and not raw_clean.startswith("[QUEUE_"):
-                    q_idx = raw_clean.find("[QUEUE_")
-                    prefix = raw_clean[:q_idx].strip()
-                    if prefix:
-                        srv.broadcast_log(prefix)
-                    srv.broadcast_log(raw_clean[q_idx:])
-                else:
-                    srv.broadcast_log(raw_clean)
-            except Exception:
+            except Exception as read_exc:
+                srv.broadcast_log(f"[Studio UI Error] Pipe read failed for {target_filename or project_slug}: {read_exc}")
                 break
+            if not line:
+                break
+            try:
+                se.emit_process_line(srv, line.rstrip("\r\n"), engine_tag=b_tag)
+            except Exception as emit_exc:
+                srv.broadcast_log(f"[Studio UI Warning] Log parse error: {emit_exc}")
 
+        wait_s = 3 if stop_triggered else 30
         try:
-            proc.wait(timeout=3)
+            proc.wait(timeout=wait_s)
             exit_code = proc.returncode
+        except subprocess.TimeoutExpired:
+            srv.broadcast_log(f"[Studio UI Error] Subprocess still running after stdout closed ({wait_s}s timeout); terminating.")
+            se.terminate_proc(srv, proc)
+            exit_code = -9
         except Exception:
             exit_code = -9
     except Exception as e:
@@ -271,14 +216,17 @@ def execute_single_render(cmd_args: list[str], project_slug: str) -> int:
         exit_code = -1
     finally:
         if proc is not None and proc.stdout:
-            try:
-                proc.stdout.close()
-            except Exception:
-                pass
+            try: proc.stdout.close()
+            except Exception: pass
         with srv.render_lock:
+            if b_tag:
+                if slot_id and slot_id in srv.engine_slots[b_tag] and srv.engine_slots[b_tag][slot_id].get("active_process") is proc:
+                    srv.engine_slots[b_tag][slot_id]["active_process"] = None
+                if srv.engine_workers[b_tag].get("active_process") is proc:
+                    srv.engine_workers[b_tag]["active_process"] = next((s.get("active_process") for s in srv.engine_slots[b_tag].values() if s.get("active_process") is not None), None)
             if srv.active_process is proc:
-                srv.active_process = None
-            if not getattr(srv, "queue_worker_active", False):
+                srv.active_process = next((srv.engine_workers[x]["active_process"] for x in se.ENGINES if srv.engine_workers[x].get("active_process") is not None), None)
+            if not getattr(srv, "queue_worker_active", False) and not any(srv.engine_workers[x]["running"] for x in se.ENGINES):
                 srv.render_status["running"] = False
                 srv.render_status["exit_code"] = exit_code
 
@@ -290,32 +238,54 @@ def run_anchor_worker(config_path: str, project_slug: str, anchor_args: list[str
     """Executes Stage 1 anchor generation from UI and refreshes dependent scene queue state."""
     srv = _srv()
     cmd_args = [config_path] + [str(a) for a in anchor_args]
-    code = execute_single_render(cmd_args, project_slug)
-    if code == 0:
-        try:
-            srv.compute_fast_project_queue(project_slug, force_recheck=False)
-        except Exception:
-            pass
-        srv.broadcast_log("[ANCHORS_UPDATED]")
+    held = False
+    with srv.render_lock:
+        if not getattr(srv, "local_adhoc_busy", False):
+            srv.local_adhoc_busy = True
+            held = True
+    try:
+        code = execute_single_render(cmd_args, project_slug)
+        if code == 0:
+            try:
+                srv.compute_fast_project_queue(project_slug, force_recheck=False)
+            except Exception:
+                pass
+            srv.broadcast_log("[ANCHORS_UPDATED]")
+    finally:
+        if held:
+            with srv.render_lock:
+                srv.local_adhoc_busy = False
+            try:
+                if getattr(srv, "queue_worker_active", False):
+                    _se().wake_enabled_engine_workers(srv, project_slug)
+            except Exception:
+                pass
 
 
 def run_stitch_worker(config_path: str, project_slug: str):
     """Executes master video restitching immediately in a separate thread.
     Does not touch GPU models, does not wait for render locks, and can run
     in parallel with active scene renders."""
-    global stitch_in_progress
+    global stitch_in_progress, _stitch_spawning
     srv = _srv()
     with stitch_lock:
         if stitch_in_progress:
-            srv.broadcast_log("[Studio UI Stitch] Master restitch already in progress...")
+            srv.stitch_pending = True
+            srv.broadcast_log("[Studio UI Stitch] Master restitch already in progress (queued follow-up)...")
+            cur_prog = getattr(srv, "stitch_progress", None)
+            if cur_prog:
+                srv.broadcast_log(f"[MASTER_STITCH_PROGRESS] {json.dumps(cur_prog)}")
             return
-        stitch_in_progress = True
+        stitch_in_progress = srv.stitch_in_progress = True
+        _stitch_spawning = False
+        srv.stitch_pending = False
+        srv.stitch_progress = {"pct": 0, "phase": "Starting stitch worker...", "detail": "Initializing...", "slug": project_slug}
 
+    srv.broadcast_log(f"[MASTER_STITCH_START] {json.dumps({'slug': project_slug})}")
     srv.broadcast_log("[Studio UI Stitch] >>> Immediate master video restitch initiated...")
     py_exec = srv.resolve_engine_python()
 
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
+    env = _subprocess_env()
     cmd = [py_exec, "-u", str(srv.RUNNER_SCRIPT), config_path, "stitch", "--skip-anchors"]
 
     try:
@@ -325,6 +295,8 @@ def run_stitch_worker(config_path: str, project_slug: str):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             env=env,
         )
@@ -336,11 +308,18 @@ def run_stitch_worker(config_path: str, project_slug: str):
                 break
             clean_line = line.rstrip("\r\n")
             if clean_line:
-                srv.broadcast_log(f"[Stitch] {clean_line}")
-                if "is currently open in a player" in clean_line or "MASTER_FILE_LOCKED" in clean_line:
-                    lock_error_msg = clean_line
-                if "[Progressive Master Updated]" in clean_line:
-                    stitch_succeeded = True
+                if clean_line.startswith("[MASTER_STITCH_PROGRESS]"):
+                    try:
+                        srv.stitch_progress = json.loads(clean_line[24:].strip())
+                    except Exception:
+                        pass
+                    srv.broadcast_log(clean_line)
+                else:
+                    srv.broadcast_log(f"[Stitch] {clean_line}")
+                    if "is currently open in a player" in clean_line or "MASTER_FILE_LOCKED" in clean_line:
+                        lock_error_msg = clean_line
+                    if "[Progressive Master Updated]" in clean_line:
+                        stitch_succeeded = True
         proc.wait(timeout=60)
         code = proc.returncode
         if code == 0 and stitch_succeeded:
@@ -354,6 +333,7 @@ def run_stitch_worker(config_path: str, project_slug: str):
             srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'code': code})}")
     except Exception as e:
         srv.broadcast_log(f"[Studio UI Stitch Error] {e}")
+        srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'error': str(e)})}")
     finally:
         if 'proc' in locals() and proc is not None and proc.stdout:
             try:
@@ -361,7 +341,12 @@ def run_stitch_worker(config_path: str, project_slug: str):
             except Exception:
                 pass
         with stitch_lock:
-            stitch_in_progress = False
+            stitch_in_progress = srv.stitch_in_progress = False
+            srv.stitch_progress = None
+            need_again = bool(getattr(srv, "stitch_pending", False))
+            srv.stitch_pending = False
+        if need_again:
+            run_stitch_worker(config_path, project_slug)
 
 
 def run_pipeline_worker(cmd_args: list[str], project_slug: str):
@@ -375,184 +360,6 @@ def run_pipeline_worker(cmd_args: list[str], project_slug: str):
         execute_single_render(cmd_args, project_slug)
 
 
-def run_queue_worker(project_slug: str, force_restart: bool = False):
-    """Executes the render queue by submitting ONE SINGLE RENDER at a time to the engine."""
-    srv = _srv()
-    with srv.render_lock:
-        if srv.active_process is not None and srv.active_process.poll() is not None:
-            srv.active_process = None
-
-        if getattr(srv, "queue_worker_active", False):
-            if srv.active_process is not None and srv.active_process.poll() is None:
-                if not force_restart:
-                    srv.broadcast_log("[Studio UI Queue] Queue is already actively executing (updated queue will be picked up next).")
-                    return
-                try:
-                    srv.active_process.kill()
-                    srv.active_process.wait(timeout=1)
-                except Exception:
-                    pass
-                srv.active_process = None
-            srv.queue_worker_active = False
-        srv.current_worker_id += 1
-        my_worker_id = srv.current_worker_id
-        srv.queue_worker_active = True
-        srv.render_status["running"] = True
-        srv.render_status["exit_code"] = None
-
-    def _worker():
-        srv_w = _srv()
-        last_exit_code = 0
-        try:
-            srv_w.broadcast_log("[Studio UI Queue] Queue processing started (single-render mode).")
-            proj_dir = srv_w.PROJECTS_DIR / project_slug
-            queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
-
-            # Resolve project configuration JSON file
-            jsons = [j for j in sorted(proj_dir.glob("*.json")) if not j.name.startswith("state_hashes")]
-            if not jsons:
-                srv_w.broadcast_log("[Studio UI Error] No project config JSON found.")
-                return
-            config_path = str(jsons[-1])
-
-            rendered_any = False
-            while getattr(srv_w, "queue_worker_active", False) and srv_w.current_worker_id == my_worker_id:
-                # 1. Read queue file fresh on every loop iteration
-                items = []
-                if queue_file.is_file():
-                    try:
-                        items = json.loads(queue_file.read_text(encoding="utf-8"))
-                    except Exception:
-                        pass
-
-                if not items:
-                    items = srv_w.compute_fast_project_queue(project_slug)
-
-                # 2. Find next task marked queued
-                next_task = None
-                next_idx = None
-                for idx, item in enumerate(items):
-                    if item.get("status") == "queued" and item.get("needs_render"):
-                        next_task = item
-                        next_idx = idx
-                        break
-
-                if not next_task:
-                    # Re-check project queue in case newly saved scene edits or anchor updates arrived on disk
-                    try:
-                        items = srv_w.compute_fast_project_queue(project_slug, force_recheck=False)
-                        for idx, item in enumerate(items):
-                            if item.get("status") == "queued" and item.get("needs_render"):
-                                next_task = item
-                                next_idx = idx
-                                break
-                    except Exception:
-                        pass
-
-                if not next_task:
-                    if rendered_any and getattr(srv_w, "queue_worker_active", False) and srv_w.current_worker_id == my_worker_id:
-                        srv_w.broadcast_log("[Studio UI Queue] All queued passes completed! Restitching master video...")
-                        run_stitch_worker(config_path, project_slug)
-                        srv_w.broadcast_log("[Studio UI Queue] Queue finished. Master video updated.")
-                    else:
-                        srv_w.broadcast_log("[Studio UI Queue] No passes currently queued for rendering.")
-                    break
-
-                out_fn = next_task.get("output_filename", "")
-                target_arg = next_task.get("target_arg") or derive_target_arg(out_fn) or next_task.get("scene_id")
-                next_task["target_arg"] = target_arg
-                next_task["scene_id"] = next_task.get("scene_id") or derive_scene_id(out_fn)
-
-                # 3. Mark as rendering and persist
-                items[next_idx]["status"] = "rendering"
-                if hasattr(srv_w, "normalize_queue_units"):
-                    srv_w.normalize_queue_units(items, srv_w)
-                if hasattr(srv_w, "normalize_queue_units"):
-                    try:
-                        srv_w.normalize_queue_units(items, srv_w)
-                    except Exception:
-                        pass
-                try:
-                    queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
-                except Exception:
-                    pass
-
-                srv_w.broadcast_log(f"[Studio UI Queue] >>> Starting single render [{next_idx + 1}/{len(items)}]: {out_fn} ({target_arg})")
-
-                # 4. Submit single render task to engine
-                t_single_start = time.time()
-                cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
-                code = execute_single_render(cmd_args, project_slug)
-                if code != 0:
-                    _restore_if_unlinked(proj_dir, out_fn, next_task.get("scene_id"))
-                t_single_elapsed = round(time.time() - t_single_start, 1)
-                t_single_completed = round(time.time(), 3)
-                if not getattr(srv_w, "queue_worker_active", False) or srv_w.current_worker_id != my_worker_id:
-                    break
-
-                # 5. Reload queue file fresh to respect any user reordering/deletions done during render
-                try:
-                    items = json.loads(queue_file.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
-
-                for item in items:
-                    if item.get("output_filename") == out_fn:
-                        if code == 0:
-                            item["status"] = "completed"
-                            item["needs_render"] = False
-                            item["reason"] = "COMPLETED"
-                            item["completed_at"] = t_single_completed
-                            item["elapsed"] = t_single_elapsed
-                            item.pop("user_skipped_hash", None)
-                            rendered_any = True
-                        else:
-                            item["status"] = "failed"
-                        break
-
-                if code == 0 and ("_Pass1_Left" in out_fn or next_task.get("pass") == 1):
-                    sid = next_task.get("scene_id") or derive_scene_id(out_fn)
-                    for item in items:
-                        if (item.get("scene_id") == sid or derive_scene_id(item.get("output_filename", "")) == sid) and item.get("pass") == 2:
-                            if item.get("status") != "rendering":
-                                item.update({"status": "queued", "needs_render": True, "reason": "PASS 1 NEWER ON DISK"})
-                                item.pop("user_skipped_hash", None)
-                                item.pop("user_skipped_anchor_mtime", None)
-
-                if hasattr(srv_w, "normalize_queue_units"):
-                    try:
-                        srv_w.normalize_queue_units(items, srv_w)
-                    except Exception:
-                        pass
-                try:
-                    queue_file.write_text(json.dumps(items, indent=2), encoding="utf-8")
-                except Exception:
-                    pass
-
-                # 6. Auto-restitch progressive master video after completing a final scene video pass
-                if code == 0 and "_Pass1_Left" not in out_fn:
-                    srv_w.broadcast_log(f"[Studio UI Queue] 🎬 Auto-restitching progressive master video after completing {out_fn}...")
-                    try:
-                        srv_w.run_stitch_worker(config_path, project_slug)
-                    except Exception as e:
-                        srv_w.broadcast_log(f"[Studio UI Queue Warning] Auto-stitch error: {e}")
-
-                if code != 0:
-                    last_exit_code = code
-                    srv_w.broadcast_log(f"[Studio UI Error] Single render failed for {out_fn} (exit code {code}). Queue paused.")
-                    break
-
-                time.sleep(0.2)
-        except Exception as e:
-            srv_w.broadcast_log(f"[Studio UI Queue Worker Exception] {e}")
-            last_exit_code = -1
-        finally:
-            with srv_w.render_lock:
-                if srv_w.current_worker_id == my_worker_id:
-                    srv_w.queue_worker_active = False
-                    srv_w.render_status["running"] = False
-                    srv_w.render_status["exit_code"] = last_exit_code
-            srv_w.broadcast_log("[Studio UI Queue] Queue runner idle.")
-
-    t = threading.Thread(target=_worker, daemon=True)
-    t.start()
+def run_queue_worker(project_slug: str, force_restart: bool = False, enabled_engines: dict | None = None, max_parallel: dict | None = None):
+    """Executes the render queue with independent parallel engine workers and configurable per-engine concurrency."""
+    _se().run_multi_engine_queue_worker(_srv(), project_slug, force_restart=force_restart, enabled_engines=enabled_engines, max_parallel=max_parallel)

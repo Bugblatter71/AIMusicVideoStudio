@@ -28,9 +28,12 @@
   // 1. Data Loading & API Sync
   // ---------------------------------------------------------------------------
 
-  async function loadProjectCharacters(slug) {
+  async function loadProjectCharacters(slug, force = false) {
     const projSlug = slug || state.currentSlug;
     if (!projSlug) return;
+    if (!force && state.isDirty && state.currentSlug === projSlug && state.charactersData) {
+      return;
+    }
     try {
       const res = await fetch(`/api/project/${projSlug}/characters`);
       if (!res.ok) return;
@@ -273,19 +276,21 @@
     });
 
     document.getElementById("btnAddLook")?.addEventListener("click", () => {
-      const lid = prompt("Enter new look ID (e.g. concert, casual, piano):");
-      if (!lid) return;
-      const cleanLid = lid.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-      ent.looks = ent.looks || {};
-      ent.looks[cleanLid] = {
-        tag: `@${cleanLid}`,
-        name: lid.charAt(0).toUpperCase() + lid.slice(1),
-        description: "",
-        image_refs: [],
-      };
-      if (!ent.default_look) ent.default_look = cleanLid;
-      syncCharactersDirty(`Add Look ${cleanLid}`);
-      renderCharactersTab();
+      openCharInputModal({
+        title: "✨ Add Wardrobe / Look",
+        label: "Look ID or Name (e.g. concert, casual, piano)",
+        placeholder: "e.g. concert",
+        confirmLabel: "+ Add Look",
+        onSubmit: (lid) => {
+          ent.looks = ent.looks || {};
+          const cleanName = lid.trim();
+          const cleanLid = _uniqueSlug(ent.looks, cleanName, "look");
+          ent.looks[cleanLid] = { tag: `@${cleanLid}`, name: cleanName.charAt(0).toUpperCase() + cleanName.slice(1), description: "", image_refs: [] };
+          if (!ent.default_look) ent.default_look = cleanLid;
+          syncCharactersDirty(`Add Look ${cleanLid}`);
+          renderCharactersTab();
+        },
+      });
     });
 
     detailEl.querySelectorAll(".input-look-name").forEach((inp) => {
@@ -746,44 +751,75 @@
     }
   }
 
+  function _uniqueSlug(existingMap, raw, prefix) {
+    const base = String(raw || "").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "") || `${prefix}_${Date.now()}`;
+    let cand = base, n = 2;
+    while (existingMap && Object.prototype.hasOwnProperty.call(existingMap, cand)) cand = `${base}_${n++}`;
+    return cand;
+  }
+
+  let _charModalCb = null;
+  function openCharInputModal({ title, label, placeholder, confirmLabel, onSubmit }) {
+    let modal = document.getElementById("charInputModalOverlay");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "charInputModalOverlay";
+      modal.style.cssText = "display:none;position:fixed;inset:0;background:rgba(0,0,0,0.68);z-index:9999;align-items:center;justify-content:center;backdrop-filter:blur(2px);";
+      modal.innerHTML = `<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;width:420px;max-width:92vw;padding:18px;box-shadow:0 12px 32px rgba(0,0,0,0.65);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;"><h4 id="charModalTitle" style="margin:0;color:#38bdf8;font-size:15px;font-weight:700;"></h4><button type="button" id="btnCharModalClose" style="background:transparent;border:none;color:#94a3b8;font-size:20px;cursor:pointer;line-height:1;">&times;</button></div>
+        <div class="form-group" style="margin-bottom:14px;"><label id="charModalLabel" for="charModalInput"></label><input type="text" id="charModalInput" style="width:100%;box-sizing:border-box;"></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;"><button type="button" class="btn" id="btnCharModalCancel">Cancel</button><button type="button" class="btn btn-primary" id="btnCharModalConfirm"></button></div>
+      </div>`;
+      document.body.appendChild(modal);
+      const close = () => { modal.style.display = "none"; _charModalCb = null; };
+      const submit = () => {
+        const val = (document.getElementById("charModalInput")?.value || "").trim();
+        if (!val) { document.getElementById("charModalInput")?.focus(); return; }
+        const cb = _charModalCb; close(); cb?.(val);
+      };
+      modal.addEventListener("click", (e) => { if (e.target === modal) close(); });
+      ["btnCharModalClose", "btnCharModalCancel"].forEach((id) => { document.getElementById(id).onclick = close; });
+      document.getElementById("btnCharModalConfirm").onclick = submit;
+      document.getElementById("charModalInput").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); submit(); } else if (e.key === "Escape") { e.preventDefault(); close(); }
+      });
+    }
+    _charModalCb = onSubmit;
+    document.getElementById("charModalTitle").textContent = title || "Create";
+    document.getElementById("charModalLabel").textContent = label || "Name";
+    document.getElementById("btnCharModalConfirm").textContent = confirmLabel || "Create";
+    const inp = document.getElementById("charModalInput");
+    inp.value = ""; inp.placeholder = placeholder || "";
+    modal.style.display = "flex";
+    setTimeout(() => inp.focus(), 0);
+  }
+
   function initCharactersStudio() {
     setupPromptAutocomplete();
-
     document.getElementById("sceneVideoRenderer")?.addEventListener("change", () => {
-      if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
-        updatePromptReferenceTray(state.projectData.scenes[state.selectedSceneIdx]);
-      }
+      if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) updatePromptReferenceTray(state.projectData.scenes[state.selectedSceneIdx]);
     });
-
     document.getElementById("btnNewCharacter")?.addEventListener("click", () => {
-      const name = prompt("Enter character or entity name (e.g. Maya, Brass Section, Vintage Microphone):");
-      if (!name) return;
-      const cid = name.toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-      state.charactersData = state.charactersData || {};
-      state.charactersData[cid] = {
-        id: cid,
-        name: name,
-        kind: "character",
-        default_look: "default",
-        avatar: "",
-        physical_traits: name,
-        looks: {
-          default: {
-            tag: `@${cid}`,
-            name: "Default Look",
-            description: "",
-            image_refs: [],
-          },
+      openCharInputModal({
+        title: "👤 New Character / Entity",
+        label: "Character or Entity Name (e.g. Maya, Brass Section, Microphone)",
+        placeholder: "e.g. Elena",
+        confirmLabel: "+ Create Character",
+        onSubmit: (name) => {
+          const cleanName = name.trim();
+          state.charactersData = state.charactersData || {};
+          const cid = _uniqueSlug(state.charactersData, cleanName, "char");
+          state.charactersData[cid] = {
+            id: cid, name: cleanName, kind: "character", default_look: "default", avatar: "", physical_traits: cleanName,
+            looks: { default: { tag: `@${cid}`, name: "Default Look", description: "", image_refs: [] } },
+          };
+          currentEntityId = cid;
+          syncCharactersDirty(`Add Character ${cleanName}`);
+          renderCharactersTab();
         },
-      };
-      currentEntityId = cid;
-      syncCharactersDirty();
-      renderCharactersTab();
+      });
     });
-
-    if (state.currentSlug) {
-      loadProjectCharacters(state.currentSlug);
-    }
+    if (state.currentSlug) loadProjectCharacters(state.currentSlug);
   }
 
   window.loadProjectCharacters = loadProjectCharacters;

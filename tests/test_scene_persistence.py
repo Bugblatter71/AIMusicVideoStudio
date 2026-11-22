@@ -209,6 +209,97 @@ class TestScenePersistenceAndUndo(unittest.TestCase):
         self.assertIn('id="btnDiscardChanges"', content)
         self.assertIn('id="btnSaveProject"', content)
 
+    def test_uj_split_scene_button_and_lock_behavior(self):
+        """Verify #btnSplitSceneHeader handles locked scenes, playhead auto-selection, and modal confirmation."""
+        node_code = r"""
+        const fs = require("fs"), vm = require("vm"), path = require("path");
+        const jsDir = process.argv[1];
+        const els = {};
+        const mkEl = (id) => {
+          const listeners = {};
+          const classes = new Set();
+          const e = {
+            id, value: "", min: "", max: "", disabled: false, textContent: "", innerHTML: "", title: "",
+            style: {}, dataset: {}, options: [], children: [],
+            classList: {
+              add: (c) => classes.add(c), remove: (c) => classes.delete(c),
+              toggle: (c, f) => (f === undefined ? (classes.has(c) ? classes.delete(c) : classes.add(c)) : (f ? classes.add(c) : classes.delete(c))),
+              contains: (c) => classes.has(c),
+            },
+            addEventListener: (t, fn) => { (listeners[t] ||= []).push(fn); },
+            dispatchEvent: (ev) => { (listeners[ev.type] || []).forEach((fn) => fn(ev)); },
+            click: () => { if (!e.disabled) (listeners.click || []).forEach((fn) => fn({ target: e })); if (typeof e.onclick === "function" && !e.disabled) e.onclick({ target: e }); },
+            querySelectorAll: () => [], contains: () => false, appendChild: () => {}, add: () => {}, focus: () => {}, select: () => {},
+          };
+          if (id) els[id] = e;
+          return e;
+        };
+        ["btnSplitSceneHeader", "btnDeleteScene", "btnRevertSceneToRendered", "btnToggleSceneLock", "inspectorForm", "toastMessage", "audioElement", "waveformCanvas", "timelinePlayhead", "timelineScrollContainer", "timecodeDisplay"].forEach(mkEl);
+        els.waveformCanvas.getContext = () => ({});
+        const toasts = [];
+        let openedModal = null, dirty = false, listRendered = false;
+        const scenes = [{ id: "S01", start: 0.0, end: 4.0, mode: "solo", locked: true, seed: 100 }];
+        const sandbox = {
+          window: {}, console, parseFloat, parseInt, isNaN, Math, JSON, Set, Array, Object, String, Number, Event: function (t) { this.type = t; },
+          setTimeout: (fn) => fn(), clearTimeout: () => {},
+          document: {
+            readyState: "complete",
+            body: { appendChild: () => {} },
+            getElementById: (id) => els[id] || null,
+            querySelectorAll: () => [],
+            createElement: () => mkEl(""),
+            addEventListener: () => {},
+          },
+          state: {
+            projectData: { project: { fps: 24 }, scenes, anchors: [] },
+            models: { video_renderers: {}, video_resolutions: {} },
+            assets: { clips: {}, anchors: {} },
+            selectedSceneIdx: 0,
+            playheadTime: 1.75,
+          },
+          markProjectDirty: () => { dirty = true; },
+          redrawTimeline: () => {},
+          showToast: (m) => toasts.push(m),
+          selectAnchorDropdown: () => {}, syncAnchorDropdown: () => "",
+          updateSceneAnchorPreview: () => {}, updateSceneEndAnchorPreview: () => {},
+          updateSceneMarkersBar: () => {}, updatePromptResolvedPreviews: () => {},
+          resizeAllPromptTextareas: () => {}, renderSceneList: () => { listRendered = true; },
+          openSplitSceneModal: (sc, start, end, defT, onConfirm) => { openedModal = { sc, start, end, defT, onConfirm }; },
+        };
+        sandbox.window = sandbox;
+        vm.runInNewContext(fs.readFileSync(path.join(jsDir, "master_and_export.js"), "utf8"), sandbox);
+        vm.runInNewContext(fs.readFileSync(path.join(jsDir, "scene_inspector.js"), "utf8"), sandbox);
+
+        // 1. Locked scene keeps btnSplitSceneHeader clickable and shows lock toast
+        sandbox.applyInspectorLockState(scenes[0]);
+        if (els.btnSplitSceneHeader.disabled) throw new Error("btnSplitSceneHeader must not be disabled on locked scene");
+        if (!els.btnSplitSceneHeader.classList.contains("is-locked-action")) throw new Error("Missing is-locked-action class");
+        els.btnSplitSceneHeader.click();
+        if (!toasts.some((t) => t.includes("locked"))) throw new Error("Expected locked toast, got: " + JSON.stringify(toasts));
+
+        // 2. Unlock, clear selectedSceneIdx, click Split -> auto-selects playhead scene & opens modal at playhead 1.75s
+        delete scenes[0].locked;
+        sandbox.applyInspectorLockState(scenes[0]);
+        sandbox.state.selectedSceneIdx = null;
+        els.btnSplitSceneHeader.click();
+        if (!openedModal || Math.abs(openedModal.defT - 1.75) > 0.001) throw new Error("Expected modal at 1.75s, got: " + JSON.stringify(openedModal));
+
+        // 3. Confirming split mutates scenes into S01a + S01b and updates Scenes tab
+        els["tab-scenes"] = mkEl("tab-scenes");
+        els["tab-scenes"].classList.add("active");
+        openedModal.onConfirm(1.75);
+        if (scenes.length !== 2 || scenes[0].id !== "S01a" || scenes[1].id !== "S01b" || scenes[0].end !== 1.75 || scenes[1].start !== 1.75) {
+          throw new Error("Split mutation failed: " + JSON.stringify(scenes));
+        }
+        if (!dirty || !listRendered) throw new Error("Expected markProjectDirty and renderSceneList");
+        console.log("SPLIT_SCENE_BUTTON_OK");
+        """
+        res = subprocess.run(
+            ["node", "-e", node_code, str(WORKSPACE_ROOT / "work" / "ui" / "static" / "js")],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertIn("SPLIT_SCENE_BUTTON_OK", res.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

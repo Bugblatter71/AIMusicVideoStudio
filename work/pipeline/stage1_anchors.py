@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from .context import ProjectContext
+from .fal_catalog import resolve_fal_route, resolve_task_backend
 from .media_utils import _file_sha256, _sha256, resolve_path
 from .prompts import adapt_ref_tags, expand_variables, extract_anchor_id
 from .wgp_bridge import (
@@ -12,6 +13,7 @@ from .wgp_bridge import (
     check_cancel_requested,
     clear_cancel_request,
     execute_wgp_job,
+    resolve_session_for_backend,
     write_engine_status,
 )
 
@@ -36,7 +38,7 @@ def run_stage1_anchors(
     dummy_render: bool = False,
 ) -> set[str]:
     def_rid = str(ctx.default_anchor_renderer)
-    def_model = ctx.anchor_renderers.get(def_rid, {}).get("model_type", "qwen_image_21_turbo_7B")
+    def_model = (ctx.anchor_renderers.get(def_rid) or ctx.fal_anchor_renderers.get(def_rid) or {}).get("model_type", "qwen_image_21_turbo_7B")
     print("\n" + "=" * 72, flush=True)
     print(
         f"STAGE 1: Checking / Detecting {len(ctx.anchors)} Anchors in {ctx.anchors_dir} "
@@ -69,6 +71,10 @@ def run_stage1_anchors(
             hash_payload["model_type"] = model_type
             hash_payload["steps"] = rspec.get("num_inference_steps")
             hash_payload["cfg"] = rspec.get("guidance_scale", rspec.get("embedded_guidance_scale"))
+        anchor_backend = resolve_task_backend(ctx, sc=sp, rspec=rspec, stage="anchor")
+        if anchor_backend == "fal":
+            hash_payload["backend"] = "fal"
+            hash_payload["fal_endpoint"] = resolve_fal_route(rspec, sc=sp, stage="anchor")["endpoint"]
         cur_hash = _sha256(hash_payload)
 
         file_exists = target_file.exists() and target_file.stat().st_size > 1000
@@ -113,7 +119,7 @@ def run_stage1_anchors(
             flush=True,
         )
         print(
-            f"[QUEUE_ACTIVE] {json.dumps({'idx': idx, 'total': len(ctx.anchors), 'filename': fn, 'reason': reason, 'model': model_type, 'frames': 1, 'resolution': res_val})}",
+            f"[QUEUE_ACTIVE] {json.dumps({'idx': idx, 'total': len(ctx.anchors), 'filename': fn, 'reason': reason, 'model': model_type, 'frames': 1, 'resolution': res_val, 'started_at': round(time.time(), 3)})}",
             flush=True,
         )
 
@@ -127,10 +133,12 @@ def run_stage1_anchors(
                 ctx,
                 {
                     "state": "rendering",
+                    "backend": anchor_backend,
                     "stage": "anchor",
                     "idx": idx,
                     "total": len(ctx.anchors),
                     "filename": fn,
+                    "output_filename": Path(fn).stem,
                     "reason": reason,
                     "model": model_type,
                     "frames": 1,
@@ -144,11 +152,13 @@ def run_stage1_anchors(
                     "started_at": round(t0, 3),
                 },
                 merge=False,
+                backend=anchor_backend,
+                task_stem=Path(fn).stem,
             )
             for step in range(1, 3):
-                if check_cancel_requested(ctx):
-                    clear_cancel_request(ctx)
-                    write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"})
+                if check_cancel_requested(ctx, backend=anchor_backend, task_stem=Path(fn).stem):
+                    clear_cancel_request(ctx, backend=anchor_backend, task_stem=Path(fn).stem, include_global=True)
+                    write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"}, backend=anchor_backend, task_stem=Path(fn).stem)
                     raise RuntimeError(f"Cancelled generating {fn}")
                 pct = round((step / 2) * 100, 1)
                 prog = {
@@ -197,7 +207,7 @@ def run_stage1_anchors(
             regenerated_anchors.add(fn)
             continue
 
-        session = lazy_session.get()
+        session = resolve_session_for_backend(lazy_session, anchor_backend)
         cfg = ctx.make_anchor_task(
             session=session,
             rspec=rspec,
@@ -207,11 +217,12 @@ def run_stage1_anchors(
             resolution=res_val,
             sp=sp,
         )
+        anchor_exec_cfg = cfg if anchor_backend == "fal" else {k: v for k, v in cfg.items() if not str(k).startswith("_")}
 
         res, was_cancelled, t0 = execute_wgp_job(
             ctx=ctx,
             session=session,
-            task_cfg=cfg,
+            task_cfg=anchor_exec_cfg,
             idx=idx,
             total=len(ctx.anchors),
             filename=fn,
@@ -222,12 +233,12 @@ def run_stage1_anchors(
             resolution=res_val,
         )
         if was_cancelled:
-            clear_cancel_request(ctx)
-            write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"})
+            clear_cancel_request(ctx, backend=anchor_backend, task_stem=Path(fn).stem, include_global=True)
+            write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"}, backend=anchor_backend, task_stem=Path(fn).stem)
             raise RuntimeError(f"Cancelled generating {fn}")
         if not res.success or not res.generated_files:
             err_list = [e.message for e in (res.errors or [])]
-            write_engine_status(ctx, {"state": "failed", "phase": "failed", "error": err_list})
+            write_engine_status(ctx, {"state": "failed", "phase": "failed", "error": err_list}, backend=anchor_backend, task_stem=Path(fn).stem)
             print(
                 f"[QUEUE_FAIL] {json.dumps({'idx': idx, 'filename': fn, 'error': err_list})}",
                 flush=True,
@@ -252,6 +263,8 @@ def run_stage1_anchors(
                 "pct": 100.0,
                 "elapsed": elapsed,
             },
+            backend=anchor_backend,
+            task_stem=Path(fn).stem,
         )
 
         anchor_hashes[fn] = cur_hash

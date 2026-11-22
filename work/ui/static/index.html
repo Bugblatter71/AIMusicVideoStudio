@@ -4,7 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Music Video Generation Studio</title>
-  <link rel="stylesheet" href="css/studio.css?v=25">
+  <link rel="stylesheet" href="css/studio.css?v=47">
+  <link rel="stylesheet" href="css/scenes_tab.css?v=47">
+  <link rel="stylesheet" href="css/layout_responsive.css?v=1">
 </head>
 <body>
 
@@ -17,10 +19,11 @@
 
     <div class="nav-tabs">
       <button class="tab-btn active" data-tab="timeline">🎬 Timeline</button>
+      <button class="tab-btn" data-tab="scenes">📋 Scenes</button>
       <button class="tab-btn" data-tab="characters">👤 Characters & Refs</button>
       <button class="tab-btn" data-tab="anchors">🖼️ Scene Anchors</button>
       <button class="tab-btn" data-tab="settings">⚙️ Project & Models</button>
-      <button class="tab-btn" data-tab="console">🚀 Render Console</button>
+      <button class="tab-btn" data-tab="console">🚀 Render Queue</button>
       <button class="tab-btn" data-tab="master">📺 Master Video</button>
     </div>
 
@@ -51,13 +54,15 @@
             <button class="btn btn-sm" id="btnRedo" title="Redo change (Ctrl+Y)" disabled style="padding: 4px 8px; font-size: 11px;">↷ Redo</button>
             <button class="btn btn-sm" id="btnCheckpointsModal" title="Project Checkpoints & Rollback Vault" style="padding: 4px 8px; font-size: 11px; color: #a78bfa; border-color: rgba(167, 139, 250, 0.4);">🏛️ Vault</button>
           </div>
-          <label style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Zoom:</label>
-          <input type="range" id="timelineZoom" min="1.0" max="3.5" value="1.0" step="0.25" autocomplete="off" style="width: 100px;">
+          <div class="timeline-zoom-wrap"><label style="font-size: 11px; color: var(--text-muted); text-transform: uppercase;">Zoom:</label><input type="range" id="timelineZoom" min="1.0" max="3.5" value="1.0" step="0.25" autocomplete="off" style="width: 100px;"><button type="button" class="btn btn-sm btn-timeline-fit" id="btnTimelineFit" title="Fit full song width in timeline">Fit</button></div>
           <button class="btn" id="btnAddMarker" title="Add Timeline Marker at playhead (Hotkey: M)" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.4);">🚩 Add Marker (M)</button>
           <button class="btn" id="btnAddScene">+ Add Scene</button>
           <button class="btn" id="btnSplitSceneHeader" title="Split current scene at playhead (Hotkey: S)">✂️ Split (S)</button>
         </div>
       </div>
+
+      <!-- Scene Quick-Jump Bar (Proportional Full-Width Minimap) -->
+      <div id="sceneJumpBar" class="scene-jump-bar" aria-label="Scene Quick-Jump Bar"></div>
 
       <!-- Waveform & Scene Tracks Canvas -->
       <div class="timeline-canvas-container" id="timelineScrollContainer">
@@ -74,6 +79,8 @@
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
             <h3 id="inspectorSceneId" style="font-size: 16px; color: var(--primary);">Select a Scene</h3>
             <div id="inspectorActions" style="display: flex; gap: 8px; display: none;">
+              <button type="button" class="btn" id="btnRevertSceneToRendered" style="display: none; color: #c4b5fd; border-color: rgba(167, 139, 250, 0.45); background: rgba(139, 92, 246, 0.14);" title="Revert this scene back to the settings and video already rendered on disk">↺ Revert to Rendered</button>
+              <button type="button" class="btn" id="btnToggleSceneLock" title="Lock or unlock scene to prevent accidental edits">🔓 Lock</button>
               <button type="button" class="btn btn-accent" id="btnPlaySceneAudio">🔊 Play Scene Audio</button>
               <button type="button" class="btn" id="btnDeleteScene" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08);" title="Delete this scene from the timeline">🗑️ Delete</button>
             </div>
@@ -144,72 +151,68 @@
                 </div>
                 <select id="sceneVideoRenderer"></select>
               </div>
-            </div>
 
-            <!-- Row 2: Timing, Lip-Sync Padding & Synthesis Audio/Seed -->
-            <div class="inspector-controls-row inspector-row-timing">
-              <div class="form-group form-group-timing">
-                <label for="sceneStart">Start (s)</label>
-                <input type="number" id="sceneStart" step="0.1" min="0" class="timing-spinner" title="Scene start timecode in seconds">
-              </div>
-
-              <div class="form-group form-group-timing">
-                <label for="sceneEnd">End (s)</label>
-                <input type="number" id="sceneEnd" step="0.1" min="0" class="timing-spinner" title="Scene end timecode in seconds">
-              </div>
-
-              <div class="form-group form-group-padding" id="sceneRenderPaddingGroup">
+              <div class="form-group form-group-model" id="sceneResolutionGroup">
                 <div class="form-label-row">
-                  <label title="Render extra pre-roll/post-roll audio handles so vocal lip-sync latches cleanly across cuts. Trimmed automatically in master assembly.">Render Padding (Handles)</label>
-                  <span id="btnResetScenePadding" style="font-size: 11px; color: #ef4444; cursor: pointer; display: none;">Clear</span>
+                  <label for="sceneResolution">Render Resolution</label>
+                  <span id="sceneResolutionBadge" style="display: none; font-size: 10px; background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: 600;">Custom Override</span>
                 </div>
-                <div class="padding-input-group">
-                  <div class="padding-subgroup">
-                    <span class="sub-label">Pre (Head)</span>
-                    <input type="number" id="scenePadStart" step="0.1" min="0" max="10" placeholder="Def (0s)" class="padding-input" title="Seconds to render BEFORE Scene Start (pre-roll handle)">
-                  </div>
-                  <div class="padding-subgroup">
-                    <span class="sub-label">Post (Tail)</span>
-                    <input type="number" id="scenePadEnd" step="0.1" min="0" max="10" placeholder="Def (0s)" class="padding-input" title="Seconds to render AFTER Scene End (post-roll handle)">
-                  </div>
-                </div>
+                <select id="sceneResolution"></select>
               </div>
 
+              <div class="form-group form-group-model" id="sceneUpsamplingGroup">
+                <div class="form-label-row"><label for="sceneSpatialUpsampling">AI Spatial Upsampling</label><span id="sceneUpsamplingBadge" style="display: none; font-size: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: 600;">Custom Override</span></div>
+                <select id="sceneSpatialUpsampling"></select>
+              </div>
+            </div>
+            <div id="duetPassEngineHost" class="duet-pass-engine-host"></div>
+
+            <!-- Row 2: Timing & Mode-specific Synthesis Audio/Seed/Split -->
+            <div class="inspector-controls-row inspector-row-timing">
+              <div class="form-group form-group-timing"><label for="sceneStart">Start (s)</label><input type="number" id="sceneStart" step="0.1" min="0" class="timing-spinner" title="Scene start timecode in seconds"></div>
+              <div class="form-group form-group-timing"><label for="sceneEnd">End (s)</label><input type="number" id="sceneEnd" step="0.1" min="0" class="timing-spinner" title="Scene end timecode in seconds"></div>
               <div id="singleStemGroup" class="form-group form-group-stem">
                 <label for="sceneStem">Audio Stem</label>
-                <select id="sceneStem">
-                  <option value="male">male (vocal)</option>
-                  <option value="female">female (vocal)</option>
-                  <option value="master">full audio (master)</option>
-                  <option value="silent">silent (no lip sync)</option>
-                </select>
+                <select id="sceneStem"><option value="male">male (vocal)</option><option value="female">female (vocal)</option><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select>
               </div>
-
-              <div id="stereoDuetStemGroup" class="form-group form-group-stem" style="display: none;">
-                <label>Stereo Channels (L / R)</label>
-                <div style="display: flex; gap: 4px;">
-                  <select id="sceneStemLeft" title="Left Channel (Singer 1 / Left Actor)" style="flex: 1;">
-                    <option value="male">L: male</option>
-                    <option value="female">L: female</option>
-                    <option value="master">L: master</option>
-                    <option value="silent">L: silent</option>
-                  </select>
-                  <select id="sceneStemRight" title="Right Channel (Singer 2 / Right Actor)" style="flex: 1;">
-                    <option value="female">R: female</option>
-                    <option value="male">R: male</option>
-                    <option value="master">R: master</option>
-                    <option value="silent">R: silent</option>
-                  </select>
-                </div>
-              </div>
-
               <div id="singleSeedGroup" class="form-group form-group-seed">
                 <label for="sceneSeed">Seed</label>
-                <div style="display: flex; gap: 4px;">
-                  <input type="number" id="sceneSeed" style="flex: 1; min-width: 65px; font-family: monospace;">
-                  <button type="button" class="btn-mini" id="btnRandomSeed" title="Generate Random Seed">🎲</button>
+                <div style="display: flex; gap: 4px;"><input type="number" id="sceneSeed" style="flex: 1; min-width: 65px; font-family: monospace;"><button type="button" class="btn-mini" id="btnRandomSeed" title="Generate Random Seed">🎲</button></div>
+              </div>
+              <div id="stereoDuetControlsRow" class="inspector-controls-row duet-controls-row" style="display: none;">
+                <div class="form-group form-group-duet-col"><label for="sceneStemLeft">Left Channel Audio Stem</label><select id="sceneStemLeft" title="Left Channel (Singer 1 / Left Actor)"><option value="male">L: male</option><option value="female">L: female</option><option value="master">L: master</option><option value="silent">L: silent</option></select></div>
+                <div class="form-group form-group-duet-col"><label for="sceneStemRight">Right Channel Audio Stem</label><select id="sceneStemRight" title="Right Channel (Singer 2 / Right Actor)"><option value="female">R: female</option><option value="male">R: male</option><option value="master">R: master</option><option value="silent">R: silent</option></select></div>
+              </div>
+              <div id="duetTimingControlsRow" class="inspector-controls-row duet-controls-row" style="display: none;">
+                <div class="form-group form-group-duet-col"><label for="sceneStemM">Pass 1 Audio Stem (Left)</label><select id="sceneStemM"><option value="male">male</option><option value="female">female</option><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select></div>
+                <div class="form-group form-group-duet-seed"><label for="sceneSeedM">Pass 1 Seed</label><div style="display: flex; gap: 4px;"><input type="number" id="sceneSeedM" style="flex: 1; min-width: 65px; font-family: monospace;"><button type="button" class="btn-mini" id="btnRandomSeedM" title="Generate Random Seed">🎲</button></div></div>
+                <div class="form-group form-group-duet-col"><label for="sceneStemF">Pass 2 Audio Stem (Right)</label><select id="sceneStemF"><option value="female">female</option><option value="male">male</option><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select></div>
+                <div class="form-group form-group-duet-seed"><label for="sceneSeedF">Pass 2 Seed</label><div style="display: flex; gap: 4px;"><input type="number" id="sceneSeedF" style="flex: 1; min-width: 65px; font-family: monospace;"><button type="button" class="btn-mini" id="btnRandomSeedF" title="Generate Random Seed">🎲</button></div></div>
+                <div class="form-group form-group-duet-split">
+                  <div class="form-label-row"><label for="sceneSplitX" style="margin: 0;">Split Boundary X</label><span id="sceneSplitXVal" style="font-size: 11px; font-family: monospace; color: #38bdf8;">0.48</span></div>
+                  <div style="display: flex; gap: 6px; align-items: center;"><input type="range" id="sceneSplitXRange" min="0.10" max="0.90" step="0.01" value="0.48" style="flex: 1; accent-color: #38bdf8; cursor: pointer;"><input type="number" id="sceneSplitX" step="0.01" min="0.1" max="0.9" placeholder="0.50"></div>
                 </div>
               </div>
+            </div>
+
+            <!-- Row 2b: Padding, 1x AI Refiners & Look Filters (grouped into accordion below Row 2) -->
+            <div class="form-group form-group-padding" id="sceneRenderPaddingGroup">
+              <div class="form-label-row"><label title="Render extra pre-roll/post-roll audio handles so vocal lip-sync latches cleanly across cuts. Trimmed automatically in master assembly.">Render Padding (Handles)</label><span id="btnResetScenePadding" style="font-size: 11px; color: #ef4444; cursor: pointer; display: none;">Clear</span></div>
+              <div class="padding-input-group">
+                <div class="padding-subgroup"><span class="sub-label">Pre (Head)</span><input type="number" id="scenePadStart" step="0.1" min="0" max="10" placeholder="Def (0s)" class="padding-input" title="Seconds to render BEFORE Scene Start (pre-roll handle)"></div>
+                <div class="padding-subgroup"><span class="sub-label">Post (Tail)</span><input type="number" id="scenePadEnd" step="0.1" min="0" max="10" placeholder="Def (0s)" class="padding-input" title="Seconds to render AFTER Scene End (post-roll handle)"></div>
+              </div>
+            </div>
+            <div class="inspector-controls-row" id="sceneFiltersRow" style="margin-top: 6px; padding: 6px 10px; background: rgba(15, 23, 42, 0.45); border: 1px solid #334155; border-radius: 6px; display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end;">
+              <div style="display: flex; align-items: center; gap: 6px; margin-right: 4px; align-self: center;"><span style="font-size: 11px; font-weight: 700; color: #94a3b8; text-transform: uppercase;">1x Filters</span><span id="sceneFiltersBadge" style="display: none; font-size: 10px; background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: 600;">Active</span></div>
+              <div class="form-group" style="min-width: 155px; margin: 0;"><label for="sceneFilterAiRefiner" style="font-size: 10px;">AI Refiner (1x)</label><select id="sceneFilterAiRefiner" style="font-size: 11px; padding: 3px 6px;"><option value="">Default (Project)</option><option value="none">None (Disable)</option><option value="h3facerefine">H3 Face Refine 1x</option><option value="seedvr2*1">SeedVR2 1x Detail</option><option value="flashvsrplus*1">FlashVSR+ 1x Polish</option></select></div>
+              <div class="form-group" style="width: 68px; margin: 0;"><label for="sceneFilterFilmGrain" style="font-size: 10px;">Grain</label><input type="number" id="sceneFilterFilmGrain" min="0" max="1" step="0.05" placeholder="Def" style="font-size: 11px; padding: 3px 6px;"></div>
+              <div class="form-group" style="width: 82px; margin: 0;"><label for="sceneFilterDeband" style="font-size: 10px;">Deband</label><select id="sceneFilterDeband" style="font-size: 11px; padding: 3px 6px;"><option value="">Default</option><option value="true">On</option><option value="false">Off</option></select></div>
+              <div class="form-group" style="width: 66px; margin: 0;"><label for="sceneFilterCas" style="font-size: 10px;">CAS</label><input type="number" id="sceneFilterCas" min="0" max="1" step="0.05" placeholder="Def" style="font-size: 11px; padding: 3px 6px;"></div>
+              <div class="form-group" style="width: 68px; margin: 0;"><label for="sceneFilterDenoise" style="font-size: 10px;">Denoise</label><input type="number" id="sceneFilterDenoise" min="0" max="10" step="0.5" placeholder="Def" style="font-size: 11px; padding: 3px 6px;"></div>
+              <div class="form-group" style="width: 64px; margin: 0;"><label for="sceneFilterEqBrightness" style="font-size: 10px;">Bright</label><input type="number" id="sceneFilterEqBrightness" min="-0.5" max="0.5" step="0.02" placeholder="0" style="font-size: 11px; padding: 3px 6px;"></div>
+              <div class="form-group" style="width: 64px; margin: 0;"><label for="sceneFilterEqContrast" style="font-size: 10px;">Contrast</label><input type="number" id="sceneFilterEqContrast" min="0.5" max="1.5" step="0.05" placeholder="1" style="font-size: 11px; padding: 3px 6px;"></div>
+              <div class="form-group" style="width: 64px; margin: 0;"><label for="sceneFilterEqSaturation" style="font-size: 10px;">Sat</label><input type="number" id="sceneFilterEqSaturation" min="0" max="2" step="0.05" placeholder="1" style="font-size: 11px; padding: 3px 6px;"></div>
             </div>
 
             <!-- Markers occurring within this scene -->
@@ -234,59 +237,12 @@
             </div>
 
             <div id="singlePromptGroup" class="form-group" style="margin-top: 4px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <label style="margin: 0;">Scene Prompt</label>
-              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;"><label style="margin: 0;">Scene Prompt</label></div>
               <textarea id="scenePrompt" rows="6" style="font-family: monospace; font-size: 12px; line-height: 1.45; min-height: 140px; overflow-y: hidden; resize: vertical; width: 100%; box-sizing: border-box;"></textarea>
               <div id="refTraySingle" class="ref-chip-tray" style="margin-top: 6px;"></div>
             </div>
-
-            <!-- Two Pass prompts & settings (visible in two-pass/duet mode) -->
+            <!-- Two Pass prompts (timing/seeds/split live in unified Row 2 above) -->
             <div id="duetPromptsGroup" style="display: none; margin-top: 6px;">
-              <div class="inspector-controls-row duet-controls-row" style="margin-bottom: 10px;">
-                <div class="form-group form-group-duet-col">
-                  <label for="sceneStemM">Pass 1 Audio Stem (Left)</label>
-                  <select id="sceneStemM">
-                    <option value="male">male</option>
-                    <option value="female">female</option>
-                    <option value="master">full audio (master)</option>
-                    <option value="silent">silent (no lip sync)</option>
-                  </select>
-                </div>
-                <div class="form-group form-group-duet-seed">
-                  <label for="sceneSeedM">Pass 1 Seed</label>
-                  <div style="display: flex; gap: 4px;">
-                    <input type="number" id="sceneSeedM" style="flex: 1; min-width: 65px; font-family: monospace;">
-                    <button type="button" class="btn-mini" id="btnRandomSeedM" title="Generate Random Seed">🎲</button>
-                  </div>
-                </div>
-                <div class="form-group form-group-duet-col">
-                  <label for="sceneStemF">Pass 2 Audio Stem (Right)</label>
-                  <select id="sceneStemF">
-                    <option value="female">female</option>
-                    <option value="male">male</option>
-                    <option value="master">full audio (master)</option>
-                    <option value="silent">silent (no lip sync)</option>
-                  </select>
-                </div>
-                <div class="form-group form-group-duet-seed">
-                  <label for="sceneSeedF">Pass 2 Seed</label>
-                  <div style="display: flex; gap: 4px;">
-                    <input type="number" id="sceneSeedF" style="flex: 1; min-width: 65px; font-family: monospace;">
-                    <button type="button" class="btn-mini" id="btnRandomSeedF" title="Generate Random Seed">🎲</button>
-                  </div>
-                </div>
-                <div class="form-group form-group-duet-split">
-                  <div class="form-label-row">
-                    <label for="sceneSplitX" style="margin: 0;">Split Boundary X</label>
-                    <span id="sceneSplitXVal" style="font-size: 11px; font-family: monospace; color: #38bdf8;">0.48</span>
-                  </div>
-                  <div style="display: flex; gap: 6px; align-items: center;">
-                    <input type="range" id="sceneSplitXRange" min="0.10" max="0.90" step="0.01" value="0.48" style="flex: 1; accent-color: #38bdf8; cursor: pointer;">
-                    <input type="number" id="sceneSplitX" step="0.01" min="0.1" max="0.9" placeholder="0.50" style="width: 58px; font-family: monospace; text-align: center;">
-                  </div>
-                </div>
-              </div>
 
               <div class="duet-prompts-grid" id="duetRawPromptsGrid">
                 <div class="form-group">
@@ -435,8 +391,21 @@
                 </div>
                 <button type="button" class="btn btn-primary" id="btnRestoreTake" style="display: none; padding: 3px 10px; font-size: 11px; background: #8b5cf6; border-color: #8b5cf6;">↺ Restore Take as Active</button>
               </div>
-              <div style="display: flex; gap: 8px; align-items: center;">
-                <select id="sceneTakeSelect" style="flex: 1; font-size: 12px; padding: 5px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;"></select>
+              <div class="takes-legacy-select-row"><select id="sceneTakeSelect"></select><button type="button" class="btn" id="btnDeleteTake">🗑️ Delete Take</button></div>
+              <div id="sceneTakesList" class="scene-takes-list"></div>
+              <div class="takes-upscale-bar">
+                <select id="sceneLateUpscaleMethod" title="AI Spatial Upscale (>1x) without re-running diffusion" style="flex: 1; font-size: 11px; padding: 4px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                  <option value="">No Upscale (1x)</option>
+                  <option value="flashvsrplus*2" selected>FlashVSR+ Turbo x2 (AI Super-Res)</option>
+                  <option value="seedvr2*2">SeedVR2 x2 (Diffusion Super-Res)</option>
+                </select>
+                <select id="sceneLateFilterMethod" title="1x AI Detail / Face Refiner applied to active take" style="flex: 1; font-size: 11px; padding: 4px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
+                  <option value="">No 1x Filter</option>
+                  <option value="h3facerefine">H3 Face Refine 1x</option>
+                  <option value="seedvr2*1">SeedVR2 1x Detail</option>
+                  <option value="flashvsrplus*1">FlashVSR+ 1x Polish</option>
+                </select>
+                <button type="button" class="btn" id="btnUpscaleTake" style="padding: 4px 10px; font-size: 11px; background: rgba(16, 185, 129, 0.18); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); white-space: nowrap;">✨ Upscale / Filter</button>
               </div>
               <div id="takeDiffSummary" style="font-size: 11px; color: var(--text-muted); margin-top: 6px; line-height: 1.4;"></div>
             </div>
@@ -466,14 +435,17 @@
           </div>
         </div>
       </div><!-- End #timelineBottom -->
-
-      <!-- RIGHT: Side Pane for Tabs (Characters, Anchors, Settings, Console, Master) -->
+      <div id="workspaceSplitter" class="workspace-splitter" title="Drag to resize panels (double-click to reset)"></div>
+      <!-- RIGHT: Side Pane for Tabs -->
       <aside id="sidePane" class="side-pane" style="display: none;">
         <div class="side-pane-header">
           <span id="sidePaneTitle" class="side-pane-title">Panel</span>
           <button id="btnSidePaneClose" class="side-pane-close" title="Close panel and return to full-width Timeline">&times;</button>
         </div>
       <div class="side-pane-body">
+
+        <!-- 1a. SCENES LIST & SETTINGS TAB -->
+        <div id="tab-scenes" class="tab-pane" style="padding: 0; display: flex; flex-direction: column; height: 100%; box-sizing: border-box;"></div>
 
         <!-- 1b. CHARACTERS & REFS STUDIO TAB -->
         <div id="tab-characters" class="tab-pane" style="padding: 16px;">
@@ -514,93 +486,57 @@
           <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">Project-specific settings, audio sources, and model assignments.</p>
 
           <div class="form-grid">
-            <div class="form-group">
-              <label>Project Name</label>
-              <input type="text" id="cfgProjectName">
-            </div>
-            <div class="form-group">
-              <label>Master Audio Path</label>
-              <input type="text" id="cfgMasterAudio">
-            </div>
-            <div class="form-group">
-              <label>FPS</label>
-              <input type="number" id="cfgFps" value="24">
-            </div>
-            <div class="form-group">
-              <label>Fade Out Duration (s)</label>
-              <input type="number" id="cfgFadeOut" value="2.0" step="0.5">
-            </div>
-            <div class="form-group">
-              <label>Render Overlap (s per scene handle)</label>
-              <input type="number" id="cfgRenderOverlap" value="1.0" min="0" max="10" step="0.25" title="Configures extra overlap padding rendered for scenes so scene boundaries can be shifted without re-rendering">
-            </div>
+            <div class="form-group"><label>Project Name</label><input type="text" id="cfgProjectName"></div>
+            <div class="form-group"><label>Master Audio Path</label><input type="text" id="cfgMasterAudio"></div>
+            <div class="form-group"><label>FPS</label><input type="number" id="cfgFps" value="24"></div>
+            <div class="form-group"><label>Fade Out Duration (s)</label><input type="number" id="cfgFadeOut" value="2.0" min="0" step="0.5"></div>
+            <div class="form-group"><label>Fade Out Complete At (s — blank = end of video)</label><input type="number" id="cfgFadeOutEnd" value="" min="0" step="0.5" placeholder="End of video"></div>
+            <div class="form-group"><label>Render Overlap (s per scene handle)</label><input type="number" id="cfgRenderOverlap" value="1.0" min="0" max="10" step="0.25" title="Configures extra overlap padding rendered for scenes so scene boundaries can be shifted without re-rendering"></div>
           </div>
 
-          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Scene Render Resolution (GPU Diffusion Size)</h3>
+          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Default Scene Render Resolution (GPU Diffusion Size — Overridable per Scene)</h3>
           <div class="res-grid" id="resolutionCardsContainer"></div>
 
           <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Master Video Delivery &amp; Upscaling (Stage 3 Assembly)</h3>
           <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 10px;">Scale rendered scenes to broadcast Full HD or 4K during Master Video assembly without altering GPU diffusion motion or choreography.</p>
           <div class="form-grid">
-            <div class="form-group">
-              <label for="cfgMasterResolution">Master Output Resolution</label>
-              <select id="cfgMasterResolution">
-                <option value="match">Match Scene Render Resolution (1:1 Native)</option>
-                <option value="1280x720">720p HD (1280x720 Widescreen)</option>
-                <option value="1344x768">768p WXGA (1344x768 Native DiT)</option>
-                <option value="1920x1080">1080p Full HD (1920x1080 Broadcast Standard)</option>
-                <option value="2560x1440">1440p 2K QHD (2560x1440 HiDPI)</option>
-                <option value="3840x2160">2160p 4K UHD (3840x2160 Cinema)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="cfgMasterScaleAlgo">Upscale Interpolation Filter</label>
-              <select id="cfgMasterScaleAlgo">
-                <option value="lanczos">Lanczos (Sharpest Sinc — Recommended)</option>
-                <option value="bicubic">Bicubic (Balanced Smooth)</option>
-                <option value="spline">Spline (Natural Gradients)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="cfgMasterSharpen">Post-Scale Detail Sharpening</label>
-              <select id="cfgMasterSharpen">
-                <option value="0">Off (0.00)</option>
-                <option value="0.25">Subtle Crispness (0.25 — Recommended)</option>
-                <option value="0.5">Medium Sharpening (0.50)</option>
-                <option value="0.8">Strong Sharpening (0.80)</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label for="cfgProgressiveStitchMode">Batch Queue Auto-Stitch Mode</label>
-              <select id="cfgProgressiveStitchMode">
-                <option value="always_master">Always Stitch at Master Resolution</option>
-                <option value="fast_preview">Fast Preview During Queue (Upscale on Manual Stitch)</option>
-              </select>
-            </div>
+            <div class="form-group"><label for="cfgMasterResolution">Master Output Resolution</label><select id="cfgMasterResolution"><option value="match">Match Scene Render Resolution (1:1 Native)</option><option value="1280x720">720p HD (1280x720 Widescreen)</option><option value="1344x768">768p WXGA (1344x768 Native DiT)</option><option value="1920x1080">1080p Full HD (1920x1080 Broadcast Standard)</option><option value="2560x1440">1440p 2K QHD (2560x1440 HiDPI)</option><option value="3840x2160">2160p 4K UHD (3840x2160 Cinema)</option></select></div>
+            <div class="form-group"><label for="cfgMasterScaleAlgo">Upscale Interpolation Filter</label><select id="cfgMasterScaleAlgo"><option value="lanczos">Lanczos (Sharpest Sinc — Recommended)</option><option value="bicubic">Bicubic (Balanced Smooth)</option><option value="spline">Spline (Natural Gradients)</option></select></div>
+            <div class="form-group"><label for="cfgMasterSharpen">Post-Scale Detail Sharpening</label><select id="cfgMasterSharpen"><option value="0">Off (0.00)</option><option value="0.25">Subtle Crispness (0.25 — Recommended)</option><option value="0.5">Medium Sharpening (0.50)</option><option value="0.8">Strong Sharpening (0.80)</option></select></div>
+            <div class="form-group"><label for="cfgProgressiveStitchMode">Batch Queue Auto-Stitch Mode</label><select id="cfgProgressiveStitchMode"><option value="always_master">Always Stitch at Master Resolution</option><option value="fast_preview">Fast Preview During Queue (Upscale on Manual Stitch)</option></select></div>
           </div>
 
           <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Model Profiles</h3>
           <div class="form-grid">
-            <div class="form-group">
-              <label>Default Anchor Generator Model</label>
-              <select id="cfgDefaultAnchorRenderer"></select>
-            </div>
-            <div class="form-group">
-              <label>Default Video Generator Model</label>
-              <select id="cfgDefaultVideoRenderer"></select>
-            </div>
+            <div class="form-group"><label>Default Anchor Generator Model</label><select id="cfgDefaultAnchorRenderer"></select></div>
+            <div class="form-group"><label>Default Video Generator Model</label><select id="cfgDefaultVideoRenderer"></select></div>
+            <div class="form-group"><label for="cfgDefaultSpatialUpsampling">Default AI Spatial Upsampling (Stage 2, >1x)</label><select id="cfgDefaultSpatialUpsampling" title="Runs inside Wan2GP when scenes render below target resolution and below 1536px wide."><option value="">None (Stage 3 FFmpeg Scale Only)</option><option value="h3_vae*2">MiniMax H3 Detail VAE x2 (Best for 540p → 1088p)</option><option value="h3_vae*1.5">MiniMax H3 Detail VAE x1.5 (Best for 720p → 1080p)</option><option value="flashvsrplus*2">FlashVSR+ Turbo x2 (AI Video Super-Res)</option><option value="flashvsrplus2pass*2">FlashVSR+ 2-Pass x2 (AI High Detail)</option><option value="seedvr2*2">SeedVR2 x2 (Diffusion Detail Restoration)</option></select></div>
           </div>
 
-          <div class="form-group" style="margin-top: 14px;">
-            <label>Global Video Negative Prompt</label>
-            <textarea id="cfgNegativePrompt" rows="3"></textarea>
+          <h3 style="font-size: 13px; margin: 16px 0 8px; color: var(--primary);">Default 1x AI Refiners &amp; Finish Filters</h3>
+          <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">Applied even to native 1080p/1088p scenes and can compose alongside spatial upscaling.</p>
+          <div class="form-grid">
+            <div class="form-group"><label for="cfgFilterAiRefiner">Default 1x AI Refiner</label><select id="cfgFilterAiRefiner"><option value="">None</option><option value="h3facerefine">H3 Face Refiner 1x (Faces/Lips)</option><option value="seedvr2*1">SeedVR2 1x (Detail &amp; Texture)</option><option value="flashvsrplus*1">FlashVSR+ 1x (Temporal Polish)</option><option value="flashvsrplus2pass*1">FlashVSR+ 2-Pass 1x</option></select></div>
+            <div class="form-group"><label for="cfgFilterFaceStrength">Face Refiner Strength (0-1)</label><input type="number" id="cfgFilterFaceStrength" min="0" max="1" step="0.05" value="0.75"></div>
+            <div class="form-group"><label for="cfgFilterFilmGrain">Film Grain Intensity (0-1)</label><input type="number" id="cfgFilterFilmGrain" min="0" max="1" step="0.05" value="0"></div>
+            <div class="form-group"><label for="cfgFilterWindowCC">Window Color Match (0-1)</label><input type="number" id="cfgFilterWindowCC" min="0" max="1" step="0.05" value="0"></div>
+            <div class="form-group"><label for="cfgFilterCas">Stage 3 CAS Sharpen (0-1)</label><input type="number" id="cfgFilterCas" min="0" max="1" step="0.05" value="0"></div>
+            <div class="form-group"><label for="cfgFilterDenoise">Stage 3 Denoise (hqdn3d 0-10)</label><input type="number" id="cfgFilterDenoise" min="0" max="10" step="0.5" value="0"></div>
+            <div class="form-group form-group-checkbox-inline"><input type="checkbox" id="cfgFilterDeband"><label for="cfgFilterDeband">Stage 3 Deband (reduce sky/wall banding)</label></div>
           </div>
+
+          <div class="form-group" style="margin-top: 14px;"><label>Global Video Negative Prompt</label><textarea id="cfgNegativePrompt" rows="3"></textarea></div>
         </div>
 
         <!-- 4. RENDER CONSOLE TAB -->
         <div id="tab-console" class="tab-pane console-view">
-          <div class="console-actions" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 10px; border-bottom: 1px solid var(--border);">
-            <button class="btn btn-primary" id="btnRenderAll" style="min-width: 96px;" title="Run pending items in the render queue">▶ Run</button>
+          <div class="console-actions" style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding-bottom: 8px; border-bottom: 1px solid var(--border);">
+            <button class="btn btn-primary" id="btnRenderAll" style="min-width: 96px;" title="Run pending items for checked engines">▶ Run</button>
+            <div id="consoleEngineToggles" style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 3px 10px; background: rgba(15,23,42,0.75); border: 1px solid var(--border); border-radius: 6px; font-size: 11px;">
+              <label style="display: inline-flex; align-items: center; gap: 4px; cursor: pointer;" title="Progress Local GPU items when Run is active"><input type="checkbox" class="chk-engine-run" data-engine="local" checked> <span>🖥️ Local <span id="engCntLocal" style="color:var(--text-muted);"></span></span></label>
+              <span class="engine-toggle-item"><label style="display: inline-flex; align-items: center; gap: 4px; cursor: pointer;" title="Progress fal.ai items when Run is active"><input type="checkbox" class="chk-engine-run" data-engine="fal"> <span>☁️ fal.ai <span id="engCntFal" style="color:var(--text-muted);"></span></span></label><span title="Max parallel fal.ai tasks (default 1)" style="color:var(--text-muted);font-size:10px;">×</span><input type="number" id="maxParallelFal" class="engine-parallel-spinner" data-engine="fal" min="1" max="40" step="1" value="1" title="Max parallel fal.ai tasks (default 1)"></span>
+              <span class="engine-toggle-item"><label style="display: inline-flex; align-items: center; gap: 4px; cursor: pointer;" title="Progress MiniMax items when Run is active"><input type="checkbox" class="chk-engine-run" data-engine="minimax"> <span>🎥 MiniMax <span id="engCntMinimax" style="color:var(--text-muted);"></span></span></label><span title="Max parallel MiniMax tasks (default 1)" style="color:var(--text-muted);font-size:10px;">×</span><input type="number" id="maxParallelMinimax" class="engine-parallel-spinner" data-engine="minimax" min="1" max="30" step="1" value="1" title="Max parallel MiniMax tasks (default 1)"></span>
+            </div>
             
             <label id="dummyModeContainer" style="display: none; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: #38bdf8; cursor: pointer; user-select: none; margin-left: 6px;" title="Developer/Mock render engine (fast FFmpeg simulation without GPU)">
               <input type="checkbox" id="chkDummyRenderMode" style="cursor: pointer; width: 15px; height: 15px; accent-color: #38bdf8;">
@@ -616,34 +552,35 @@
             </div>
           </div>
 
-          <div class="console-content-split" style="margin-top: 10px;">
+          <div class="console-content-split">
             <!-- Left / Center Main Panel: Switches between Queue View (Default) and Terminal Logs View -->
-            <div id="consoleMainPanel" style="display: flex; flex-direction: column; flex: 1; min-height: 280px; gap: 10px;">
+            <div id="consoleMainPanel" style="display: flex; flex-direction: column; flex: 1; min-height: 280px; gap: 6px;">
               
               <!-- 1. QUEUE & STATUS VIEW (DEFAULT) -->
-              <div id="consoleQueueView" style="display: flex; flex-direction: column; flex: 1; gap: 10px; min-height: 0;">
+              <div id="consoleQueueView" style="display: flex; flex-direction: column; flex: 1; gap: 6px; min-height: 0;">
                 
-                <!-- Currently Working On / Hero Card -->
-                <div id="activeTaskCard" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 12px 14px;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                    <span id="activeTaskHeading" style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;">CURRENT STATUS</span>
+                <!-- Currently Working On / Status Card -->
+                <div id="activeTaskCard" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 6px 10px;">
+                  <div id="activeTaskHeaderRow" style="display: none; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                    <span id="activeTaskHeading" style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px;"></span>
                     <span id="activeTaskTimer" style="font-size: 11px; color: var(--primary); font-family: monospace; display: none;">⏱ 00:00</span>
                   </div>
-                  <div id="activeTaskTitle" style="font-size: 14px; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">
+                  <div id="activeTaskTitle" style="font-size: 13px; font-weight: 600; color: var(--text-main); margin-bottom: 2px;">
                     Idle • Ready to render
                   </div>
-                  <div id="activeTaskDetails" style="display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--text-muted);">
-                    <span id="queueStatsSummary">Loading queue...</span>
-                  </div>
-                  <!-- Progress bar (shown while rendering) -->
-                  <div id="activeProgressBarContainer" style="display: none; margin-top: 10px;">
-                    <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px;">
+                  <!-- Progress bar (legacy fallback when multi-engine lanes inactive) -->
+                  <div id="activeProgressBarContainer" style="display: none; margin-top: 4px;">
+                    <div style="display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px;">
                       <span id="activeProgressPhase" style="color: #38bdf8;">[sample] Initializing...</span>
                       <span id="activeProgressPct" style="font-weight: 600; color: #38bdf8;">0%</span>
                     </div>
-                    <div style="width: 100%; height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden;">
+                    <div style="width: 100%; height: 5px; background: #1e293b; border-radius: 3px; overflow: hidden;">
                       <div id="activeProgressBar" style="width: 0%; height: 100%; background: #38bdf8; transition: width 0.2s ease;"></div>
                     </div>
+                  </div>
+                  <div id="multiEngineActiveLanes" style="display: none; flex-direction: column; gap: 4px; margin-top: 0;"></div>
+                  <div id="activeTaskDetails" style="display: flex; flex-wrap: wrap; gap: 5px; font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                    <span id="queueStatsSummary">Loading queue...</span>
                   </div>
                 </div>
 
@@ -651,10 +588,9 @@
                 <div style="display: flex; justify-content: space-between; align-items: center; padding: 0 2px;">
                   <div style="display: flex; gap: 4px; align-items: center;">
                     <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); margin-right: 4px;">QUEUE:</span>
-                    <button type="button" class="btn btn-filter active" data-filter="all" id="btnFilterAll" style="padding: 2px 8px; font-size: 11px;">All (<span id="countAll">0</span>)</button>
-                    <button type="button" class="btn btn-filter" data-filter="queued" id="btnFilterQueued" style="padding: 2px 8px; font-size: 11px; color: #f59e0b;"><span id="lblQueuedTab">Pending</span> (<span id="countQueued">0</span>)</button>
+                    <button type="button" class="btn btn-filter active" data-filter="queued" id="btnFilterQueued" style="padding: 2px 8px; font-size: 11px; color: #f59e0b;"><span id="lblQueuedTab">Pending</span> (<span id="countQueued">0</span>)</button>
                     <button type="button" class="btn btn-filter" data-filter="completed" id="btnFilterDone" style="padding: 2px 8px; font-size: 11px; color: #10b981;">Done (<span id="countDone">0</span>)</button>
-                    <button type="button" class="btn btn-filter" data-filter="skipped" id="btnFilterSkipped" style="padding: 2px 8px; font-size: 11px; color: var(--text-muted);">Skipped (<span id="countSkipped">0</span>)</button>
+                    <button type="button" class="btn btn-filter" data-filter="all" id="btnFilterAll" style="padding: 2px 8px; font-size: 11px;">All (<span id="countAll">0</span>)</button>
                   </div>
                   <div style="display: flex; gap: 6px; align-items: center;">
                     <button type="button" class="btn btn-accent" id="btnQueueAll" title="Queue all unrendered or changed scenes" style="font-size: 11px; padding: 2px 10px;">➕ Queue Missing / Changed</button>
@@ -663,11 +599,14 @@
                 </div>
 
                 <!-- Scrollable Queue Table -->
-                <div id="queueTableContainer" style="flex: 1; min-height: 280px; overflow: auto; background: #030712; border: 1px solid var(--border); border-radius: 8px;">
+                <div id="queueTableContainer" style="flex: 1; min-height: 320px; overflow: auto; background: #030712; border: 1px solid var(--border); border-radius: 8px;">
                   <table style="width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 11px; text-align: left;">
                     <thead id="queueTableHead" style="position: sticky; top: 0; background: #0f172a; border-bottom: 1px solid #1e293b; z-index: 2;">
                       <tr>
+                        <th style="padding: 6px 0; width: 28px; text-align: center; color: var(--text-muted);" title="Drag row to reorder queue">⠿</th>
                         <th style="padding: 6px 10px; color: var(--text-muted);">File to Render</th>
+                        <th style="padding: 6px 8px; width: 118px; color: var(--text-muted);">Engine</th>
+                        <th style="padding: 6px 8px; width: 170px; color: var(--text-muted);">Model</th>
                         <th style="padding: 6px 10px; width: 58px; color: var(--text-muted);">Length</th>
                         <th style="padding: 6px 10px; width: 95px; color: var(--text-muted);">Status</th>
                         <th style="padding: 6px 10px; width: 140px; color: var(--text-muted);">Completed</th>
@@ -678,7 +617,7 @@
                       </tr>
                     </thead>
                     <tbody id="queueTableBody">
-                      <tr><td colspan="8" style="padding: 16px; text-align: center; color: var(--text-muted);">Loading render queue...</td></tr>
+                      <tr><td colspan="9" style="padding: 16px; text-align: center; color: var(--text-muted);">Loading render queue...</td></tr>
                     </tbody>
                   </table>
                 </div>
@@ -696,13 +635,17 @@
 
         <!-- 4. MASTER VIDEO TAB -->
         <div id="tab-master" class="tab-pane" style="padding: 16px; display: flex; flex-direction: column; height: 100%; box-sizing: border-box;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-shrink: 0;">
+          <div class="master-tab-header">
             <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
               <h2 style="font-size: 16px; color: var(--text-main); margin: 0;">Master Video Player</h2>
               <span id="masterVideoBadge" style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; background: #64748b; color: #fff;">Checking...</span>
               <span id="masterScaleInfoBadge" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; background: #1e293b; border: 1px solid #334155; color: #38bdf8; font-family: monospace;"></span>
+              <span id="masterLoopBadge" style="display: none; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 4px; background: rgba(14, 165, 233, 0.18); border: 1px solid rgba(56, 189, 248, 0.5); color: #7dd3fc;">
+                <span id="masterLoopText"></span>
+                <button type="button" id="btnClearMasterLoop" title="Stop repeating scene" style="background: none; border: none; color: #bae6fd; cursor: pointer; font-size: 11px; padding: 0 2px; line-height: 1;">✕</button>
+              </span>
             </div>
-            <div style="display: flex; gap: 8px; align-items: center;">
+            <div class="master-tab-actions">
               <select id="masterTabResSelect" title="Master Video Delivery Resolution (Independent of Scene Render Resolution)" style="font-size: 11px; padding: 4px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;">
                 <option value="match">Master Res: Match Render</option>
                 <option value="1280x720">Master Res: 720p (1280x720)</option>
@@ -716,8 +659,18 @@
             </div>
           </div>
 
-          <div style="background: #000; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; flex: 1; min-height: 280px;">
+          <div id="masterVideoContainer" style="position: relative; background: #000; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; flex: 1; min-height: 280px;">
             <video id="masterVideoPlayer" controls style="width: 100%; height: 100%; max-height: calc(100vh - 260px); object-fit: contain; background: #000; display: block;"></video>
+            <div id="masterStitchOverlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; width: 100%; max-width: 460px; padding: 28px; box-sizing: border-box;">
+              <div id="masterStitchPhase" style="font-size: 15px; font-weight: 700; color: #38bdf8; text-align: center;">🧵 Stitching Master Video...</div>
+              <div style="width: 100%; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; border: 1px solid #334155;">
+                <div id="masterStitchBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #2563eb, #38bdf8); transition: width 0.2s ease;"></div>
+              </div>
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 12px; width: 100%; font-size: 12px; color: #94a3b8; font-family: monospace;">
+                <span id="masterStitchDetail" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Unloading player &amp; preparing scenes...</span>
+                <span id="masterStitchPct" style="color: #38bdf8; font-weight: 700; flex-shrink: 0;">0%</span>
+              </div>
+            </div>
           </div>
 
           <div style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--text-muted); flex-shrink: 0;">
@@ -798,15 +751,22 @@
   <audio id="audioElement" preload="auto"></audio>
 
   <!-- Application Scripts (Modularized) -->
-  <script src="js/state_and_utils.js?v=42"></script>
-  <script src="js/timeline_and_playback.js?v=42"></script>
-  <script src="js/scene_inspector.js?v=42"></script>
-  <script src="js/takes_and_history.js?v=42"></script>
-  <script src="js/characters_studio.js?v=42"></script>
-  <script src="js/markers_and_prompts.js?v=42"></script>
-  <script src="js/anchors_and_settings.js?v=42"></script>
-  <script src="js/queue_and_console.js?v=42"></script>
-  <script src="js/master_and_export.js?v=42"></script>
+  <script src="js/state_and_utils.js?v=47"></script>
+  <script src="js/scene_jump_bar.js?v=2"></script>
+  <script src="js/timeline_and_playback.js?v=45"></script>
+  <script src="js/scene_inspector.js?v=48"></script>
+  <script src="js/takes_and_history.js?v=46"></script>
+  <script src="js/characters_studio.js?v=46"></script>
+  <script src="js/markers_and_prompts.js?v=45"></script>
+  <script src="js/anchors_and_settings.js?v=45"></script>
+  <script src="js/queue_engines.js?v=1"></script>
+  <script src="js/queue_and_console.js?v=45"></script>
+  <script src="js/master_and_export.js?v=47"></script>
+  <script src="js/scenes_tab.js?v=47"></script>
+  <script src="js/fal_settings.js?v=1"></script>
+  <script src="js/duet_repair.js?v=2"></script>
+  <script src="js/clip_import.js?v=1"></script>
+  <script src="js/split_resizer.js?v=1"></script>
 </body>
 </html>
 

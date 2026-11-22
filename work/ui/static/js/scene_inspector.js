@@ -49,26 +49,32 @@ function populateSceneVideoRenderer(sc) {
   if (!sel) return;
   sel.innerHTML = "";
   const defaultId = String(state.projectData?.models?.default_video_renderer || 1);
-  const vModels = state.models?.video_renderers || {};
-  const defaultModelName = vModels[defaultId]?.name || `Model #${defaultId}`;
-  sel.add(new Option(`Default (Project: [#${defaultId}] ${defaultModelName})`, ""));
-  Object.keys(vModels).forEach((k) => {
-    const isRef = vModels[k]?.supports_image_refs || String(vModels[k]?.frames_formula || "").includes("ref2va");
-    sel.add(new Option(`[#${k}] ${vModels[k].name || vModels[k].model_type}${isRef ? " [Ref2VA]" : ""}`, k));
+  const vModels = state.models?.video_renderers || {}, fModels = state.models?.fal_video_renderers || {}, mmModels = state.models?.minimax_video_renderers || {};
+  sel.add(new Option(`Default (Project: [#${defaultId}] ${(vModels[defaultId] || fModels[defaultId] || mmModels[defaultId])?.name || `Model #${defaultId}`})`, ""));
+  [["🖥️ Local (Wan2GP)", vModels, false], ["☁️ Cloud (fal.ai)", fModels, true], ["🎥 Cloud (MiniMax API)", mmModels, true]].forEach(([lbl, map, isCloud]) => {
+    const keys = Object.keys(map || {});
+    if (!keys.length) return;
+    const grp = document.createElement("optgroup");
+    grp.label = lbl;
+    keys.forEach((k) => { const m = map[k], isRef = m?.supports_image_refs || String(m?.frames_formula || "").includes("ref2va"); grp.appendChild(new Option(isCloud ? `${m.name || m.model_type}${isRef ? " [Ref2V]" : ""}` : `[#${k}] ${m.name || m.model_type}${isRef ? " [Ref2VA]" : ""}`, k)); });
+    sel.appendChild(grp);
   });
   const curVal = sc.renderer !== null && sc.renderer !== undefined ? String(sc.renderer) : "";
   sel.value = curVal;
   const badge = document.getElementById("sceneRendererBadge");
   if (badge) badge.style.display = curVal ? "inline-block" : "none";
+  window.syncSceneBackendUI?.(sc);
 }
 
 function updateSceneInspectorInputs(sc) {
-  const isTwoPass = isTwoPassScene(sc), isStereo = isStereoDuetMode(sc?.mode);
-  const showDuet = isTwoPass ? "block" : "none", showSingle = isTwoPass ? "none" : "block";
+  const isTwoPass = isTwoPassScene(sc), isStereo = isStereoDuetMode(sc?.mode), showDuet = isTwoPass ? "block" : "none", showSingle = isTwoPass ? "none" : "block";
   const el = (id) => document.getElementById(id);
   ["singlePromptGroup", "singleSeedGroup"].forEach((id) => { if (el(id)) el(id).style.display = showSingle; });
   if (el("singleStemGroup")) el("singleStemGroup").style.display = (!isTwoPass && !isStereo) ? "block" : "none";
-  if (el("stereoDuetStemGroup")) el("stereoDuetStemGroup").style.display = (!isTwoPass && isStereo) ? "block" : "none";
+  if (el("stereoDuetControlsRow")) el("stereoDuetControlsRow").style.display = (!isTwoPass && isStereo) ? "flex" : "none";
+  if (el("duetTimingControlsRow")) el("duetTimingControlsRow").style.display = isTwoPass ? "flex" : "none";
+  const seedGrp = el("singleSeedGroup"), stereoRow = el("stereoDuetControlsRow"), timingRow = document.querySelector?.(".inspector-row-timing");
+  if (seedGrp && !isTwoPass) { (isStereo && stereoRow ? stereoRow : timingRow)?.appendChild(seedGrp); }
   if (el("duetPromptsGroup")) el("duetPromptsGroup").style.display = showDuet;
 
   if (isTwoPass) {
@@ -176,8 +182,8 @@ function handleSceneModeChange(sc, newMode) {
     }
   }
 
-  updateSceneInspectorInputs(sc);
-  updateInspectorSceneHeader(sc);
+  window.onSceneModeChangedPromptSync?.(sc, newMode, oldMode);
+  if (!state?.projectData?.scenes || state.projectData.scenes[state.selectedSceneIdx] === sc) { updateSceneInspectorInputs(sc); updateInspectorSceneHeader(sc); window.syncSceneBackendUI?.(sc); }
   markProjectDirty();
   redrawTimeline();
 }
@@ -187,9 +193,10 @@ function updateInspectorSceneHeader(sc) {
   if (!sceneIdEl || !sc) return;
   const dur = Math.max(0, sc.end - sc.start).toFixed(2);
   const est = typeof window.estimateSceneRenderInfo === "function" ? window.estimateSceneRenderInfo(sc) : null;
+  const lockTag = sc.locked ? ' <span style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:rgba(245,158,11,0.22);color:#fbbf24;border:1px solid rgba(245,158,11,0.45);margin-left:6px;">🔒 LOCKED</span>' : "";
   if (!est) {
     const fps = state.projectData?.project?.fps || 24;
-    sceneIdEl.innerHTML = `<span style="font-size: 16px; font-weight: 700; color: var(--primary);">Scene ${escapeHtml(sc.id)}</span> <span style="font-size: 12px; font-weight: normal; color: var(--text-muted); margin-left: 10px;">${sc.start.toFixed(1)}s – ${sc.end.toFixed(1)}s &bull; ${dur}s (${Math.round(dur * fps)} frames)</span>`;
+    sceneIdEl.innerHTML = `<span style="font-size: 16px; font-weight: 700; color: var(--primary);">Scene ${escapeHtml(sc.id)}</span>${lockTag} <span style="font-size: 12px; font-weight: normal; color: var(--text-muted); margin-left: 10px;">${sc.start.toFixed(1)}s – ${sc.end.toFixed(1)}s &bull; ${dur}s (${Math.round(dur * fps)} frames)</span>`;
     return;
   }
   const padTotal = Number((est.head_pad + est.tail_pad).toFixed(2));
@@ -203,7 +210,7 @@ function updateInspectorSceneHeader(sc) {
   const warnLabel = isMultiWin ? ` (${est.window_count} Windows${saveNote})` : isSpill ? ` (VRAM Spill${saveNote})` : "";
   const passDetail = est.is_two_pass ? `2 passes: ~${est.passes.map((p) => p.estimated_formatted).join(" + ~")}` : "1 pass";
   const tip = `Quantized Frames: ${est.quantized_frames}f (ceiling: ${est.next_quantum_max_sec}s — ${est.quantum_headroom_sec}s headroom before +${est.quantum_step || 17}f step)&#10;Effective Length: ${est.effective_seconds}s (${dur}s edit${padNote})&#10;Model: [#${est.model_id || 1}] ${escapeHtml(est.model_name || "Video Model")} (${passDetail})&#10;Windowing: ${est.window_count} window${est.window_count > 1 ? "s" : ""} (${est.regime} regime @ ${est.resolution})&#10;Estimated Render Time: ~${est.total_estimated_formatted}${est.split_savings_seconds >= 60 ? ` (Splitting in half saves ~${est.split_savings_formatted})` : ""}`;
-  sceneIdEl.innerHTML = `<span style="font-size: 16px; font-weight: 700; color: var(--primary);">Scene ${escapeHtml(sc.id)}</span> <span style="font-size: 12px; font-weight: normal; color: var(--text-muted); margin-left: 10px;">${sc.start.toFixed(1)}s – ${sc.end.toFixed(1)}s${padNote} &bull; ${est.effective_seconds.toFixed(2)}s (${est.quantized_frames} frames)</span> <span title="${tip}" style="font-size: 11px; font-weight: 600; margin-left: 8px; padding: 2px 7px; border-radius: 4px; background: ${badgeBg}; border: 1px solid ${badgeBorder}; color: ${badgeColor}; cursor: help;">${isMultiWin ? "🚨" : isSpill ? "⚠️" : "⏱️"} Est: ~${est.total_estimated_formatted}${warnLabel}</span>`;
+  sceneIdEl.innerHTML = `<span style="font-size: 16px; font-weight: 700; color: var(--primary);">Scene ${escapeHtml(sc.id)}</span>${lockTag} <span style="font-size: 12px; font-weight: normal; color: var(--text-muted); margin-left: 10px;">${sc.start.toFixed(1)}s – ${sc.end.toFixed(1)}s${padNote} &bull; ${est.effective_seconds.toFixed(2)}s (${est.quantized_frames} frames)</span> <span title="${tip}" style="font-size: 11px; font-weight: 600; margin-left: 8px; padding: 2px 7px; border-radius: 4px; background: ${badgeBg}; border: 1px solid ${badgeBorder}; color: ${badgeColor}; cursor: help;">${isMultiWin ? "🚨" : isSpill ? "⚠️" : "⏱️"} Est: ~${est.total_estimated_formatted}${warnLabel}</span>`;
 }
 window.updateInspectorSceneHeader = updateInspectorSceneHeader;
 
@@ -271,6 +278,7 @@ function selectScene(idx) {
     }
     updateSceneEndAnchorPreview(sc.anchor_end || "");
     populateSceneVideoRenderer(sc);
+    window.populateSceneResolutionAndUpsampling?.(sc);
 
     const startInput = document.getElementById("sceneStart");
     const endInput = document.getElementById("sceneEnd");
@@ -292,7 +300,9 @@ function selectScene(idx) {
 
     // Markers
     updateSceneMarkersBar(sc);
+    window.refreshInspectorCollapsibleBadges?.(sc);
     if (window.updateSceneTakesUI) window.updateSceneTakesUI(sc);
+    window.applyInspectorLockState?.(sc);
   } catch (err) {
     console.error("Error in selectScene:", err);
   }
@@ -307,9 +317,10 @@ function updateSceneClipPreview(sc) {
 
   if (!videoPlayer) return;
 
-  // Check matching clip in assets
+  // Check matching clip in assets (prefer canonical active clip entry over alphabetical prefix scan)
   const clips = state.assets?.clips || {};
-  const matchedKey = Object.keys(clips).find((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`);
+  const canon = clips[sc.id] || clips[sc.id?.toUpperCase()] || clips[sc.id?.toLowerCase()];
+  const matchedKey = (canon?.filename && clips[canon.filename]) ? canon.filename : (canon ? sc.id : Object.keys(clips).find((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`));
   const qItems = (state.renderQueue || []).filter((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
   const renTask = qItems.find((t) => t.status === "rendering");
   const queuedTask = qItems.find((t) => t.status === "queued" || t.needs_render);
@@ -444,6 +455,11 @@ function updateSceneStart(sceneIdx, newStart) {
   const scenes = state.projectData?.scenes || [];
   if (sceneIdx < 0 || sceneIdx >= scenes.length) return;
   const sc = scenes[sceneIdx];
+  if (sc.locked || (sceneIdx > 0 && scenes[sceneIdx - 1]?.locked)) {
+    const startInput = document.getElementById("sceneStart");
+    if (state.selectedSceneIdx === sceneIdx && startInput) startInput.value = sc.start;
+    showToast("🔒 Scene is locked — unlock it first"); return;
+  }
   const minDur = 0.5;
 
   if (sceneIdx === 0) {
@@ -471,6 +487,11 @@ function updateSceneEnd(sceneIdx, newEnd) {
   const scenes = state.projectData?.scenes || [];
   if (sceneIdx < 0 || sceneIdx >= scenes.length) return;
   const sc = scenes[sceneIdx];
+  if (sc.locked || (sceneIdx < scenes.length - 1 && scenes[sceneIdx + 1]?.locked)) {
+    const endInput = document.getElementById("sceneEnd");
+    if (state.selectedSceneIdx === sceneIdx && endInput) endInput.value = sc.end;
+    showToast("🔒 Scene is locked — unlock it first"); return;
+  }
   const minDur = 0.5;
 
   if (sceneIdx < scenes.length - 1) {
@@ -523,7 +544,7 @@ Object.entries(textInputLabels).forEach(([id, label]) => {
   el.addEventListener("input", (e) => {
     if (state.selectedSceneIdx === null) return;
     const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-    if (!sc) return;
+    if (!sc || sc.locked) return;
     window.beginEditSession?.(`inspector:${id}`, `Edit ${sc.id} ${label}`);
 
     const val = e.target.value;
@@ -564,7 +585,8 @@ Object.entries(textInputLabels).forEach(([id, label]) => {
 
 const selectLabels = {
   sceneMode: "Mode", sceneAnchor: "Anchor", sceneAnchorEnd: "End Anchor",
-  sceneVideoRenderer: "Video Renderer", sceneStem: "Stem",
+  sceneVideoRenderer: "Video Renderer", sceneResolution: "Render Resolution",
+  sceneSpatialUpsampling: "Spatial Upsampling", sceneStem: "Stem",
   sceneStemLeft: "Left Stem", sceneStemRight: "Right Stem",
   sceneStemM: "Stem Pass 1", sceneStemF: "Stem Pass 2",
 };
@@ -576,53 +598,60 @@ Object.entries(selectLabels).forEach(([id, label]) => {
   el.addEventListener("change", (e) => {
     if (state.selectedSceneIdx === null) return;
     const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-    if (!sc) return;
-
+    if (!sc || sc.locked) return;
     const val = e.target.value;
-    if (id === "sceneMode") handleSceneModeChange(sc, val);
-    else if (id === "sceneAnchor") { sc.anchor = val; updateSceneAnchorPreview(sc.anchor); updatePromptResolvedPreviews(sc); }
-    else if (id === "sceneAnchorEnd") {
-      if (val) sc.anchor_end = val; else delete sc.anchor_end;
-      const btnClear = document.getElementById("btnClearEndAnchor");
-      if (btnClear) btnClear.style.display = sc.anchor_end ? "inline" : "none";
-      const pe = document.getElementById("scenePadEnd");
-      if (pe) pe.placeholder = `Def (${sc.anchor_end ? 0 : (state.projectData?.project?.render_overlap_seconds ?? 0)}s)`;
-      updateSceneEndAnchorPreview(sc.anchor_end || "");
-      updatePromptResolvedPreviews(sc);
-      updateInspectorSceneHeader(sc);
-    }
-    else if (id === "sceneVideoRenderer") {
-      sc.renderer = val ? (parseInt(val) || val) : null;
-      const badge = document.getElementById("sceneRendererBadge");
-      if (badge) badge.style.display = sc.renderer ? "inline-block" : "none";
-      updateInspectorSceneHeader(sc);
-    }
-    else if (id === "sceneStem") sc.stem = val;
-    else if (id === "sceneStemLeft") sc.stem_m = val;
-    else if (id === "sceneStemRight") sc.stem_f = val;
-    else if (id === "sceneStemM") sc.stem_m = val;
-    else if (id === "sceneStemF") sc.stem_f = val;
-    markProjectDirty();
-    redrawTimeline();
-    window.recordHistorySnapshot?.(`Change ${sc.id} ${label}`);
+    const patch = id === "sceneMode" ? { mode: val }
+      : id === "sceneAnchorEnd" ? { anchor_end: val || undefined }
+      : id === "sceneVideoRenderer" ? { renderer: val ? (/^\d+$/.test(val) ? parseInt(val, 10) : val) : null }
+      : id === "sceneStem" ? { stem: val }
+      : (id === "sceneStemLeft" || id === "sceneStemM") ? { stem_m: val }
+      : (id === "sceneStemRight" || id === "sceneStemF") ? { stem_f: val } : null;
+    const apply = () => {
+      if (id === "sceneMode") handleSceneModeChange(sc, val);
+      else if (id === "sceneAnchor") { sc.anchor = val; updateSceneAnchorPreview(sc.anchor); updatePromptResolvedPreviews(sc); }
+      else if (id === "sceneAnchorEnd") {
+        if (val) sc.anchor_end = val; else delete sc.anchor_end;
+        const btnClear = document.getElementById("btnClearEndAnchor");
+        if (btnClear) btnClear.style.display = sc.anchor_end ? "inline" : "none";
+        const pe = document.getElementById("scenePadEnd");
+        if (pe) pe.placeholder = `Def (${sc.anchor_end ? 0 : (state.projectData?.project?.render_overlap_seconds ?? 0)}s)`;
+        updateSceneEndAnchorPreview(sc.anchor_end || ""); updatePromptResolvedPreviews(sc); updateInspectorSceneHeader(sc);
+      } else if (id === "sceneVideoRenderer") {
+        sc.renderer = val ? (/^\d+$/.test(val) ? parseInt(val, 10) : val) : null;
+        const badge = document.getElementById("sceneRendererBadge");
+        if (badge) badge.style.display = sc.renderer ? "inline-block" : "none";
+        window.syncSceneBackendUI?.(sc); updateInspectorSceneHeader(sc);
+      } else if (id === "sceneResolution") {
+        if (val) sc.resolution = /^\d+$/.test(val) ? parseInt(val, 10) : val; else delete sc.resolution;
+        window.populateSceneResolutionAndUpsampling?.(sc); updateInspectorSceneHeader(sc);
+      } else if (id === "sceneSpatialUpsampling") {
+        if (val) sc.spatial_upsampling = val; else delete sc.spatial_upsampling;
+        window.populateSceneResolutionAndUpsampling?.(sc); updateInspectorSceneHeader(sc);
+      } else if (id === "sceneStem") sc.stem = val;
+      else if (id === "sceneStemLeft" || id === "sceneStemM") sc.stem_m = val;
+      else if (id === "sceneStemRight" || id === "sceneStemF") sc.stem_f = val;
+      markProjectDirty(); redrawTimeline(); window.recordHistorySnapshot?.(`Change ${sc.id} ${label}`);
+    };
+    const revert = () => { updateSceneInspectorInputs(sc); populateSceneVideoRenderer(sc); if (document.getElementById("sceneMode")) document.getElementById("sceneMode").value = canonicalizeSceneMode(sc.mode) || "solo"; };
+    if (patch && window.guardSceneComboChange) window.guardSceneComboChange(sc, patch, { onApply: apply, onRevert: revert });
+    else apply();
   });
 });
 
 document.getElementById("btnClearEndAnchor")?.addEventListener("click", () => {
   const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-  if (!sc) return;
+  if (!sc || sc.locked) return;
   delete sc.anchor_end;
   const sel = document.getElementById("sceneAnchorEnd"); if (sel) sel.value = "";
   document.getElementById("btnClearEndAnchor").style.display = "none";
   const pe = document.getElementById("scenePadEnd");
   if (pe) pe.placeholder = `Def (${state.projectData?.project?.render_overlap_seconds ?? 0}s)`;
-  updateSceneEndAnchorPreview("");
-  updatePromptResolvedPreviews(sc); updateInspectorSceneHeader(sc); markProjectDirty(); redrawTimeline();
+  updateSceneEndAnchorPreview(""); updatePromptResolvedPreviews(sc); updateInspectorSceneHeader(sc); markProjectDirty(); redrawTimeline();
   window.recordHistorySnapshot?.(`Clear ${sc.id} End Anchor`);
 });
 document.getElementById("btnResetScenePadding")?.addEventListener("click", () => {
   const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-  if (!sc) return;
+  if (!sc || sc.locked) return;
   delete sc.render_pad_start; delete sc.render_pad_end;
   const ps = document.getElementById("scenePadStart"), pe = document.getElementById("scenePadEnd");
   if (ps) ps.value = ""; if (pe) pe.value = "";
@@ -633,13 +662,12 @@ document.getElementById("btnResetScenePadding")?.addEventListener("click", () =>
 document.getElementById("btnMatchNextAnchor")?.addEventListener("click", () => {
   const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
   const nextSc = state.projectData?.scenes?.[state.selectedSceneIdx + 1];
-  if (!sc || !nextSc?.anchor) return;
+  if (!sc || sc.locked || !nextSc?.anchor) return;
   sc.anchor_end = syncAnchorDropdown(document.getElementById("sceneAnchorEnd"), nextSc.anchor);
   const btnClear = document.getElementById("btnClearEndAnchor"); if (btnClear) btnClear.style.display = sc.anchor_end ? "inline" : "none";
   const pe = document.getElementById("scenePadEnd");
   if (pe) pe.placeholder = `Def (${sc.anchor_end ? 0 : (state.projectData?.project?.render_overlap_seconds ?? 0)}s)`;
-  updateSceneEndAnchorPreview(sc.anchor_end || "");
-  updatePromptResolvedPreviews(sc); updateInspectorSceneHeader(sc); markProjectDirty(); redrawTimeline();
+  updateSceneEndAnchorPreview(sc.anchor_end || ""); updatePromptResolvedPreviews(sc); updateInspectorSceneHeader(sc); markProjectDirty(); redrawTimeline();
   window.recordHistorySnapshot?.(`Match ${sc.id} End Anchor to ${nextSc.id}`);
   showToast(`🔗 Linked ${sc.id} End Anchor to ${nextSc.id}'s Start Anchor`);
 });
@@ -651,14 +679,13 @@ document.getElementById("btnMatchNextAnchor")?.addEventListener("click", () => {
   { id: "btnRandomSeedF", prop: "seed_f", input: "sceneSeedF", label: "Seed Pass 2" },
 ].forEach(({ id, prop, input, label }) => {
   document.getElementById(id)?.addEventListener("click", () => {
-    if (state.selectedSceneIdx === null) return;
     const sc = state.projectData?.scenes?.[state.selectedSceneIdx];
-    if (!sc) return;
+    if (!sc || sc.locked) return;
     const seed = Math.floor(Math.random() * 90000) + 1000;
     sc[prop] = seed;
     const el = document.getElementById(input); if (el) el.value = seed;
     markProjectDirty();
-    if (typeof window.recordHistorySnapshot === "function") window.recordHistorySnapshot(`Randomize ${sc.id} ${label}`);
+    window.recordHistorySnapshot?.(`Randomize ${sc.id} ${label}`);
   });
 });
 
@@ -717,101 +744,56 @@ document.getElementById("btnAddScene")?.addEventListener("click", () => {
 function deleteScene(idx) {
   const scenes = state.projectData?.scenes || [];
   if (idx === null || idx < 0 || idx >= scenes.length) return;
-  const sc = scenes[idx];
-
-  const dur = (sc.end - sc.start).toFixed(1);
-  if (!confirm(`Delete Scene "${sc.id}" (${sc.start.toFixed(1)}s - ${sc.end.toFixed(1)}s, ${dur}s)?\n\nThis will remove the scene and close the timeline gap.`)) {
-    return;
-  }
-
+  const sc = scenes[idx], dur = (sc.end - sc.start).toFixed(1);
+  if (sc.locked) { showToast(`🔒 Scene ${sc.id} is locked — unlock it first`); return; }
+  if (!confirm(`Delete Scene "${sc.id}" (${sc.start.toFixed(1)}s - ${sc.end.toFixed(1)}s, ${dur}s)?\n\nThis will remove the scene and close the timeline gap.`)) return;
   scenes.splice(idx, 1);
   if (scenes.length > 0) {
-    if (idx === 0) {
-      scenes[0].start = 0.00;
-    } else if (idx < scenes.length) {
-      scenes[idx - 1].end = scenes[idx].start;
-    } else {
-      const lastScene = scenes[scenes.length - 1];
-      const totalDur = state.projectData?.project?.total_duration;
-      if (typeof totalDur === "number" && totalDur > lastScene.start) {
-        lastScene.end = parseFloat(totalDur.toFixed(2));
-      } else if (sc && sc.end > lastScene.start) {
-        lastScene.end = parseFloat(Number(sc.end).toFixed(2));
-      }
+    if (idx === 0) scenes[0].start = 0.00;
+    else if (idx < scenes.length) scenes[idx - 1].end = scenes[idx].start;
+    else {
+      const lastScene = scenes[scenes.length - 1], totalDur = state.projectData?.project?.total_duration;
+      if (typeof totalDur === "number" && totalDur > lastScene.start) lastScene.end = parseFloat(totalDur.toFixed(2));
+      else if (sc && sc.end > lastScene.start) lastScene.end = parseFloat(Number(sc.end).toFixed(2));
     }
   }
-
-  markProjectDirty();
-  redrawTimeline();
-  if (typeof window.recordHistorySnapshot === "function") {
-    window.recordHistorySnapshot(`Delete Scene ${sc.id}`);
-  }
-
+  markProjectDirty(); redrawTimeline();
+  window.recordHistorySnapshot?.(`Delete Scene ${sc.id}`);
   if (scenes.length === 0) {
     state.selectedSceneIdx = null;
     ["inspectorActions", "inspectorForm"].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = "none"; });
     const emptyEl = document.getElementById("inspectorEmptyState"); if (emptyEl) emptyEl.style.display = "block";
     const titleEl = document.getElementById("inspectorSceneId"); if (titleEl) titleEl.textContent = "No Scenes";
-  } else {
-    selectScene(Math.min(idx, scenes.length - 1));
-  }
-
+  } else selectScene(Math.min(idx, scenes.length - 1));
   showToast(`🗑️ Deleted Scene ${sc.id}`);
 }
-
-document.getElementById("btnDeleteScene")?.addEventListener("click", () => {
-  if (state.selectedSceneIdx !== null) deleteScene(state.selectedSceneIdx);
-});
+document.getElementById("btnDeleteScene")?.addEventListener("click", () => { if (state.selectedSceneIdx !== null) deleteScene(state.selectedSceneIdx); });
 
 // Split Scene Function & Buttons
-function splitScene(idx, targetTime = null) {
-  const scenes = state.projectData?.scenes || [];
-  if (idx === null || idx < 0 || idx >= scenes.length) return;
-  const sc = scenes[idx];
-  const start = parseFloat(sc.start);
-  const end = parseFloat(sc.end);
-  if (end - start < 0.2) {
-    showToast("Scene is too short to split (< 0.2s)");
-    return;
-  }
-
-  let defaultTime = (typeof targetTime === "number" && targetTime > start + 0.05 && targetTime < end - 0.05) ? targetTime :
-    (audioEl && audioEl.currentTime > start + 0.05 && audioEl.currentTime < end - 0.05) ? audioEl.currentTime : (start + end) / 2.0;
-
-  const promptMsg = `✂️ Split Scene "${sc.id}" (${start.toFixed(2)}s - ${end.toFixed(2)}s)\n\nEnter split timestamp in seconds (between ${start.toFixed(2)}s and ${end.toFixed(2)}s):`;
-  const timeInput = prompt(promptMsg, defaultTime.toFixed(2));
-  if (timeInput === null) return;
-
-  const splitTime = parseFloat(parseFloat(timeInput).toFixed(3));
+function commitSplitScene(idx, splitTime) {
+  const scenes = state.projectData?.scenes || [], sc = scenes[idx];
+  if (!sc) return false;
+  const start = parseFloat(sc.start), end = parseFloat(sc.end);
   if (isNaN(splitTime) || splitTime <= start + 0.05 || splitTime >= end - 0.05) {
     showToast(`Invalid split time. Must be strictly between ${(start + 0.05).toFixed(2)}s and ${(end - 0.05).toFixed(2)}s.`);
-    return;
+    return false;
   }
 
-  const cleanId = String(sc.id || "S01").trim();
-  const existingIds = new Set(scenes.map((s) => String(s.id || "").trim().toUpperCase()));
-  let id1 = cleanId + "a";
-  let id2 = cleanId + "b";
-
+  const cleanId = String(sc.id || "S01").trim(), existingIds = new Set(scenes.map((s) => String(s.id || "").trim().toUpperCase()));
+  let id1 = cleanId + "a", id2 = cleanId + "b";
   const mLetter = cleanId.match(/^(S0*\d+)([a-z])$/i);
   if (mLetter) {
-    const prefix = mLetter[1];
-    const curCode = mLetter[2].toLowerCase().charCodeAt(0);
+    const prefix = mLetter[1], curCode = mLetter[2].toLowerCase().charCodeAt(0);
     id1 = cleanId;
     for (let offset = 1; offset < 26; offset++) {
       const cand = prefix + String.fromCharCode(curCode + offset);
-      if (!existingIds.has(cand.toUpperCase())) {
-        id2 = cand;
-        break;
-      }
+      if (!existingIds.has(cand.toUpperCase())) { id2 = cand; break; }
     }
   } else if (existingIds.has(id1.toUpperCase()) || existingIds.has(id2.toUpperCase())) {
-    id1 = cleanId + "_part1";
-    id2 = cleanId + "_part2";
+    id1 = cleanId + "_part1"; id2 = cleanId + "_part2";
   }
 
-  const scene1 = JSON.parse(JSON.stringify(sc));
-  const scene2 = JSON.parse(JSON.stringify(sc));
+  const scene1 = JSON.parse(JSON.stringify(sc)), scene2 = JSON.parse(JSON.stringify(sc));
   delete scene1.anchor_end;
   ["render_pad_end", "pad_end", "tail_overlap", "render_overlap"].forEach((k) => delete scene1[k]);
   ["render_pad_start", "pad_start", "head_overlap", "render_overlap"].forEach((k) => delete scene2[k]);
@@ -822,22 +804,44 @@ function splitScene(idx, targetTime = null) {
     scene1.output_name = sc.output_name.startsWith(sc.id) ? id1 + sc.output_name.slice(sc.id.length) : `${sc.output_name}_${id1}`;
     scene2.output_name = sc.output_name.startsWith(sc.id) ? id2 + sc.output_name.slice(sc.id.length) : `${sc.output_name}_${id2}`;
   }
-  ["seed", "seed_m", "seed_f"].forEach((k) => {
-    if (typeof scene2[k] === "number") scene2[k] += 1;
-  });
+  ["seed", "seed_m", "seed_f"].forEach((k) => { if (typeof scene2[k] === "number") scene2[k] += 1; });
 
   scenes.splice(idx, 1, scene1, scene2);
-  markProjectDirty();
-  redrawTimeline();
-  selectScene(idx + 1);
-  if (typeof window.recordHistorySnapshot === "function") {
-    window.recordHistorySnapshot(`Split Scene ${sc.id} into ${id1} & ${id2}`);
-  }
+  markProjectDirty(); redrawTimeline(); selectScene(idx + 1);
+  if (document.getElementById("tab-scenes")?.classList.contains("active")) window.renderSceneList?.(true);
+  window.recordHistorySnapshot?.(`Split Scene ${sc.id} into ${id1} & ${id2}`);
   showToast(`✂️ Split Scene ${sc.id} into ${id1} (${start.toFixed(2)}s-${splitTime.toFixed(2)}s) and ${id2} (${splitTime.toFixed(2)}s-${end.toFixed(2)}s)`);
+  return true;
 }
 
+function splitScene(idx, targetTime = null) {
+  const scenes = state.projectData?.scenes || [];
+  if (idx === null || idx < 0 || idx >= scenes.length) return;
+  const sc = scenes[idx];
+  if (sc.locked) { showToast(`🔒 Scene ${sc.id} is locked — unlock it first`); return; }
+  const start = parseFloat(sc.start), end = parseFloat(sc.end);
+  if (end - start < 0.2) { showToast("Scene is too short to split (< 0.2s)"); return; }
+
+  const playT = (typeof state.playheadTime === "number" && state.playheadTime > start + 0.05 && state.playheadTime < end - 0.05) ? state.playheadTime :
+    (audioEl && audioEl.currentTime > start + 0.05 && audioEl.currentTime < end - 0.05) ? audioEl.currentTime : null;
+  const defT = (typeof targetTime === "number" && targetTime > start + 0.05 && targetTime < end - 0.05) ? targetTime : (playT ?? (start + end) / 2.0);
+  if (typeof window.openSplitSceneModal === "function") {
+    window.openSplitSceneModal(sc, start, end, defT, (t) => commitSplitScene(idx, t));
+  } else {
+    const timeInput = prompt(`✂️ Split Scene "${sc.id}" (${start.toFixed(2)}s - ${end.toFixed(2)}s)`, defT.toFixed(2));
+    if (timeInput !== null) commitSplitScene(idx, parseFloat(parseFloat(timeInput).toFixed(3)));
+  }
+}
+window.splitScene = splitScene;
+
 document.getElementById("btnSplitSceneHeader")?.addEventListener("click", () => {
-  if (state.selectedSceneIdx === null) showToast("Select a scene to split first");
-  else splitScene(state.selectedSceneIdx);
+  let idx = state.selectedSceneIdx;
+  if (idx === null || idx === undefined) {
+    const t = typeof state.playheadTime === "number" ? state.playheadTime : (audioEl?.currentTime || 0);
+    const hit = (state.projectData?.scenes || []).findIndex((s) => t >= parseFloat(s.start) && t <= parseFloat(s.end));
+    if (hit >= 0) { selectScene(hit); idx = hit; }
+  }
+  if (idx === null || idx === undefined || idx < 0) showToast("Select a scene to split first");
+  else splitScene(idx);
 });
 

@@ -360,228 +360,320 @@
   // =========================================================================
   let currentTakesData = null;
   let activeTakeObject = null;
+  let currentTakesSceneId = null;
+
+  function formatTakeDate(take) {
+    const iso = take?.created_iso || (typeof take?.created_at === "string" ? take.created_at : "");
+    if (iso) return iso.slice(0, 16).replace("T", " ");
+    if (typeof take?.created_at === "number") return new Date(take.created_at * 1000).toISOString().slice(0, 16).replace("T", " ");
+    return "";
+  }
+
+  function canonicalFieldVal(v) {
+    if (v === undefined || v === null || v === "") return "";
+    if (Array.isArray(v)) return JSON.stringify(v);
+    if (typeof v === "object") {
+      const out = {};
+      Object.keys(v).sort().forEach((k) => {
+        if (v[k] !== undefined && v[k] !== null && v[k] !== "" && canonicalFieldVal(v[k]) !== "") out[k] = v[k];
+      });
+      return Object.keys(out).length ? JSON.stringify(out) : "";
+    }
+    return String(v).trim();
+  }
+
+  function computeSceneTakeDiffs(scene, take) {
+    if (!scene || !take) return { diffs: [], hasTimingDiff: false };
+    const snap = take.scene_snapshot;
+    const diffs = [];
+    let hasTimingDiff = false;
+    if (snap && typeof snap === "object") {
+      const groups = [
+        ["Prompt", ["prompt", "prompt_m", "prompt_f", "prompt_mode", "prompt_components"]],
+        ["Neg Prompt", ["negative_prompt", "negative_mode", "negative_prompt_m", "negative_prompt_f"]],
+        ["Mode", ["mode"]],
+        ["Anchor", ["anchor", "anchor_end"]],
+        ["Seed", ["seed", "seed_m", "seed_f"]],
+        ["Stem/Split", ["stem", "stem_m", "stem_f", "split_x"]],
+        ["Model", ["backend", "backend_m", "backend_f", "pass2_roi_mode", "pass2_roi_side", "pass2_roi_box", "video_renderer", "renderer", "renderer_m", "renderer_f"]],
+        ["Upscale", ["spatial_upsampling"]],
+        ["Filters", ["filters"]],
+        ["Pad", ["render_pad_start", "render_pad_end"]],
+      ];
+      groups.forEach(([label, keys]) => {
+        if (keys.some((k) => canonicalFieldVal(scene[k]) !== canonicalFieldVal(snap[k]))) diffs.push(label);
+      });
+      const pd = window.state?.projectData || {};
+      const rm = pd.models || {};
+      const rMap = { "1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1088" };
+      Object.entries(rm.video_resolutions || {}).forEach(([k, v]) => { rMap[String(k)] = String(v?.resolution || v || ""); });
+      const resOf = (scObj) => {
+        const raw = canonicalFieldVal(scObj?.resolution);
+        const effRaw = (raw && !["default", "inherit", "none", "null"].includes(raw.toLowerCase())) ? raw : canonicalFieldVal(rm.video_renderers?.[String(scObj?.renderer || scObj?.video_renderer || "")]?.resolution || rm.default_video_resolution || rm.resolution || rm.video_shared_settings?.resolution || pd.master_resolution || 4);
+        return rMap[effRaw] || effRaw;
+      };
+      const curEffRes = resOf(scene);
+      const takeRes = canonicalFieldVal(take.resolution) || (String(take.out_name || "").match(/_(\d+x\d+)$/)?.[1] || "");
+      const snapEffRes = canonicalFieldVal(snap.resolution) ? resOf(snap) : (takeRes || resOf(snap));
+      if (curEffRes && snapEffRes ? (curEffRes !== snapEffRes) : (canonicalFieldVal(scene.resolution) !== canonicalFieldVal(snap.resolution))) diffs.push("Resolution");
+      if (snap.start !== undefined && snap.end !== undefined) {
+        if (Math.abs(Number(scene.start) - Number(snap.start)) > 0.02 || Math.abs(Number(scene.end) - Number(snap.end)) > 0.02) {
+          hasTimingDiff = true;
+          diffs.push(`Timing (${snap.start}s–${snap.end}s vs ${scene.start}s–${scene.end}s)`);
+        }
+      }
+    } else {
+      if ((scene.prompt || scene.prompt_m || "").trim() !== (take.prompt || "").trim()) diffs.push("Prompt");
+      if (take.seed !== undefined && take.seed !== scene.seed) diffs.push("Seed");
+      if (take.render_start !== undefined && (Math.abs(Number(scene.start) - Number(take.render_start)) > 0.02 || Math.abs(Number(scene.end) - Number(take.render_end)) > 0.02)) {
+        hasTimingDiff = true;
+        diffs.push("Timing");
+      }
+    }
+    return { diffs, hasTimingDiff };
+  }
+
+  function _patchSceneJson(jsonStr, sceneId, updater) {
+    if (!jsonStr) return jsonStr;
+    try {
+      const obj = JSON.parse(jsonStr);
+      const idx = (obj.scenes || []).findIndex((s) => s.id === sceneId);
+      if (idx >= 0) updater(obj.scenes, idx);
+      return JSON.stringify(obj);
+    } catch (e) { return jsonStr; }
+  }
+
+  function patchSavedSceneBaseline(restoredScene) {
+    if (!window.state?.projectData) return;
+    lastSavedJson = _patchSceneJson(lastSavedJson, restoredScene.id, (arr, idx) => { arr[idx] = JSON.parse(JSON.stringify(restoredScene)); });
+    committedJson = JSON.stringify(window.state.projectData);
+    syncDirtyWithSavedState(); updateHistoryButtons();
+  }
+
+  function patchSavedSceneLockBaseline(sceneId, isLocked) {
+    if (!window.state?.projectData || !sceneId) return;
+    const setLock = (arr, idx) => { if (isLocked) arr[idx].locked = true; else delete arr[idx].locked; };
+    lastSavedJson = _patchSceneJson(lastSavedJson, sceneId, setLock);
+    committedJson = _patchSceneJson(committedJson, sceneId, setLock);
+    if (activeSession?.baselineJson) activeSession.baselineJson = _patchSceneJson(activeSession.baselineJson, sceneId, setLock);
+    [undoStack, redoStack].forEach((stk) => stk.forEach((snap) => {
+      if (snap?.data?.scenes) { const i = snap.data.scenes.findIndex((s) => s.id === sceneId); if (i >= 0) setLock(snap.data.scenes, i); }
+    }));
+    syncDirtyWithSavedState(); updateHistoryButtons();
+  }
+  window.patchSavedSceneLockBaseline = patchSavedSceneLockBaseline;
+
+  function updateRevertHeaderBtn(scene) {
+    const btn = document.getElementById("btnRevertSceneToRendered");
+    if (!btn) return;
+    if (!scene || !activeTakeObject || currentTakesSceneId !== scene.id) {
+      btn.style.display = "none";
+      return;
+    }
+    const { diffs } = computeSceneTakeDiffs(scene, activeTakeObject);
+    if (diffs.length > 0) {
+      btn.style.display = "inline-flex";
+      btn.title = `Revert ${scene.id} to rendered Take ${activeTakeObject.take_number} (changes: ${diffs.join(", ")})`;
+      btn.onclick = () => restoreSceneToTake(scene, activeTakeObject, btn);
+    } else {
+      btn.style.display = "none";
+    }
+  }
+
+  async function restoreSceneToTake(scene, chosenTake, btnEl) {
+    if (!scene || !chosenTake || !window.state?.currentSlug) return;
+    if (scene.locked) { window.showToast?.("🔒 Scene is locked — unlock it first"); return; }
+    const { hasTimingDiff } = computeSceneTakeDiffs(scene, chosenTake);
+    let restoreTiming = false;
+    if (hasTimingDiff && chosenTake.scene_snapshot?.start !== undefined) {
+      const s0 = Number(chosenTake.scene_snapshot.start), e0 = Number(chosenTake.scene_snapshot.end);
+      const overlap = (window.state.projectData?.scenes || []).find((s) => s.id !== scene.id && Number(s.start) < e0 - 0.02 && Number(s.end) > s0 + 0.02);
+      restoreTiming = overlap ? confirm(`Restoring rendered timing (${s0}s–${e0}s) overlaps ${overlap.id}.\n\nRevert Start/End timing too?`) : true;
+    }
+    const origText = btnEl ? btnEl.textContent : "";
+    if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Reverting..."; }
+    try {
+      const resp = await fetch("/api/takes/activate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: window.state.currentSlug, scene_id: scene.id, take_id: chosenTake.take_id, restore_timing: restoreTiming }),
+      });
+      const actData = await resp.json();
+      if (!actData.success) { alert("Failed to revert scene: " + (actData.error || "Unknown error")); return; }
+      const restored = actData.restored_params || {};
+      Object.keys(scene).forEach((k) => { delete scene[k]; });
+      Object.assign(scene, JSON.parse(JSON.stringify(restored)));
+      recordHistorySnapshot(`Revert ${scene.id} to Take ${chosenTake.take_number}`);
+      patchSavedSceneBaseline(scene);
+      window.redrawTimeline?.();
+      window.renderSceneList?.();
+      if (typeof window.selectScene === "function" && window.state.selectedSceneIdx !== null) window.selectScene(window.state.selectedSceneIdx);
+      window.loadProjectQueue?.();
+      window.showToast?.(`↺ Reverted ${scene.id} to Take ${chosenTake.take_number} (using clip on disk)`);
+    } catch (err) {
+      alert("Error reverting scene: " + err.message);
+    } finally {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = origText; }
+    }
+  }
+  window.restoreSceneToTake = restoreSceneToTake;
+  window.revertSceneToActiveTake = async (sceneId, btnEl) => {
+    const sc = (window.state?.projectData?.scenes || []).find((s) => s.id === sceneId);
+    if (!sc || !window.state?.currentSlug) return;
+    const r = await fetch(`/api/takes/${encodeURIComponent(window.state.currentSlug)}/${encodeURIComponent(sceneId)}`);
+    const d = r.ok ? await r.json() : null;
+    const take = d?.takes?.find((t) => t.take_id === d.active_take_id) || d?.takes?.[d?.takes?.length - 1];
+    if (take) await restoreSceneToTake(sc, take, btnEl);
+    else alert(`No rendered take found in vault for ${sceneId}.`);
+  };
 
   async function updateSceneTakesUI(scene) {
     const tray = document.getElementById("sceneTakesTray");
     const countBadge = document.getElementById("takesCountBadge");
     const selectEl = document.getElementById("sceneTakeSelect");
     const btnRestore = document.getElementById("btnRestoreTake");
-    const diffEl = document.getElementById("takeDiffSummary");
 
     if (!tray || !selectEl || !scene || !window.state || !window.state.currentSlug) {
+      currentTakesData = null; activeTakeObject = null; currentTakesSceneId = null;
+      updateRevertHeaderBtn(null);
       if (tray) tray.style.display = "none";
       return;
     }
 
     try {
-      const resp = await fetch(
-        `/api/takes/${encodeURIComponent(window.state.currentSlug)}/${encodeURIComponent(scene.id)}`
-      );
-      if (!resp.ok) {
-        tray.style.display = "none";
-        return;
-      }
+      const resp = await fetch(`/api/takes/${encodeURIComponent(window.state.currentSlug)}/${encodeURIComponent(scene.id)}`);
+      if (!resp.ok) { currentTakesData = null; activeTakeObject = null; currentTakesSceneId = null; updateRevertHeaderBtn(null); tray.style.display = "none"; return; }
       const data = await resp.json();
-      currentTakesData = data;
+      currentTakesData = data; currentTakesSceneId = scene.id;
 
       if (!data.success || !data.takes || data.takes.length === 0) {
-        tray.style.display = "none";
-        return;
+        activeTakeObject = null; selectEl.innerHTML = ""; updateRevertHeaderBtn(null);
+        const repBtn = document.getElementById("btnToggleLipSyncRepair");
+        if (repBtn) { repBtn.dataset.forceDisabled = "1"; repBtn.disabled = true; }
+        tray.style.display = "none"; return;
       }
 
       tray.style.display = "block";
       const totalTakes = data.takes.length;
-      if (countBadge) {
-        countBadge.textContent = `${totalTakes} take${totalTakes > 1 ? "s" : ""}`;
-      }
+      if (countBadge) countBadge.textContent = `${totalTakes} take${totalTakes > 1 ? "s" : ""}`;
 
       selectEl.innerHTML = "";
       const activeId = data.active_take_id;
       let activeTake = null;
-
       data.takes.forEach((take) => {
         const opt = document.createElement("option");
         opt.value = take.take_id;
-        const isActive = take.take_id === activeId;
-        if (isActive) activeTake = take;
-
-        const dateStr = take.created_at ? take.created_at.slice(0, 16).replace("T", " ") : "";
-        const tag = isActive ? "★ [ACTIVE]" : "";
-        const modelStr = take.model_type ? ` [${take.model_type}]` : "";
-        opt.textContent = `Take ${take.take_number}: ${dateStr} ${tag}${modelStr}`;
+        if (take.take_id === activeId) activeTake = take;
+        opt.textContent = window.formatTakeSummaryLabel
+          ? window.formatTakeSummaryLabel(take, activeId)
+          : `Take ${take.take_number}: ${formatTakeDate(take)}${take.take_id === activeId ? " ★ [ACTIVE]" : ""}`;
         selectEl.appendChild(opt);
       });
 
-      activeTakeObject = activeTake;
-
-      // Select active take by default
-      if (activeId) {
-        selectEl.value = activeId;
-      } else if (data.takes.length > 0) {
-        selectEl.value = data.takes[data.takes.length - 1].take_id;
-      }
+      activeTakeObject = activeTake || data.takes[data.takes.length - 1] || null;
+      if (activeId) selectEl.value = activeId;
+      else if (data.takes.length > 0) selectEl.value = data.takes[data.takes.length - 1].take_id;
 
       renderSelectedTakeState(scene);
-
-      selectEl.onchange = () => {
-        renderSelectedTakeState(scene);
+      selectEl.onchange = () => renderSelectedTakeState(scene);
+      if (btnRestore) btnRestore.onclick = () => {
+        const chosenTake = (currentTakesData?.takes || []).find((t) => t.take_id === selectEl.value);
+        if (chosenTake) restoreSceneToTake(scene, chosenTake, btnRestore);
       };
 
-      if (btnRestore) {
-        btnRestore.onclick = async () => {
-          const selectedTakeId = selectEl.value;
-          const chosenTake = (currentTakesData?.takes || []).find((t) => t.take_id === selectedTakeId);
-          if (!chosenTake) return;
-
-          btnRestore.disabled = true;
-          btnRestore.textContent = "Restoring...";
-
+      const btnUpscale = document.getElementById("btnUpscaleTake");
+      const upSel = document.getElementById("sceneLateUpscaleMethod"), fltSel = document.getElementById("sceneLateFilterMethod");
+      if (btnUpscale && (upSel || fltSel)) {
+        btnUpscale.onclick = async () => {
+          const method = upSel ? upSel.value : "", ai_refiner = fltSel ? fltSel.value : "";
+          if (!method && !ai_refiner) { alert("Select a spatial upscaler or a 1x filter first."); return; }
+          btnUpscale.disabled = true; btnUpscale.textContent = "Starting...";
           try {
-            const actResp = await fetch("/api/takes/activate", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                project: window.state.currentSlug,
-                scene_id: scene.id,
-                take_id: chosenTake.take_id,
-              }),
+            const upResp = await fetch("/api/takes/upscale", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ project: window.state.currentSlug, scene_id: scene.id, method, ai_refiner, take_id: selectEl.value || null, backend: document.getElementById("sceneLateUpscaleBackend")?.value || undefined }),
             });
-            const actData = await actResp.json();
-            if (actData.success) {
-              // Record history before mutating scene params
-              recordHistorySnapshot(`Restore Take ${chosenTake.take_number} for Scene ${scene.id}`);
-
-              // Update in-memory scene attributes
-              const restored = actData.restored_params || {};
-              if (restored.prompt !== undefined) scene.prompt = restored.prompt;
-              if (restored.prompt_m !== undefined) scene.prompt_m = restored.prompt_m;
-              if (restored.prompt_f !== undefined) scene.prompt_f = restored.prompt_f;
-              if (restored.seed !== undefined) scene.seed = restored.seed;
-              if (restored.video_renderer !== undefined) scene.video_renderer = restored.video_renderer;
-              if (restored.mode !== undefined) scene.mode = restored.mode;
-              if (restored.stem !== undefined) scene.stem = restored.stem;
-              if (restored.anchor !== undefined) scene.anchor = restored.anchor;
-              if (restored.anchor_end !== undefined) scene.anchor_end = restored.anchor_end;
-              else delete scene.anchor_end;
-              if (restored.render_pad_start !== undefined) scene.render_pad_start = restored.render_pad_start;
-              else delete scene.render_pad_start;
-              if (restored.render_pad_end !== undefined) scene.render_pad_end = restored.render_pad_end;
-              else delete scene.render_pad_end;
-
-              // Save silently to project config
-              if (typeof window.saveProjectData === "function") {
-                await window.saveProjectData(false);
-              }
-
-              // Re-select scene to refresh form controls
-              if (typeof window.selectScene === "function" && window.state.selectedSceneIdx !== null) {
-                window.selectScene(window.state.selectedSceneIdx);
-              }
-
-              // Refresh queue in console if present
-              if (typeof window.loadProjectQueue === "function") {
-                window.loadProjectQueue();
-              }
-
-              if (typeof window.showToast === "function") {
-                window.showToast(`↺ Restored Take ${chosenTake.take_number} as Active!`);
-              }
-            } else {
-              alert("Failed to restore take: " + (actData.error || "Unknown error"));
-            }
-          } catch (err) {
-            alert("Error restoring take: " + err.message);
-          } finally {
-            btnRestore.disabled = false;
-            btnRestore.textContent = "↺ Restore Take as Active";
-          }
+            const upData = await upResp.json();
+            if (upData.success) window.showToast?.(`✨ Started ${[method, ai_refiner].filter(Boolean).join(" + ")} on ${scene.id} (watch Live Logs).`);
+            else alert("Upscale/Filter failed: " + (upData.error || "Unknown error"));
+          } catch (err) { alert("Upscale request failed: " + err.message); }
+          finally { btnUpscale.disabled = Boolean(scene.locked); btnUpscale.textContent = "✨ Upscale / Filter"; }
         };
       }
-    } catch (err) {
-      console.warn("[Takes UI] Failed to load takes:", err);
-      tray.style.display = "none";
-    }
+      window.syncTakeRepairUI?.(scene);
+      window.applyInspectorLockState?.(scene);
+    } catch (err) { console.warn("[Takes UI] Failed to load takes:", err); tray.style.display = "none"; }
   }
 
-  function renderSelectedTakeState(scene) {
+  function renderSelectedTakeState(scene, updateVideo = true) {
     const selectEl = document.getElementById("sceneTakeSelect");
     const btnRestore = document.getElementById("btnRestoreTake");
+    const btnDeleteTake = document.getElementById("btnDeleteTake");
+    const listEl = document.getElementById("sceneTakesList");
     const diffEl = document.getElementById("takeDiffSummary");
     const videoPlayer = document.getElementById("clipVideoPlayer");
     const clipBadge = document.getElementById("clipStatusBadge");
-
     if (!selectEl || !currentTakesData) return;
-    const selectedTakeId = selectEl.value;
-    const chosenTake = (currentTakesData.takes || []).find((t) => t.take_id === selectedTakeId);
+    const chosenTake = (currentTakesData.takes || []).find((t) => t.take_id === selectEl.value);
     if (!chosenTake) return;
 
     const isActive = chosenTake.take_id === currentTakesData.active_take_id;
+    const { diffs } = computeSceneTakeDiffs(scene, chosenTake);
+    updateRevertHeaderBtn(scene);
 
-    if (isActive) {
-      if (btnRestore) btnRestore.style.display = "none";
-      if (diffEl) {
-        diffEl.innerHTML = `<span style="color: #10b981; font-weight: 600;">✓ Active Take on Timeline</span> &bull; Rendered ${chosenTake.created_at || ""}`;
-      }
-      if (clipBadge) {
-        clipBadge.textContent = "Active Take";
-        clipBadge.style.background = "#10b981";
-      }
-      // Preview active file normal stream
-      if (videoPlayer) {
-        const outName = scene.output_name || scene.id;
-        videoPlayer.src = `/media/${encodeURIComponent(window.state.currentSlug)}/clip/${encodeURIComponent(outName)}?t=${Date.now()}`;
-        videoPlayer.load();
-      }
-    } else {
-      if (btnRestore) btnRestore.style.display = "inline-block";
-      if (clipBadge) {
-        clipBadge.textContent = `Take ${chosenTake.take_number} (Vault)`;
-        clipBadge.style.background = "#8b5cf6";
-      }
-      // Preview historical take file directly using ?take= param
-      if (videoPlayer) {
-        const outName = scene.output_name || scene.id;
-        videoPlayer.src = `/media/${encodeURIComponent(window.state.currentSlug)}/clip/${encodeURIComponent(outName)}?take=${encodeURIComponent(chosenTake.take_id)}`;
-        videoPlayer.load();
-      }
-
-      // Compute diff summary vs active scene
-      if (diffEl) {
-        const diffs = [];
-        const curPrompt = (scene.prompt || scene.prompt_m || "").trim();
-        const takePrompt = (chosenTake.prompt || chosenTake.prompt_m || "").trim();
-        if (curPrompt !== takePrompt) {
-          diffs.push(`Prompt differed`);
-        }
-        if (chosenTake.seed !== undefined && chosenTake.seed !== scene.seed) {
-          diffs.push(`Seed: ${chosenTake.seed} (current: ${scene.seed ?? "default"})`);
-        }
-        if (chosenTake.model_type && chosenTake.model_type !== (scene.video_renderer || "")) {
-          diffs.push(`Model: ${chosenTake.model_type}`);
-        }
-        if (chosenTake.duration && Math.abs(chosenTake.duration - (scene.end - scene.start)) > 0.05) {
-          diffs.push(`Duration: ${chosenTake.duration}s`);
-        }
-        const snapEnd = chosenTake.scene_snapshot?.anchor_end || "";
-        const curEnd = scene.anchor_end || "";
-        if (snapEnd !== curEnd) {
-          diffs.push(`End Anchor: ${snapEnd || "None"}`);
-        }
-        const snapPadStart = chosenTake.scene_snapshot?.render_pad_start ?? "";
-        const curPadStart = scene.render_pad_start ?? "";
-        const snapPadEnd = chosenTake.scene_snapshot?.render_pad_end ?? "";
-        const curPadEnd = scene.render_pad_end ?? "";
-        if (snapPadStart !== curPadStart || snapPadEnd !== curPadEnd) {
-          diffs.push(`Pad: Head +${snapPadStart || 0}s / Tail +${snapPadEnd || 0}s (current: +${curPadStart || 0}s / +${curPadEnd || 0}s)`);
-        }
-
-        const diffStr = diffs.length > 0 ? diffs.join(" &bull; ") : "Identical settings to current";
-        diffEl.innerHTML = `<span style="color: #a78bfa; font-weight: 600;">Historical Take:</span> ${diffStr} <span style="color: var(--text-muted); margin-left: 6px;">(${chosenTake.created_at || ""})</span>`;
+    if (btnRestore) {
+      btnRestore.style.display = (!isActive || diffs.length > 0) ? "inline-block" : "none";
+      btnRestore.textContent = isActive ? "↺ Revert Scene to Rendered" : "↺ Restore Take as Active";
+      btnRestore.disabled = Boolean(scene.locked);
+    }
+    if (btnDeleteTake) {
+      btnDeleteTake.disabled = Boolean(scene.locked);
+      btnDeleteTake.onclick = () => window.deleteSceneTake?.(scene, chosenTake, btnDeleteTake);
+    }
+    if (listEl && window.renderTakesListItems) {
+      window.renderTakesListItems(listEl, scene, currentTakesData, chosenTake.take_id, (t) => {
+        selectEl.value = t.take_id;
+        renderSelectedTakeState(scene, true);
+      });
+    }
+    if (clipBadge) {
+      clipBadge.textContent = isActive ? (diffs.length > 0 ? "Active Clip (Edited)" : "Active Take") : `Take ${chosenTake.take_number} (Vault)`;
+      clipBadge.style.background = isActive ? (diffs.length > 0 ? "#d97706" : "#10b981") : "#8b5cf6";
+    }
+    if (updateVideo && videoPlayer) {
+      const outName = chosenTake.out_name || scene.output_name || scene.id;
+      const newSrc = `/media/${encodeURIComponent(window.state.currentSlug)}/clip/${encodeURIComponent(outName)}?take=${encodeURIComponent(chosenTake.take_id)}&t=${Date.now()}`;
+      videoPlayer.setAttribute("data-loaded-src", newSrc);
+      videoPlayer.src = newSrc;
+      videoPlayer.load();
+      const infoEl = document.getElementById("clipFileInfo");
+      if (infoEl && chosenTake.out_name) {
+        const szMb = chosenTake.size_bytes ? ` (${(chosenTake.size_bytes / (1024 * 1024)).toFixed(1)} MB)` : "";
+        infoEl.textContent = `${chosenTake.out_name}.mp4${szMb}`;
       }
     }
+    if (diffEl) {
+      const dt = formatTakeDate(chosenTake), dStr = diffs.map(escapeHtmlText).join(" &bull; ");
+      if (isActive && diffs.length === 0) diffEl.innerHTML = `<span style="color: #10b981; font-weight: 600;">✓ Active Take on Timeline</span> &bull; Rendered ${dt}`;
+      else if (isActive) diffEl.innerHTML = `<span style="color: #f59e0b; font-weight: 600;">⚠ Edited since Take ${chosenTake.take_number} rendered:</span> ${dStr} <span style="color: var(--text-muted);">(${dt})</span>`;
+      else diffEl.innerHTML = `<span style="color: #a78bfa; font-weight: 600;">Historical Take:</span> ${dStr || "Identical settings to current"} <span style="color: var(--text-muted); margin-left: 6px;">(${dt})</span>`;
+    }
+    const toggleRepBtn = document.getElementById("btnToggleLipSyncRepair");
+    if (toggleRepBtn) {
+      const isP1 = chosenTake.pass_num === 1 || String(chosenTake.out_name || "").includes("_Pass1_");
+      toggleRepBtn.dataset.forceDisabled = isP1 ? "1" : "";
+      toggleRepBtn.title = isP1 ? "Select the Pass 2 / Final take to repair lip-sync" : "Repair a single singer's lip-sync via cropped ROI without re-rendering Pass 1";
+      const bar = document.getElementById("lipSyncRepairBar");
+      if (isP1 && bar) bar.style.display = "none";
+    }
+    window.applyInspectorLockState?.(scene);
   }
 
   window.updateSceneTakesUI = updateSceneTakesUI;
+  window.refreshTakeDiffUI = () => {
+    const sc = window.state?.projectData?.scenes?.[window.state?.selectedSceneIdx];
+    if (sc && currentTakesData && currentTakesSceneId === sc.id) renderSelectedTakeState(sc, false);
+  };
 
   // =========================================================================
   // Tier 3: Project-Level Checkpoints Modal
@@ -661,7 +753,7 @@
         listEl.appendChild(item);
       });
     } catch (err) {
-      listEl.innerHTML = `<div style="color: #ef4444; padding: 12px;">Error: ${err.message}</div>`;
+      listEl.innerHTML = `<div style="color: #ef4444; padding: 12px;">Error: ${escapeHtmlText(err.message)}</div>`;
     }
   }
 
@@ -674,23 +766,12 @@
 
     try {
       const resp = await fetch("/api/checkpoints/create", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project: window.state.currentSlug,
-          name: name.trim() || "Manual Checkpoint",
-          comment: (comment || "").trim(),
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: window.state.currentSlug, name: name.trim() || "Manual Checkpoint", comment: (comment || "").trim() }),
       });
       const data = await resp.json();
-      if (data.success) {
-        if (typeof window.showToast === "function") {
-          window.showToast("✓ Checkpoint created successfully!");
-        }
-        await refreshCheckpointsList();
-      } else {
-        alert("Failed to create checkpoint: " + (data.error || "Unknown error"));
-      }
+      if (data.success) { window.showToast?.("✓ Checkpoint created successfully!"); await refreshCheckpointsList(); }
+      else alert("Failed to create checkpoint: " + (data.error || "Unknown error"));
     } catch (err) {
       alert("Error creating checkpoint: " + err.message);
     }
@@ -698,28 +779,18 @@
 
   async function rollbackToCheckpoint(cp) {
     if (!window.state || !window.state.currentSlug) return;
-    const confirmMsg = `Rollback project to checkpoint '${cp.name}'?\n\nA pre-rollback safety snapshot will be created automatically so you can undo this rollback if needed.`;
-    if (!confirm(confirmMsg)) return;
+    if (!confirm(`Rollback project to checkpoint '${cp.name}'?\n\nA pre-rollback safety snapshot will be created automatically so you can undo this rollback if needed.`)) return;
 
     try {
       const resp = await fetch("/api/checkpoints/rollback", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project: window.state.currentSlug,
-          checkpoint_id: cp.id,
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project: window.state.currentSlug, checkpoint_id: cp.id }),
       });
       const data = await resp.json();
       if (data.success) {
-        if (typeof window.showToast === "function") {
-          window.showToast("✓ Project rolled back successfully!");
-        }
+        window.showToast?.("✓ Project rolled back successfully!");
         closeCheckpointsModal();
-        // Reload project to update all views
-        if (typeof window.selectProject === "function") {
-          await window.selectProject(window.state.currentSlug);
-        }
+        if (typeof window.selectProject === "function") await window.selectProject(window.state.currentSlug);
       } else {
         alert("Rollback failed: " + (data.error || "Unknown error"));
       }
@@ -729,47 +800,35 @@
   }
 
   function escapeHtmlText(str) {
-    if (!str) return "";
-    return String(str)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+    return str ? String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;") : "";
   }
-
   window.openCheckpointsModal = openCheckpointsModal;
   window.closeCheckpointsModal = closeCheckpointsModal;
 
-  // =========================================================================
-  // Initialize UI Bindings
-  // =========================================================================
   function initTakesAndHistoryUI() {
-    const btnUndo = document.getElementById("btnUndo") || document.getElementById("btnTimelineUndo");
-    const btnRedo = document.getElementById("btnRedo") || document.getElementById("btnTimelineRedo");
-    const btnModalOpen = document.getElementById("btnCheckpointsModal") || document.getElementById("btnOpenCheckpoints");
-    const btnModalClose = document.getElementById("btnCloseCheckpointsModal");
-    const btnCreateCp = document.getElementById("btnCreateCheckpoint");
-    const btnDiscard = document.getElementById("btnDiscardChanges");
-
-    if (btnUndo) btnUndo.onclick = () => performUndo();
-    if (btnRedo) btnRedo.onclick = () => performRedo();
-    if (btnModalOpen) btnModalOpen.onclick = () => openCheckpointsModal();
-    if (btnModalClose) btnModalClose.onclick = () => closeCheckpointsModal();
-    if (btnCreateCp) btnCreateCp.onclick = () => createManualCheckpoint();
-    if (btnDiscard) {
-      btnDiscard.onclick = () => {
-        if (confirm("Discard all unsaved edits and revert back to the last saved state?")) {
-          discardUnsavedChanges();
-        }
-      };
+    const bindClick = (ids, fn) => {
+      const el = ids.map((id) => document.getElementById(id)).find(Boolean);
+      if (el) el.onclick = fn;
+    };
+    bindClick(["btnUndo", "btnTimelineUndo"], () => performUndo());
+    bindClick(["btnRedo", "btnTimelineRedo"], () => performRedo());
+    bindClick(["btnCheckpointsModal", "btnOpenCheckpoints"], () => openCheckpointsModal());
+    bindClick(["btnCloseCheckpointsModal"], () => closeCheckpointsModal());
+    bindClick(["btnCreateCheckpoint"], () => createManualCheckpoint());
+    bindClick(["btnDiscardChanges"], () => {
+      if (confirm("Discard all unsaved edits and revert back to the last saved state?")) discardUnsavedChanges();
+    });
+    const formEl = document.getElementById("inspectorForm");
+    if (formEl) {
+      let tmr = null;
+      const sched = () => { clearTimeout(tmr); tmr = setTimeout(() => window.refreshTakeDiffUI?.(), 100); };
+      formEl.addEventListener("input", sched);
+      formEl.addEventListener("change", sched);
+      formEl.addEventListener("click", (e) => { if (e.target?.closest("button, .label-actions span")) sched(); });
     }
-
     updateHistoryButtons();
   }
 
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initTakesAndHistoryUI);
-  } else {
-    initTakesAndHistoryUI();
-  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initTakesAndHistoryUI);
+  else initTakesAndHistoryUI();
 })();

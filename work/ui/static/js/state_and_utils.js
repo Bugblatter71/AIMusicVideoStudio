@@ -25,7 +25,7 @@ const state = {
   draggedBoundaryIdx: null,
   hoveredBoundaryIdx: null,
   renderQueue: [],
-  queueFilter: "all",
+  queueFilter: "queued",
   activeRenderTask: null,
   renderTimerInterval: null,
   renderStartTime: null,
@@ -333,6 +333,7 @@ async function selectProject(slug, configFile = null) {
     if (typeof window.loadProjectCharacters === "function") {
       window.loadProjectCharacters(slug);
     }
+    window.dispatchEvent(new CustomEvent("projectLoaded", { detail: { slug } }));
 
     showToast(`Loaded: ${state.projectData.project?.name || slug} (${state.currentConfigFile})`);
   } catch (err) {
@@ -368,7 +369,7 @@ async function refreshProjectAssets(silent = false) {
     }
     updateMasterVideoUI();
     loadProjectQueue(state.currentSlug);
-    if (typeof window.loadProjectCharacters === "function") {
+    if (!state.isDirty && typeof window.loadProjectCharacters === "function") {
       window.loadProjectCharacters(state.currentSlug);
     }
 
@@ -440,6 +441,11 @@ function quantizeVideoFrames(minSeconds, framesFormula = "h3", fps = 24.0, maxFr
     const k = Math.ceil((needed - 1) / 8);
     frames = 8 * k + 1;
     step = 8;
+  } else if (formula === "wan") {
+    needed = Math.max(17, needed);
+    const k = Math.ceil((needed - 1) / 4);
+    frames = 4 * k + 1;
+    step = 4;
   } else {
     const minF = formula === "h3_ref2va" ? 124 : 107;
     needed = Math.max(minF, needed);
@@ -482,7 +488,10 @@ function estimatePassRenderTime(frames, {
     const parts = String(resolution || "1344x768").toLowerCase().split("x");
     if (parts.length === 2) {
       const px = parseInt(parts[0], 10) * parseInt(parts[1], 10);
-      if (px > 0) resMult = Math.pow(px / (1344 * 768), 1.15);
+      if (px > 0) {
+        resMult = Math.pow(px / (1344 * 768), 1.15);
+        if (px > 1400000) resMult *= 1.0 + 1.40 * Math.min(1.5, (px - 1400000) / 688960);
+      }
     }
   } catch (_) {}
 
@@ -500,41 +509,19 @@ function estimatePassRenderTime(frames, {
     }
   }
 
-  let vramPagerMult = 1.0;
-  let regime = "fast_vram";
-  if (F <= 226) {
-    vramPagerMult = 1.0;
-    regime = "fast_vram";
-  } else if (windows.length === 1) {
-    const ramp = Math.min(1.0, Math.max(0.0, (F - 226.0) / (345.0 - 226.0)));
-    vramPagerMult = 1.0 + 1.40 * ramp;
-    regime = "vram_spill";
-  } else {
-    vramPagerMult = 2.76;
-    regime = "split_window";
-  }
-
+  let vramPagerMult = 1.0, regime = "fast_vram";
+  if (F <= 226) { vramPagerMult = 1.0; regime = "fast_vram"; }
+  else if (windows.length === 1) { vramPagerMult = 1.0 + 1.40 * Math.min(1.0, Math.max(0.0, (F - 226.0) / 119.0)); regime = "vram_spill"; }
+  else { vramPagerMult = 2.76; regime = "split_window"; }
   let baseSum = 0.0;
-  for (const wF of windows) {
-    const fEff = Math.max(1.0, Number(wF) + deltaF);
-    baseSum += (2.29 * fEff + 0.01224 * fEff * fEff) * vramPagerMult;
-  }
-
+  for (const wF of windows) { const fEff = Math.max(1.0, Number(wF) + deltaF); baseSum += (2.29 * fEff + 0.01224 * fEff * fEff) * vramPagerMult; }
   const estSec = Math.round(baseSum * resMult * stepMult * calibrationAlpha * 10) / 10;
   return {
-    estimated_seconds: estSec,
-    estimated_minutes: Math.round((estSec / 60.0) * 10) / 10,
-    estimated_formatted: formatDurationEstimate(estSec),
-    quantized_frames: F,
-    effective_frames: F + deltaF,
-    delta_f: deltaF,
-    window_count: windows.length,
-    is_split_window: F > 226,
-    vram_pager_mult: Number(vramPagerMult.toFixed(3)),
-    regime,
-    model_type: modelType,
-    pass_num: passNum,
-    has_end_anchor: Boolean(hasEndAnchor && passNum !== 2),
+    estimated_seconds: estSec, estimated_minutes: Math.round((estSec / 60.0) * 10) / 10,
+    estimated_formatted: formatDurationEstimate(estSec), quantized_frames: F, effective_frames: F + deltaF,
+    delta_f: deltaF, window_count: windows.length, is_split_window: F > 226,
+    vram_pager_mult: Number(vramPagerMult.toFixed(3)), regime, model_type: modelType,
+    pass_num: passNum, has_end_anchor: Boolean(hasEndAnchor && passNum !== 2),
   };
 }
 
@@ -544,8 +531,26 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
   const proj = state.projectData?.project || {};
   const models = state.projectData?.models || {};
   const resMap = { "1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1088" };
-  const rawRes = String(models.default_video_resolution || models.resolution || models.video_shared_settings?.resolution || proj.master_resolution || vs.target_resolution || "4").trim();
-  const resolution = state.models?.video_resolutions?.[rawRes]?.resolution || resMap[rawRes] || (rawRes.toLowerCase().includes("x") ? rawRes.toLowerCase() : "1344x768");
+  const resolveRenderRes = (rawVal) => {
+    if (rawVal === null || rawVal === undefined) return "";
+    const s = String(rawVal).trim();
+    if (!s || ["default", "inherit", "none", "null"].includes(s.toLowerCase())) return "";
+    const mEntry = state.models?.video_resolutions?.[s] || state.models?.resolutions?.[s];
+    if (mEntry) {
+      if (mEntry.resolution) return String(mEntry.resolution).toLowerCase();
+      if (mEntry.width && mEntry.height) return `${mEntry.width}x${mEntry.height}`;
+    }
+    if (resMap[s]) return resMap[s];
+    if (s.toLowerCase().includes("x")) return s.toLowerCase();
+    return "";
+  };
+  const projDefRes = resolveRenderRes(models.default_video_resolution)
+    || resolveRenderRes(models.resolution)
+    || resolveRenderRes(models.video_shared_settings?.resolution)
+    || resolveRenderRes(vs.target_resolution)
+    || "1344x768";
+  const sceneResOverride = resolveRenderRes(sc.resolution);
+  let resolution = sceneResOverride || projDefRes;
 
   const editDur = Math.max(0.1, (Number(sc.end) || 0) - (Number(sc.start) || 0));
   const defOverlap = Number(proj.render_overlap_seconds ?? vs.default_head_pad_sec ?? 0);
@@ -576,10 +581,19 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
 
   const mode = sc.mode || "solo";
   const isTwoPass = ["duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"].includes(mode);
-  const vModels = state.models?.video_renderers || {};
-  const projVModels = models.video_renderers || {};
-  const defRid = String(models.default_video_renderer || 1);
-
+  const vModels = state.models?.video_renderers || {}, projVModels = models.video_renderers || {}, defRid = String(models.default_video_renderer || 1);
+  const defBk = String(state.falStatus?.default_execution_backend || models.default_backend || "local").toLowerCase();
+  const resolvePassRoiRes = (pNum, baseRes, bk) => {
+    const r = String(sc.pass2_roi_mode || "full").trim().toLowerCase();
+    if (pNum !== 2 || bk !== "local" || !baseRes.includes("x") || ["full", "full_frame", "none", "off", ""].includes(r)) return baseRes;
+    const [w, h] = baseRes.split("x").map((v) => parseInt(v, 10) || 0);
+    if (!w || !h) return baseRes;
+    const sx = Math.max(0.15, Math.min(0.85, Number(sc.split_x ?? 0.5))), side = String(sc.pass2_roi_side || "right").toLowerCase();
+    const snap = (v, m) => Math.max(Math.min((m >> 5) << 5, 256), Math.min((m >> 5) << 5, Math.round(v / 32) * 32));
+    if (r === "tight_performer" || r === "tight") { const hw = side === "left" ? w * sx : w * (1 - sx); return `${snap(Math.max(hw * 0.9, w * 0.45), w)}x${snap(h * 0.72, h)}`; }
+    const cw = snap(side === "left" ? w * sx : w * (1 - sx), w), ch = (h >> 4) << 4;
+    return `${cw}x${ch}`;
+  };
   const buildPassEst = (pNum) => {
     const rawR = (pNum === 1 ? sc.renderer_m : pNum === 2 ? sc.renderer_f : sc.renderer) ?? sc.renderer;
     const rId = rawR !== null && rawR !== undefined && !["", "0", "none", "null", "default"].includes(String(rawR).trim().toLowerCase()) ? String(rawR).trim() : defRid;
@@ -588,25 +602,31 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
     const isRef2va = ["9", "10", "11", "12", "13"].includes(rId) || String(rModel).toLowerCase().includes("ref2va");
     const isLtx2 = ["14", "15", "16"].includes(rId) || String(rModel).toLowerCase().includes("ltx");
     const formula = rSpec.frames_formula || (isLtx2 ? "ltx2" : isRef2va ? "h3_ref2va" : "h3");
-    const qInfo = quantizeVideoFrames(effectiveSec, formula, fps);
+    const qInfo = quantizeVideoFrames(effectiveSec, formula, Number(rSpec.force_fps) || fps);
     const modelType = rModel || (isRef2va ? "minimax_h3_ref2va_pruned_ptd_refasymopd" : "minimax_h3_fl2va_pruned_pdd");
     const steps = Number(sc.num_inference_steps || rSpec.num_inference_steps || (["5", "6", "7", "8", "13"].includes(rId) ? 20 : 8));
     const wSize = Number(sc.sliding_window_size || rSpec.sliding_window_size || (formula === "ltx2" ? 241 : 362));
     const wOvlp = Number(sc.sliding_window_overlap || rSpec.sliding_window_overlap || (formula === "ltx2" ? 9 : 18));
-    const est = estimatePassRenderTime(qInfo.frames, {
-      modelType, passNum: pNum, hasEndAnchor: hasEndAnchor && pNum !== 2, resolution, steps,
-      slidingWindowSize: wSize, slidingWindowOverlap: wOvlp, calibrationAlpha: alpha,
-    });
-    est.model_id = rId;
-    est.model_name = rSpec.name || `Model #${rId}`;
-    est.next_quantum_max_sec = qInfo.nextQuantumMaxSec;
-    est.quantum_step = qInfo.step;
+    const baseRes = sceneResOverride || resolveRenderRes(rSpec.resolution) || projDefRes;
+    const passBk = String(sc.backend || rSpec.backend || defBk).toLowerCase();
+    const effRes = resolvePassRoiRes(pNum, baseRes, passBk);
+    const passAlpha = Math.max(0.4, Math.min(4.0, Number(state.calibrationAlphaByRes?.[effRes] ?? (passBk === "local" ? alpha : 1.0)) || 1.0));
+    const est = estimatePassRenderTime(qInfo.frames, { modelType, passNum: pNum, hasEndAnchor: hasEndAnchor && pNum !== 2, resolution: effRes, steps, slidingWindowSize: wSize, slidingWindowOverlap: wOvlp, calibrationAlpha: passAlpha });
+    if (passBk === "fal" || passBk === "minimax") {
+      const chunks = effectiveSec > 15 ? Math.max(1, Math.floor((effectiveSec + 14.99) / 15)) : 1;
+      const baseS = (baseRes.includes("1088") || baseRes.includes("1080")) ? 285 : (baseRes.includes("768") ? 120 : 75);
+      est.estimated_seconds = Number((chunks * Math.max(45, baseS * Math.max(0.8, (effectiveSec / chunks) / 7.5))).toFixed(1));
+      est.estimated_minutes = Math.round((est.estimated_seconds / 60) * 10) / 10; est.estimated_formatted = formatDurationEstimate(est.estimated_seconds);
+    }
+    est.resolution = effRes; est.model_id = rId; est.model_name = rSpec.name || `Model #${rId}`;
+    est.next_quantum_max_sec = qInfo.nextQuantumMaxSec; est.quantum_step = qInfo.step;
     return est;
   };
 
   const passes = isTwoPass ? [buildPassEst(1), buildPassEst(2)] : [buildPassEst(null)];
   const totalSec = Number(passes.reduce((acc, p) => acc + p.estimated_seconds, 0).toFixed(1));
   const p0 = passes[0];
+  resolution = p0.resolution || resolution;
 
   let splitSavingsSec = 0;
   if (!_skipSplitCalc && p0.is_split_window && editDur >= 2.0) {
@@ -653,5 +673,165 @@ window.formatDurationEstimate = formatDurationEstimate;
 window.quantizeVideoFrames = quantizeVideoFrames;
 window.estimatePassRenderTime = estimatePassRenderTime;
 window.estimateSceneRenderInfo = estimateSceneRenderInfo;
+
+(function wireNewProjectButton() {
+  const btnNew = document.getElementById("btnNewProject");
+  if (!btnNew || btnNew.dataset.wired) return;
+  btnNew.dataset.wired = "1";
+  btnNew.addEventListener("click", async () => {
+    const rawName = prompt("Enter slug or name for the new project (e.g. my_song):");
+    if (!rawName || !rawName.trim()) return;
+    try {
+      const res = await fetch("/api/projects/new", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: rawName.trim() }),
+      });
+      const json = await res.json();
+      if (!json.success) {
+        alert(`Failed to create project: ${json.error || "Unknown error"}`);
+        return;
+      }
+      await loadProjects();
+      const sel = document.getElementById("projectSelect");
+      if (sel && json.slug) {
+        const matchOpt = Array.from(sel.options).find((o) => o.value.startsWith(`${json.slug}:::`));
+        if (matchOpt) {
+          sel.value = matchOpt.value;
+          const [sSlug, sCfg] = matchOpt.value.split(":::");
+          await selectProject(sSlug, sCfg);
+        }
+      }
+      showToast(`Created project: ${json.slug}`);
+    } catch (err) {
+      alert(`Error creating project: ${err.message}`);
+    }
+  });
+})();
+
+let _splitModalCtx = null;
+function openSplitSceneModal(sc, start, end, defT, onConfirm) {
+  let modal = document.getElementById("splitSceneModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "splitSceneModal";
+    modal.style.cssText = "display:none;position:fixed;inset:0;background:rgba(0,0,0,0.68);z-index:9999;align-items:center;justify-content:center;backdrop-filter:blur(2px);";
+    modal.innerHTML = `<div style="background:#1e293b;border:1px solid #475569;border-radius:8px;width:410px;max-width:92vw;padding:18px;box-shadow:0 12px 32px rgba(0,0,0,0.65);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <h4 id="splitSceneModalTitle" style="margin:0;color:#38bdf8;font-size:15px;font-weight:700;"></h4>
+        <button type="button" id="btnSplitModalClose" style="background:transparent;border:none;color:#94a3b8;font-size:20px;cursor:pointer;line-height:1;">&times;</button>
+      </div>
+      <div id="splitSceneRange" style="font-size:12px;color:#cbd5e1;margin-bottom:10px;"></div>
+      <div class="form-group" style="margin-bottom:10px;">
+        <label for="splitTimeInput">Split Timestamp (seconds)</label>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input type="number" id="splitTimeInput" step="0.01" style="flex:1;">
+          <button type="button" class="btn btn-sm" id="btnSplitUsePlayhead" style="padding:4px 8px;font-size:11px;">⏱ Playhead</button>
+          <button type="button" class="btn btn-sm" id="btnSplitUseMidpoint" style="padding:4px 8px;font-size:11px;">➗ Mid</button>
+        </div>
+      </div>
+      <div id="splitPreviewText" style="font-size:11px;color:#94a3b8;background:#0f172a;border:1px solid #334155;border-radius:5px;padding:7px 9px;margin-bottom:14px;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button type="button" class="btn" id="btnCancelSplitScene">Cancel</button>
+        <button type="button" class="btn btn-primary" id="btnConfirmSplitScene">✂️ Split Scene</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    const close = () => { modal.style.display = "none"; _splitModalCtx = null; };
+    const confirm = () => {
+      if (!_splitModalCtx) return;
+      const t = parseFloat(parseFloat(document.getElementById("splitTimeInput")?.value).toFixed(3));
+      const { start: s, end: e, onConfirm: cb } = _splitModalCtx;
+      if (isNaN(t) || t <= s + 0.05 || t >= e - 0.05) { showToast(`Invalid split time. Must be strictly between ${(s + 0.05).toFixed(2)}s and ${(e - 0.05).toFixed(2)}s.`); return; }
+      close(); cb(t);
+    };
+    modal.addEventListener("click", (ev) => { if (ev.target === modal) close(); });
+    document.getElementById("btnSplitModalClose").onclick = close;
+    document.getElementById("btnCancelSplitScene").onclick = close;
+    document.getElementById("btnConfirmSplitScene").onclick = confirm;
+    const setSplitVal = (v) => { const inp = document.getElementById("splitTimeInput"); inp.value = v.toFixed(2); inp.dispatchEvent(new Event("input")); };
+    document.getElementById("btnSplitUseMidpoint").onclick = () => { if (_splitModalCtx) setSplitVal((_splitModalCtx.start + _splitModalCtx.end) / 2.0); };
+    document.getElementById("btnSplitUsePlayhead").onclick = () => { if (_splitModalCtx && _splitModalCtx.playT !== null) setSplitVal(_splitModalCtx.playT); };
+    const inp = document.getElementById("splitTimeInput");
+    inp.addEventListener("input", () => {
+      if (!_splitModalCtx) return;
+      const prev = document.getElementById("splitPreviewText"), t = parseFloat(inp.value), { start: s, end: e } = _splitModalCtx;
+      prev.textContent = (isNaN(t) || t <= s + 0.05 || t >= e - 0.05)
+        ? `Enter a timestamp between ${(s + 0.05).toFixed(2)}s and ${(e - 0.05).toFixed(2)}s.`
+        : `Part 1: ${s.toFixed(2)}s – ${t.toFixed(2)}s (${(t - s).toFixed(2)}s)  |  Part 2: ${t.toFixed(2)}s – ${e.toFixed(2)}s (${(e - t).toFixed(2)}s)`;
+    });
+    inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); confirm(); } else if (ev.key === "Escape") { ev.preventDefault(); close(); } });
+  }
+  const playT = (typeof state.playheadTime === "number" && state.playheadTime > start + 0.05 && state.playheadTime < end - 0.05)
+    ? state.playheadTime : (audioEl && audioEl.currentTime > start + 0.05 && audioEl.currentTime < end - 0.05) ? audioEl.currentTime : null;
+  _splitModalCtx = { start, end, playT, onConfirm };
+  document.getElementById("splitSceneModalTitle").textContent = `✂️ Split Scene "${sc.id}"`;
+  document.getElementById("splitSceneRange").textContent = `Range: ${start.toFixed(2)}s – ${end.toFixed(2)}s (Duration: ${(end - start).toFixed(2)}s)`;
+  const phBtn = document.getElementById("btnSplitUsePlayhead");
+  if (phBtn) phBtn.style.display = playT !== null ? "inline-flex" : "none";
+  const inp = document.getElementById("splitTimeInput");
+  inp.min = (start + 0.06).toFixed(2); inp.max = (end - 0.06).toFixed(2); inp.value = defT.toFixed(2);
+  inp.dispatchEvent(new Event("input")); modal.style.display = "flex";
+  setTimeout(() => { inp.focus(); inp.select(); }, 0);
+}
+window.openSplitSceneModal = openSplitSceneModal;
+
+function syncMasterLoopUI() {
+  const badge = document.getElementById("masterLoopBadge"), txt = document.getElementById("masterLoopText");
+  const loopSc = state.masterLoopSceneId ? (state.projectData?.scenes || []).find((s) => s.id === state.masterLoopSceneId) : null;
+  if (badge && txt) { txt.textContent = loopSc ? `🔁 Looping ${loopSc.id} (${Number(loopSc.start || 0).toFixed(2)}s–${Number(loopSc.end || 0).toFixed(2)}s)` : ""; badge.style.display = loopSc ? "inline-flex" : "none"; }
+  document.querySelectorAll?.(".scene-card[data-scene-id]").forEach((card) => {
+    const isL = Boolean(loopSc && card.dataset.sceneId === loopSc.id), btn = card.querySelector("[data-action='repeat']");
+    if (btn) { btn.textContent = isL ? "🔁 Looping" : "🔁 Repeat"; btn.style.cssText = isL ? "color:#7dd3fc;border-color:rgba(56,189,248,0.65);background:rgba(14,165,233,0.22);padding:2px 7px;font-size:10px;font-weight:700;" : "padding:2px 7px;font-size:10px;color:#cbd5e1;"; }
+  });
+  window.redrawTimeline?.(); window.syncSceneJumpBarHighlight?.();
+}
+function clearMasterSceneLoop() { state.masterLoopSceneId = null; syncMasterLoopUI(); }
+function enforceMasterSceneLoop(mv) {
+  if (!mv || !state.masterLoopSceneId) return false;
+  const sc = (state.projectData?.scenes || []).find((s) => s.id === state.masterLoopSceneId);
+  if (!sc) { clearMasterSceneLoop(); return false; }
+  const startT = Math.max(0, Number(sc.start || 0)), rawEnd = Math.max(startT, Number(sc.end || 0));
+  const endT = (mv.duration && isFinite(mv.duration)) ? Math.min(mv.duration, rawEnd) : rawEnd;
+  if (endT > startT + 0.05 && (!mv.paused || mv.ended) && (mv.currentTime >= endT - 0.03 || mv.ended)) {
+    try { mv.currentTime = startT; } catch (e) {}
+    if (mv.ended) mv.play?.().catch?.(() => {});
+    return true;
+  }
+  return false;
+}
+function focusSceneInTimeline(idx) {
+  const sc = state.projectData?.scenes?.[idx];
+  if (!sc) return;
+  const tStart = Math.max(0, Number(sc.start || 0)), tEnd = Math.max(tStart, Number(sc.end || 0));
+  const seekT = tEnd > tStart + 0.002 ? Math.min(tEnd - 0.001, tStart + 0.001) : tStart;
+  if (typeof window.selectScene === "function") window.selectScene(idx); else state.selectedSceneIdx = idx;
+  if (typeof seekTimeline === "function") seekTimeline(seekT, null, false);
+  if (typeof scrollContainer !== "undefined" && scrollContainer) {
+    const pps = (state.pixelsPerSecond || 60) * (state.zoom || 1), cw = scrollContainer.clientWidth || 600;
+    scrollContainer.scrollLeft = Math.max(0, tStart * pps - Math.min(80, Math.round(cw * 0.12)));
+  }
+  window.redrawTimeline?.();
+}
+function toggleSceneMasterLoop(idx) {
+  const sc = state.projectData?.scenes?.[idx];
+  if (!sc) return;
+  if (state.masterLoopSceneId === sc.id) { clearMasterSceneLoop(); return; }
+  state.masterLoopSceneId = sc.id; focusSceneInTimeline(idx);
+  const startT = Math.max(0, Number(sc.start || 0)), clipVid = document.getElementById("clipVideoPlayer");
+  if (typeof audioEl !== "undefined" && audioEl && !audioEl.paused) audioEl.pause();
+  if (clipVid && !clipVid.paused) clipVid.pause();
+  state._masterPrevTime = startT; state._masterWasPlaying = true;
+  if (!document.getElementById("tab-master")?.classList.contains("active")) window.switchTab?.("master");
+  const mv = document.getElementById("masterVideoPlayer");
+  if (mv && mv.getAttribute("src")) {
+    const go = () => { try { mv.currentTime = startT; } catch (e) {} mv.play?.().catch?.(() => {}); };
+    if (mv.readyState >= 1) go(); else mv.addEventListener?.("loadedmetadata", go, { once: true });
+  } else { showToast?.(`🔁 Loop set to ${sc.id} (${startT.toFixed(2)}s–${Number(sc.end || 0).toFixed(2)}s)`); }
+  syncMasterLoopUI();
+}
+document.getElementById("btnClearMasterLoop")?.addEventListener("click", clearMasterSceneLoop);
+window.addEventListener?.("projectLoaded", clearMasterSceneLoop);
+Object.assign(window, { syncMasterLoopUI, clearMasterSceneLoop, enforceMasterSceneLoop, focusSceneInTimeline, toggleSceneMasterLoop });
 
 

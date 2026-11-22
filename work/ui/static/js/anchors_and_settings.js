@@ -1,56 +1,172 @@
 // ============================================================================
 // Anchor Studio View
 // ============================================================================
+function compareAnchorIdsNatural(aId, bId) {
+  const pa = String(aId || "").match(/^A(\d+)([a-z]?)$/i);
+  const pb = String(bId || "").match(/^A(\d+)([a-z]?)$/i);
+  if (pa && pb) {
+    const na = parseInt(pa[1], 10);
+    const nb = parseInt(pb[1], 10);
+    if (na !== nb) return na - nb;
+    return (pa[2] || "").localeCompare(pb[2] || "");
+  }
+  if (pa) return -1;
+  if (pb) return 1;
+  return String(aId || "").localeCompare(String(bId || ""));
+}
+
+function findDiskAnchorInfo(diskAnchors, filename, aid) {
+  let diskInfo = (filename ? diskAnchors[filename] : null) || (aid ? diskAnchors[aid] : null);
+  if (!diskInfo && aid) {
+    const matchedKey = Object.keys(diskAnchors).find(
+      (k) => extractAnchorId(k) === aid || k.startsWith(`${aid} `) || k.startsWith(`${aid}_`) || k.startsWith(`${aid}-`)
+    );
+    if (matchedKey) diskInfo = diskAnchors[matchedKey];
+  }
+  return diskInfo || null;
+}
+
+function getMergedAnchorsList() {
+  const configAnchors = state.projectData?.anchors || [];
+  const diskAnchors = state.assets?.anchors || {};
+  const seenAids = new Set();
+  const seenNames = new Set();
+  const merged = [];
+
+  configAnchors.forEach((a, idx) => {
+    const aid = extractAnchorId(a.filename) || `A${String(idx + 1).padStart(2, "0")}`;
+    const diskInfo = findDiskAnchorInfo(diskAnchors, a.filename, aid);
+    const resolvedName = diskInfo?.filename || a.filename || aid;
+    if (aid) seenAids.add(aid.toUpperCase());
+    if (a.filename) seenNames.add(a.filename);
+    if (resolvedName) seenNames.add(resolvedName);
+    merged.push({
+      anchor: a,
+      aid,
+      diskInfo,
+      resolvedName,
+      valueName: a.filename || resolvedName || aid,
+      isDiskOnly: false,
+    });
+  });
+
+  const diskOnlyItems = [];
+  Object.values(diskAnchors).forEach((info) => {
+    if (!info || !info.filename) return;
+    const aid = info.aid || extractAnchorId(info.filename);
+    if (!aid || !/^A\d{2}[a-z]?$/i.test(aid)) return;
+    if (info.is_anchor_dir === false) return; // Exclude references/ and ref_sheets/
+    if (seenAids.has(aid.toUpperCase()) || seenNames.has(info.filename)) return;
+    seenAids.add(aid.toUpperCase());
+    seenNames.add(info.filename);
+    diskOnlyItems.push({
+      anchor: { filename: info.filename, seed: null, prompt: "", external: true },
+      aid,
+      diskInfo: info,
+      resolvedName: info.filename,
+      valueName: info.filename,
+      isDiskOnly: true,
+    });
+  });
+
+  diskOnlyItems.sort((x, y) => compareAnchorIdsNatural(x.aid, y.aid));
+  return merged.concat(diskOnlyItems);
+}
+
+window.registerDiskAnchor = function (filename) {
+  if (!state.projectData || !filename) return;
+  if (!Array.isArray(state.projectData.anchors)) {
+    state.projectData.anchors = [];
+  }
+  const aid = extractAnchorId(filename);
+  const exists = state.projectData.anchors.some(
+    (a) => a.filename === filename || (aid && extractAnchorId(a.filename) === aid)
+  );
+  if (exists) {
+    showToast(`Anchor [${aid || filename}] is already registered in project config.`);
+    return;
+  }
+  state.projectData.anchors.push({
+    filename,
+    seed: 42,
+    prompt: "",
+    external: true,
+  });
+  markProjectDirty();
+  window.recordHistorySnapshot?.(`Register Disk Anchor ${aid || filename}`);
+  updateAnchorStudioUI();
+  updateInspectorAnchorsDropdown();
+  showToast(`Registered [${aid || filename}] in project config — Save (💾) to persist.`);
+};
+
 function updateAnchorStudioUI() {
   const container = document.getElementById("anchorCardsContainer");
   if (!container) return;
   container.innerHTML = "";
 
-  const anchors = state.projectData?.anchors || [];
-  const diskAnchors = state.assets?.anchors || {};
+  const entries = getMergedAnchorsList();
 
-  anchors.forEach((a, idx) => {
+  entries.forEach(({ anchor: a, aid, diskInfo, resolvedName, isDiskOnly }) => {
     const card = document.createElement("div");
     card.className = "anchor-card";
-
-    const aid = extractAnchorId(a.filename) || `A${String(idx + 1).padStart(2, "0")}`;
-
-    // Multiple match strategies:
-    // 1. Direct filename match
-    // 2. Canonical aid match (A01, A02)
-    // 3. Scan disk keys for prefix
-    let diskInfo = diskAnchors[a.filename] || (aid ? diskAnchors[aid] : null);
-    if (!diskInfo && aid) {
-      const matchedKey = Object.keys(diskAnchors).find(
-        (k) => extractAnchorId(k) === aid || k.startsWith(`${aid} `) || k.startsWith(`${aid}_`) || k.startsWith(`${aid}-`)
-      );
-      if (matchedKey) {
-        diskInfo = diskAnchors[matchedKey];
-      }
-    }
-
-    const resolvedName = diskInfo?.filename || a.filename || aid;
     const anchorMtime = diskInfo?.mtime || "";
+    const safeName = escapeHtml(resolvedName);
+    const safeAid = escapeHtml(aid);
+    const badgeHtml = isDiskOnly
+      ? `<span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(16,185,129,0.18); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.4);">Disk Only</span>`
+      : a.external
+        ? `<span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: rgba(56,189,248,0.16); color: #7dd3fc; border: 1px solid rgba(56,189,248,0.35);">External</span>`
+        : `<span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #334155;">Seed: ${a.seed ?? "-"}</span>`;
 
+    const previewText = isDiskOnly
+      ? "Found in anchors folder (not yet in JSON config). Already selectable in Scene Inspector."
+      : (a.prompt ? escapeHtml(a.prompt) : "(external / no prompt)");
+
+    const encSlug = encodeURIComponent(state.currentSlug || "");
     card.innerHTML = `
       <div class="anchor-thumb">
-        <img src="/media/${state.currentSlug}/anchor/${encodeURIComponent(resolvedName)}${anchorMtime ? `?t=${anchorMtime}` : ""}" 
-             alt="${resolvedName}" 
-             loading="lazy"
-             onerror="window.handleAnchorImgError(this, '${state.currentSlug}', '${aid}')">
+        <img src="/media/${encSlug}/anchor/${encodeURIComponent(resolvedName)}${anchorMtime ? `?t=${anchorMtime}` : ""}" 
+             alt="${safeName}" 
+             loading="lazy">
       </div>
       <div class="anchor-body">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <span class="anchor-id">${aid}</span>
-          <span style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: #334155;">Seed: ${a.seed ?? "-"}</span>
+          <span class="anchor-id">${safeAid}</span>
+          ${badgeHtml}
         </div>
-        <div style="font-size: 11px; color: var(--text-main); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${resolvedName}">${resolvedName}</div>
-        <div class="anchor-prompt-preview">${a.prompt || "(no prompt)"}</div>
-        <div style="display: flex; gap: 6px; margin-top: auto;">
-          <button class="btn btn-primary" style="flex: 1;" onclick="renderSingleAnchor('${aid}')">⚡ Generate</button>
-        </div>
+        <div style="font-size: 11px; color: var(--text-main); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${safeName}">${safeName}</div>
+        <div class="anchor-prompt-preview">${previewText}</div>
+        <div class="anchor-card-actions" style="display: flex; gap: 6px; margin-top: auto;"></div>
       </div>
     `;
+    const thumbImg = card.querySelector(".anchor-thumb img");
+    if (thumbImg) thumbImg.onerror = () => window.handleAnchorImgError?.(thumbImg, state.currentSlug, aid);
+
+    const actionsEl = card.querySelector(".anchor-card-actions");
+    if (actionsEl) {
+      if (isDiskOnly) {
+        const regBtn = document.createElement("button");
+        regBtn.className = "btn";
+        regBtn.style.flex = "1";
+        regBtn.textContent = "+ Register in Project";
+        regBtn.title = "Add this disk anchor to the project JSON anchors list (optional; already usable in Scene Inspector)";
+        regBtn.addEventListener("click", () => window.registerDiskAnchor(resolvedName));
+        actionsEl.appendChild(regBtn);
+      } else if (a.external && !String(a.prompt || "").trim()) {
+        const noteSpan = document.createElement("span");
+        noteSpan.style.fontSize = "11px";
+        noteSpan.style.color = "var(--text-muted)";
+        noteSpan.textContent = "Imported disk image (selectable in Scene Inspector)";
+        actionsEl.appendChild(noteSpan);
+      } else {
+        const genBtn = document.createElement("button");
+        genBtn.className = "btn btn-primary";
+        genBtn.style.flex = "1";
+        genBtn.textContent = "⚡ Generate";
+        genBtn.addEventListener("click", () => window.renderSingleAnchor(aid));
+        actionsEl.appendChild(genBtn);
+      }
+    }
     container.appendChild(card);
   });
 }
@@ -70,7 +186,7 @@ window.handleAnchorImgError = function (imgEl, slug, aid) {
   }
 };
 
-function buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, onSelect) {
+function buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, onSelect, isDiskOnly = false) {
   const item = document.createElement("div");
   item.className = "anchor-dropdown-item";
   item.dataset.value = a.filename;
@@ -106,6 +222,17 @@ function buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, onSelect) {
   aidSpan.style.fontSize = "13px";
   aidSpan.textContent = `[${aid}]`;
   topRow.appendChild(aidSpan);
+
+  if (isDiskOnly) {
+    const badge = document.createElement("span");
+    badge.style.fontSize = "10px";
+    badge.style.padding = "1px 5px";
+    badge.style.borderRadius = "4px";
+    badge.style.background = "rgba(16,185,129,0.2)";
+    badge.style.color = "#6ee7b7";
+    badge.textContent = "Disk";
+    topRow.appendChild(badge);
+  }
 
   const nameSpan = document.createElement("div");
   nameSpan.style.color = "var(--text-main)";
@@ -155,46 +282,43 @@ function updateInspectorAnchorsDropdown() {
     menuEnd.appendChild(noneItem);
   }
 
-  const anchors = state.projectData?.anchors || [];
-  const diskAnchors = state.assets?.anchors || {};
+  const entries = getMergedAnchorsList();
 
-  anchors.forEach((a, idx) => {
-    const aid = extractAnchorId(a.filename) || `A${String(idx + 1).padStart(2, "0")}`;
-    const diskInfo = diskAnchors[a.filename] || diskAnchors[aid];
-    const resolvedName = diskInfo?.filename || a.filename;
+  entries.forEach(({ anchor: a, aid, diskInfo, resolvedName, valueName, isDiskOnly }) => {
     const anchorMtime = diskInfo?.mtime || "";
     const thumbUrl = `/media/${state.currentSlug}/anchor/${encodeURIComponent(resolvedName)}${anchorMtime ? `?t=${anchorMtime}` : ""}`;
+    const labelPrefix = isDiskOnly ? `[${aid}] ${resolvedName} (Disk)` : `[${aid}] ${resolvedName}`;
 
     // 1. Populate native selects
     if (sel) {
       const opt = document.createElement("option");
-      opt.value = a.filename;
+      opt.value = valueName;
       opt.dataset.aid = aid;
-      opt.textContent = `[${aid}] ${resolvedName}`;
+      opt.textContent = labelPrefix;
       sel.appendChild(opt);
     }
     if (selEnd) {
       const optEnd = document.createElement("option");
-      optEnd.value = a.filename;
+      optEnd.value = valueName;
       optEnd.dataset.aid = aid;
-      optEnd.textContent = `[${aid}] ${resolvedName}`;
+      optEnd.textContent = labelPrefix;
       selEnd.appendChild(optEnd);
     }
 
     // 2. Populate visual custom dropdown menus
     if (menu) {
       menu.appendChild(buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, () => {
-        if (sel) { sel.value = a.filename; sel.dispatchEvent(new Event("change", { bubbles: true })); }
-        if (typeof updateSceneAnchorPreview === "function") updateSceneAnchorPreview(a.filename);
+        if (sel) { sel.value = valueName; sel.dispatchEvent(new Event("change", { bubbles: true })); }
+        if (typeof updateSceneAnchorPreview === "function") updateSceneAnchorPreview(valueName);
         menu.style.display = "none"; menu.classList.remove("open");
-      }));
+      }, isDiskOnly));
     }
     if (menuEnd) {
       menuEnd.appendChild(buildAnchorMenuItem(a, aid, resolvedName, thumbUrl, () => {
-        if (selEnd) { selEnd.value = a.filename; selEnd.dispatchEvent(new Event("change", { bubbles: true })); }
-        if (typeof window.updateSceneEndAnchorPreview === "function") window.updateSceneEndAnchorPreview(a.filename);
+        if (selEnd) { selEnd.value = valueName; selEnd.dispatchEvent(new Event("change", { bubbles: true })); }
+        if (typeof window.updateSceneEndAnchorPreview === "function") window.updateSceneEndAnchorPreview(valueName);
         menuEnd.style.display = "none"; menuEnd.classList.remove("open");
-      }));
+      }, isDiskOnly));
     }
   });
 
@@ -259,9 +383,11 @@ if (document.readyState === "loading") {
 
 function updateInspectorStemsDropdown() {
   const stemSelects = [
-    document.getElementById("sceneStem"),
-    document.getElementById("sceneStemM"),
-    document.getElementById("sceneStemF"),
+    [document.getElementById("sceneStem"), ""],
+    [document.getElementById("sceneStemLeft"), "L: "],
+    [document.getElementById("sceneStemRight"), "R: "],
+    [document.getElementById("sceneStemM"), ""],
+    [document.getElementById("sceneStemF"), ""],
   ];
 
   const stems = [];
@@ -276,7 +402,7 @@ function updateInspectorStemsDropdown() {
   // 1. Configured stems from project JSON (e.g. male, female)
   const cfgStems = state.projectData?.project?.stems || {};
   Object.keys(cfgStems).forEach((k) => {
-    const rawFile = cfgStems[k].split("/").pop();
+    const rawFile = String(cfgStems[k] || "").split("/").pop();
     addStem(k, `${k} (${rawFile})`);
   });
 
@@ -286,13 +412,13 @@ function updateInspectorStemsDropdown() {
 
   // 2. Any additional audio files dropped into the project audio/ folder
   const audioFiles = state.assets?.audio_files || [];
-  const masterAudio = (state.projectData?.project?.master_audio || "").split("/").pop();
+  const masterAudio = String(state.projectData?.project?.master_audio || "").split("/").pop();
 
   audioFiles.forEach((fn) => {
     if (fn === masterAudio) return;
     const stemName = fn.replace(/\.[^/.]+$/, "");
     // Check if this audio file is already covered by a configured stem key
-    const isMapped = Object.values(cfgStems).some((p) => p.endsWith(fn));
+    const isMapped = Object.values(cfgStems).some((p) => String(p || "").split(/[\\/]/).pop() === fn);
     if (!isMapped) {
       addStem(stemName, `${stemName} (${fn})`);
     }
@@ -302,19 +428,20 @@ function updateInspectorStemsDropdown() {
   addStem("master", "full audio (master)");
   addStem("silent", "silent (no lip sync)");
 
-  stemSelects.forEach((sel) => {
+  stemSelects.forEach(([sel, prefix]) => {
     if (!sel) return;
     const prevVal = sel.value;
     sel.innerHTML = "";
     stems.forEach((st) => {
       const opt = document.createElement("option");
       opt.value = st.value;
-      opt.textContent = st.label;
+      opt.textContent = prefix ? `${prefix}${st.label}` : st.label;
       sel.appendChild(opt);
     });
     // Restore previous selection if valid
-    if (prevVal && stems.some((s) => s.value.toLowerCase() === prevVal.toLowerCase())) {
-      sel.value = prevVal;
+    const prevMatch = prevVal ? stems.find((s) => s.value.toLowerCase() === prevVal.toLowerCase()) : null;
+    if (prevMatch) {
+      sel.value = prevMatch.value;
     }
   });
 }
@@ -330,9 +457,40 @@ document.getElementById("btnGenAllAnchors").addEventListener("click", () => {
   triggerRender(["--anchors-only", "all-anchors"]);
 });
 
+document.getElementById("btnAddAnchor")?.addEventListener("click", async () => {
+  if (typeof refreshProjectAssets === "function") {
+    await refreshProjectAssets(true);
+  }
+  const merged = getMergedAnchorsList();
+  const diskOnly = merged.filter((x) => x.isDiskOnly).map((x) => x.aid);
+  const msg = diskOnly.length > 0
+    ? `Scanned anchors folder — discovered disk anchor(s): ${diskOnly.join(", ")} (ready in Anchor Studio & Scene Inspector).`
+    : `Scanned anchors folder (${merged.length} anchors loaded). Drop an A15_...jpg/.png file into the project's anchors folder and refresh to use it.`;
+  showToast(msg, 4500);
+});
+
 // ============================================================================
 // Project & Models Configuration
 // ============================================================================
+function _appendGroupedOptions(sel, localMap, falMap, mmMap) {
+  const appendGroup = (label, map) => {
+    const keys = Object.keys(map || {});
+    if (!keys.length) return;
+    const grp = document.createElement("optgroup");
+    grp.label = label;
+    keys.forEach((k) => {
+      const opt = document.createElement("option");
+      opt.value = k;
+      opt.textContent = (k.startsWith("fal_") || k.startsWith("minimax_api_")) ? (map[k].name || map[k].model_type || k) : `[#${k}] ${map[k].name || map[k].model_type}`;
+      grp.appendChild(opt);
+    });
+    sel.appendChild(grp);
+  };
+  appendGroup("🖥️ Local (Wan2GP)", localMap);
+  appendGroup("☁️ Cloud (fal.ai)", falMap);
+  appendGroup("🎥 Cloud (MiniMax Direct API)", mmMap);
+}
+
 function populateModelSelectors() {
   const anchorSel = document.getElementById("cfgDefaultAnchorRenderer");
   const videoSel = document.getElementById("cfgDefaultVideoRenderer");
@@ -340,21 +498,8 @@ function populateModelSelectors() {
   anchorSel.innerHTML = "";
   videoSel.innerHTML = "";
 
-  const aModels = state.models?.anchor_renderers || {};
-  Object.keys(aModels).forEach((k) => {
-    const opt = document.createElement("option");
-    opt.value = k;
-    opt.textContent = `[#${k}] ${aModels[k].name || aModels[k].model_type}`;
-    anchorSel.appendChild(opt);
-  });
-
-  const vModels = state.models?.video_renderers || {};
-  Object.keys(vModels).forEach((k) => {
-    const opt = document.createElement("option");
-    opt.value = k;
-    opt.textContent = `[#${k}] ${vModels[k].name || vModels[k].model_type}`;
-    videoSel.appendChild(opt);
-  });
+  _appendGroupedOptions(anchorSel, state.models?.anchor_renderers, state.models?.fal_anchor_renderers);
+  _appendGroupedOptions(videoSel, state.models?.video_renderers, state.models?.fal_video_renderers, state.models?.minimax_video_renderers);
 }
 
 function updateProjectSettingsUI() {
@@ -364,12 +509,36 @@ function updateProjectSettingsUI() {
   document.getElementById("cfgProjectName").value = p.name || "";
   document.getElementById("cfgMasterAudio").value = p.master_audio || "";
   document.getElementById("cfgFps").value = p.fps || 24;
-  document.getElementById("cfgFadeOut").value = p.fade_out_last_scene_seconds || 2.0;
+  document.getElementById("cfgFadeOut").value = p.fade_out_last_scene_seconds ?? 2.0;
+  const fadeEndEl = document.getElementById("cfgFadeOutEnd");
+  if (fadeEndEl) {
+    const fe = p.fade_out_end_seconds;
+    fadeEndEl.value = (fe !== undefined && fe !== null && fe !== "") ? fe : "";
+    const scs = state.projectData?.scenes || [];
+    const endS = scs.length ? Number(scs[scs.length - 1]?.end || 0) : Number(p.total_duration || 0);
+    fadeEndEl.placeholder = endS > 0 ? `End of video (${endS.toFixed(2)}s)` : "End of video";
+  }
   document.getElementById("cfgRenderOverlap").value = p.render_overlap_seconds ?? 1.0;
 
   document.getElementById("cfgDefaultAnchorRenderer").value = String(m.default_anchor_renderer || 3);
   document.getElementById("cfgDefaultVideoRenderer").value = String(m.default_video_renderer || 1);
-  document.getElementById("cfgNegativePrompt").value = m.video_shared_settings?.negative_prompt || "";
+  const vShared = m.video_shared_settings || {};
+  const rawDefUp = String(vShared.spatial_upsampling || "");
+  const isLegacy1x = ["h3facerefine", "seedvr2*1", "flashvsrplus*1", "flashvsrplus2pass*1", "ltx25_refine*1", "dlss5*1"].includes(rawDefUp.toLowerCase());
+  if (document.getElementById("cfgDefaultSpatialUpsampling")) {
+    document.getElementById("cfgDefaultSpatialUpsampling").value = isLegacy1x ? "" : rawDefUp;
+  }
+  const fShared = vShared.filters || {};
+  const ffShared = fShared.ffmpeg || {};
+  const defRefiner = (fShared.ai_refiners && fShared.ai_refiners[0]) || (isLegacy1x ? rawDefUp : "");
+  if (document.getElementById("cfgFilterAiRefiner")) document.getElementById("cfgFilterAiRefiner").value = defRefiner;
+  if (document.getElementById("cfgFilterFaceStrength")) document.getElementById("cfgFilterFaceStrength").value = fShared.face_strength ?? 0.75;
+  if (document.getElementById("cfgFilterFilmGrain")) document.getElementById("cfgFilterFilmGrain").value = fShared.film_grain_intensity ?? vShared.film_grain_intensity ?? 0;
+  if (document.getElementById("cfgFilterWindowCC")) document.getElementById("cfgFilterWindowCC").value = fShared.window_color_correction ?? vShared.sliding_window_color_correction_strength ?? 0;
+  if (document.getElementById("cfgFilterCas")) document.getElementById("cfgFilterCas").value = ffShared.cas ?? 0;
+  if (document.getElementById("cfgFilterDenoise")) document.getElementById("cfgFilterDenoise").value = ffShared.denoise ?? 0;
+  if (document.getElementById("cfgFilterDeband")) document.getElementById("cfgFilterDeband").checked = Boolean(ffShared.deband);
+  document.getElementById("cfgNegativePrompt").value = vShared.negative_prompt || "";
 
   if (document.getElementById("cfgMasterResolution")) {
     document.getElementById("cfgMasterResolution").value = p.master_resolution || "match";
@@ -388,6 +557,8 @@ function updateProjectSettingsUI() {
   if (typeof window.updateMasterResolutionInfoUI === "function") {
     window.updateMasterResolutionInfoUI();
   }
+  window.syncProjectBackendSelectors?.();
+  window.refreshFalStatus?.();
 }
 
 function renderResolutionCards(activeRes) {
@@ -410,19 +581,22 @@ function renderResolutionCards(activeRes) {
     card.className = `res-card ${isAct ? "active" : ""}`;
     card.innerHTML = `
       <div class="res-title">
-        <span>Option ${k}: ${r.width}x${r.height}</span>
+        <span>Option ${escapeHtml(k)}: ${escapeHtml(r.width)}x${escapeHtml(r.height)}</span>
         ${isAct ? '<span style="font-size: 11px; color: var(--primary);">ACTIVE</span>' : ""}
       </div>
-      <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${r.name}</div>
-      <div class="res-desc">${r.description}</div>
-      <div style="font-size: 11px; color: var(--primary); margin-top: 8px;">Speed: ${r.speed_factor} | VRAM: ${r.vram_footprint}</div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${escapeHtml(r.name)}</div>
+      <div class="res-desc">${escapeHtml(r.description)}</div>
+      <div style="font-size: 11px; color: var(--primary); margin-top: 8px;">Speed: ${escapeHtml(r.speed_factor)} | VRAM: ${escapeHtml(r.vram_footprint)}</div>
     `;
     card.addEventListener("click", () => {
       state.projectData.models.default_video_resolution = parseInt(k);
       markProjectDirty();
       renderResolutionCards(k);
       if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
-        window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
+        const selSc = state.projectData.scenes[state.selectedSceneIdx];
+        window.updateInspectorSceneHeader?.(selSc);
+        window.populateSceneResolutionAndUpsampling?.(selSc);
+        window.syncSceneBackendUI?.(selSc);
       }
       if (typeof window.updateMasterResolutionInfoUI === "function") {
         window.updateMasterResolutionInfoUI();
@@ -446,14 +620,45 @@ function syncSettingsFormToState(id) {
   if (id === "cfgProjectName") p.name = val;
   else if (id === "cfgMasterAudio") p.master_audio = val;
   else if (id === "cfgFps") p.fps = parseInt(val) || 24;
-  else if (id === "cfgFadeOut") p.fade_out_last_scene_seconds = parseFloat(val) || 2.0;
-  else if (id === "cfgRenderOverlap") p.render_overlap_seconds = parseFloat(val) ?? 1.0;
-  else if (id === "cfgDefaultAnchorRenderer") m.default_anchor_renderer = parseInt(val) || 3;
-  else if (id === "cfgDefaultVideoRenderer") m.default_video_renderer = parseInt(val) || 1;
+  else if (id === "cfgFadeOut") { const n = parseFloat(val); p.fade_out_last_scene_seconds = isNaN(n) ? 2.0 : Math.max(0, n); }
+  else if (id === "cfgFadeOutEnd") { const n = parseFloat(val); if (val === "" || isNaN(n)) delete p.fade_out_end_seconds; else p.fade_out_end_seconds = Math.max(0, n); }
+  else if (id === "cfgRenderOverlap") { const n = parseFloat(val); p.render_overlap_seconds = (val === "" || isNaN(n)) ? 1.0 : Math.max(0, n); }
+  else if (id === "cfgDefaultAnchorRenderer") m.default_anchor_renderer = /^\d+$/.test(val) ? parseInt(val, 10) : (val || 3);
+  else if (id === "cfgDefaultVideoRenderer") m.default_video_renderer = /^\d+$/.test(val) ? parseInt(val, 10) : (val || 1);
   else if (id === "cfgMasterResolution") p.master_resolution = val || "match";
   else if (id === "cfgMasterScaleAlgo") p.master_scale_algorithm = val || "lanczos";
   else if (id === "cfgMasterSharpen") p.master_sharpen = parseFloat(val) || 0;
   else if (id === "cfgProgressiveStitchMode") p.progressive_stitch_mode = val || "always_master";
+  else if (id === "cfgDefaultSpatialUpsampling") {
+    m.video_shared_settings = m.video_shared_settings || {};
+    if (val) m.video_shared_settings.spatial_upsampling = val;
+    else delete m.video_shared_settings.spatial_upsampling;
+  }
+  else if (id.startsWith("cfgFilter")) {
+    const vs = (m.video_shared_settings = m.video_shared_settings || {});
+    const rawCurUp = String(vs.spatial_upsampling || "").toLowerCase();
+    if (["h3facerefine", "seedvr2*1", "flashvsrplus*1", "flashvsrplus2pass*1", "ltx25_refine*1", "dlss5*1"].includes(rawCurUp)) {
+      delete vs.spatial_upsampling;
+    }
+    const f = (vs.filters = vs.filters || {});
+    if (id === "cfgFilterAiRefiner") { if (val) f.ai_refiners = [val]; else delete f.ai_refiners; }
+    else if (id === "cfgFilterFaceStrength") {
+      const fs = parseFloat(val);
+      if (!isNaN(fs) && (fs !== 0.75 || f.face_strength !== undefined || f.ai_refiners?.length)) {
+        f.face_strength = Math.max(0, Math.min(1, fs));
+      }
+    }
+    else if (id === "cfgFilterFilmGrain") { const g = parseFloat(val) || 0; if (g > 0) f.film_grain_intensity = g; else delete f.film_grain_intensity; }
+    else if (id === "cfgFilterWindowCC") { const w = parseFloat(val) || 0; if (w > 0) f.window_color_correction = w; else delete f.window_color_correction; }
+    else if (id === "cfgFilterDeband" || id === "cfgFilterCas" || id === "cfgFilterDenoise") {
+      const ff = (f.ffmpeg = f.ffmpeg || {});
+      if (id === "cfgFilterDeband") { if (el.checked) ff.deband = true; else delete ff.deband; }
+      else if (id === "cfgFilterCas") { const c = parseFloat(val) || 0; if (c > 0) ff.cas = c; else delete ff.cas; }
+      else if (id === "cfgFilterDenoise") { const d = parseFloat(val) || 0; if (d > 0) ff.denoise = d; else delete ff.denoise; }
+      if (Object.keys(ff).length === 0) delete f.ffmpeg;
+    }
+    if (Object.keys(f).length === 0) delete vs.filters;
+  }
   else if (id === "cfgNegativePrompt") {
     m.video_shared_settings = m.video_shared_settings || {};
     m.video_shared_settings.negative_prompt = val;
@@ -462,45 +667,51 @@ function syncSettingsFormToState(id) {
     window.updateMasterResolutionInfoUI();
   }
   if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
-    window.updateInspectorSceneHeader?.(state.projectData.scenes[state.selectedSceneIdx]);
+    const selSc = state.projectData.scenes[state.selectedSceneIdx];
+    window.updateInspectorSceneHeader?.(selSc);
+    window.populateSceneVideoRenderer?.(selSc);
+    window.populateSceneResolutionAndUpsampling?.(selSc);
+    window.syncSceneBackendUI?.(selSc);
   }
 }
 
 // Mark project dirty when any Project Settings field is edited
 const settingsFieldIds = [
-  "cfgProjectName", "cfgMasterAudio", "cfgFps", "cfgFadeOut", "cfgRenderOverlap",
-  "cfgDefaultAnchorRenderer", "cfgDefaultVideoRenderer", "cfgNegativePrompt",
+  "cfgProjectName", "cfgMasterAudio", "cfgFps", "cfgFadeOut", "cfgFadeOutEnd", "cfgRenderOverlap",
+  "cfgDefaultAnchorRenderer", "cfgDefaultVideoRenderer", "cfgDefaultSpatialUpsampling", "cfgNegativePrompt",
   "cfgMasterResolution", "cfgMasterScaleAlgo", "cfgMasterSharpen", "cfgProgressiveStitchMode",
+  "cfgFilterAiRefiner", "cfgFilterFaceStrength", "cfgFilterFilmGrain", "cfgFilterWindowCC",
+  "cfgFilterDeband", "cfgFilterCas", "cfgFilterDenoise",
 ];
 
 settingsFieldIds.forEach((id) => {
   const el = document.getElementById(id);
   if (!el) return;
   const label = id.replace("cfg", "");
-  if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-    el.addEventListener("focus", () => {
-      if (typeof window.beginEditSession === "function") {
-        window.beginEditSession(`settings:${id}`, `Edit Settings ${label}`);
+  if (el.type === "checkbox" || el.tagName === "SELECT") {
+    el.addEventListener("change", () => {
+      syncSettingsFormToState(id);
+      markProjectDirty();
+      window.recordHistorySnapshot?.(`Change Settings ${label}`);
+      if ((id === "cfgMasterResolution" || id === "cfgDefaultSpatialUpsampling" || id.startsWith("cfgFilter")) && state.selectedSceneIdx !== null) {
+        const selSc = state.projectData?.scenes?.[state.selectedSceneIdx];
+        if (selSc) window.populateSceneResolutionAndUpsampling?.(selSc);
       }
     });
+  } else if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+    el.addEventListener("focus", () => {
+      window.beginEditSession?.(`settings:${id}`, `Edit Settings ${label}`);
+    });
     el.addEventListener("input", () => {
-      if (typeof window.beginEditSession === "function") {
-        window.beginEditSession(`settings:${id}`, `Edit Settings ${label}`);
-      }
+      window.beginEditSession?.(`settings:${id}`, `Edit Settings ${label}`);
       syncSettingsFormToState(id);
       markProjectDirty();
     });
     el.addEventListener("blur", () => {
-      if (typeof window.commitEditSession === "function") {
-        window.commitEditSession();
-      }
-    });
-  } else if (el.tagName === "SELECT") {
-    el.addEventListener("change", () => {
-      syncSettingsFormToState(id);
-      markProjectDirty();
-      if (typeof window.recordHistorySnapshot === "function") {
-        window.recordHistorySnapshot(`Change Settings ${label}`);
+      window.commitEditSession?.();
+      if (id.startsWith("cfgFilter") && state.selectedSceneIdx !== null) {
+        const selSc = state.projectData?.scenes?.[state.selectedSceneIdx];
+        if (selSc) window.populateSceneResolutionAndUpsampling?.(selSc);
       }
     });
   }
@@ -529,6 +740,10 @@ async function saveProjectData(showNotice = true) {
       }
       markProjectDirty(false);
       state._savingProject = false;
+      if (Array.isArray(json.queue)) {
+        state.renderQueue = json.queue;
+        if (typeof renderQueueUI === "function") renderQueueUI();
+      }
       loadProjectQueue(state.currentSlug);
       if (showNotice) showToast("💾 Project saved! (Backup archived in backup/)");
       return true;

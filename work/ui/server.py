@@ -18,10 +18,9 @@ import time
 from pathlib import Path
 
 # Module aliases
-if "server" not in sys.modules:
-    sys.modules["server"] = sys.modules[__name__]
-if "work.ui.server" not in sys.modules:
-    sys.modules["work.ui.server"] = sys.modules[__name__]
+for _alias in ("server", "work.ui.server", "ui.server"):
+    if _alias not in sys.modules:
+        sys.modules[_alias] = sys.modules[__name__]
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -32,7 +31,9 @@ PROFILES_FILE = WORKSPACE_ROOT / "model_profiles.json"
 TEMPLATE_FILE = WORKSPACE_ROOT / "project_template.json"
 TEMPLATES_FILE = TEMPLATE_FILE
 
-sys.path.insert(0, str(WORKSPACE_ROOT / "work"))
+for _p in (str(WORKSPACE_ROOT), str(WORKSPACE_ROOT / "work")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 try:
     from run_overnight_v3 import (
         ProjectContext,
@@ -41,7 +42,8 @@ try:
         find_local_config,
         auto_detect_wgp_root,
     )
-except ImportError:
+except ImportError as _imp_err:
+    print(f"[Studio UI Warning] Failed importing pipeline helpers in server.py: {_imp_err}", file=sys.stderr)
     ProjectContext = None
     compute_project_task_hashes = None
     resolve_rendered_clip_path = None
@@ -88,7 +90,7 @@ def resolve_engine_python() -> str:
 
 
 # Global state for background render subprocess
-render_lock = threading.Lock()
+render_lock = threading.RLock()
 active_process: subprocess.Popen | None = None
 log_subscribers: list[threading.Event] = []
 log_seq_counter = 0
@@ -104,8 +106,19 @@ render_job_queue: list[tuple[list[str], str]] = []
 queue_worker_active = False
 queue_worker_thread = None
 current_worker_id = 0
+stitch_progress = None
+stitch_pending = False
 last_backup_times: dict[str, float] = {}
 dummy_render_mode: bool = bool(os.environ.get("DUMMY_RENDER", "0") in ("1", "true", "yes"))
+enabled_engines: dict[str, bool] = {"local": True, "fal": False, "minimax": False}
+max_parallel: dict[str, int] = {"local": 1, "fal": 1, "minimax": 1}
+engine_slots: dict[str, dict] = {b: {} for b in ("local", "fal", "minimax")}
+engine_workers: dict[str, dict] = {
+    b: {"running": False, "draining": False, "active_process": None, "active_count": 0, "max_parallel": 1, "filename": None, "output_filename": None, "scene_id": None, "target_arg": None, "started_at": None, "worker_id": 0, "stop_requested": False, "project": None}
+    for b in ("local", "fal", "minimax")
+}
+queue_file_lock = threading.RLock()
+local_adhoc_busy = False
 
 
 def broadcast_log(line: str):
@@ -170,6 +183,14 @@ try:
         StudioRequestHandler,
         run_server,
     )
+    from work.ui.server_engines import (
+        get_multi_engine_render_status,
+        kill_engine_render,
+        run_multi_engine_queue_worker,
+        set_enabled_engines,
+        set_queue_item_backend_override,
+        wake_enabled_engine_workers,
+    )
 except ImportError:
     from server_workers import (
         derive_scene_id,
@@ -204,6 +225,14 @@ except ImportError:
     from server_routes import (
         StudioRequestHandler,
         run_server,
+    )
+    from server_engines import (
+        get_multi_engine_render_status,
+        kill_engine_render,
+        run_multi_engine_queue_worker,
+        set_enabled_engines,
+        set_queue_item_backend_override,
+        wake_enabled_engine_workers,
     )
 
 __all__ = [

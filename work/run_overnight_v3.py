@@ -62,6 +62,7 @@ from pipeline import (
     format_duration_estimate,
     format_progress_update,
     import_anchors_from_dir,
+    import_video_clip_as_take,
     init_new_project,
     is_project_config,
     main,

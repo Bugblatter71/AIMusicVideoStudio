@@ -12,6 +12,7 @@ from .media_utils import (
     _file_sha256,
     auto_detect_wgp_root,
     find_local_config,
+    prepend_unique_env_path,
     resolve_ffmpeg_path,
     resolve_path,
 )
@@ -26,6 +27,12 @@ from .prompts import (
     resolve_scene_negative_prompt,
     resolve_scene_refs,
     strip_dangling_ref_tags,
+)
+from .upscale import (
+    apply_filters_to_video_task,
+    parse_upsampling_scale,
+    resolve_effective_spatial_upsampling,
+    resolve_scene_filters,
 )
 
 
@@ -116,19 +123,13 @@ class ProjectContext:
         extra_paths = [str(resolve_path(self.project_dir, p)) for p in env.get("extra_path_dirs", []) if p]
         if self.wgp_root and self.wgp_root.is_dir():
             try:
-                pinokio_base = self.wgp_root.parent.parent.parent
-                for dyn_dir in (
-                    pinokio_base / "bin",
-                    pinokio_base / "bin" / "miniconda" / "Library" / "bin",
-                    self.wgp_root / "ffmpeg_bins",
-                ):
-                    if dyn_dir.is_dir() and str(dyn_dir) not in extra_paths:
-                        extra_paths.append(str(dyn_dir))
-            except Exception:
-                pass
+                pbase = self.wgp_root.parent.parent.parent
+                for dyn_dir in (pbase / "bin", pbase / "bin" / "miniconda" / "Library" / "bin", self.wgp_root / "ffmpeg_bins"):
+                    if dyn_dir.is_dir() and str(dyn_dir) not in extra_paths: extra_paths.append(str(dyn_dir))
+            except Exception: pass
 
         if extra_paths:
-            os.environ["PATH"] = ";".join(extra_paths) + ";" + os.environ.get("PATH", "")
+            prepend_unique_env_path(extra_paths)
         os.environ["GIT_PYTHON_REFRESH"] = "quiet"
 
         self.ffmpeg = resolve_ffmpeg_path(self.project_dir, env.get("ffmpeg", ""), self.wgp_root)
@@ -138,15 +139,13 @@ class ProjectContext:
         self.total_duration = proj.get("total_duration")
         self.trim_first_frame_s = float(proj.get("trim_first_frame_seconds", 0.04))
         self.fade_out_last_s = float(proj.get("fade_out_last_scene_seconds", 2.5))
+        raw_fe = proj.get("fade_out_end_seconds")
+        self.fade_out_end_s = float(raw_fe) if raw_fe not in (None, "") else None
 
         # Configurable render overlap padding (head and tail handles)
-        raw_overlap = proj.get("render_overlap_seconds", proj.get("overlap_seconds", 0.0))
-        if isinstance(raw_overlap, dict):
-            self.head_overlap_s = float(raw_overlap.get("head", 0.0))
-            self.tail_overlap_s = float(raw_overlap.get("tail", 0.0))
-        else:
-            self.head_overlap_s = float(raw_overlap or 0.0)
-            self.tail_overlap_s = float(raw_overlap or 0.0)
+        raw_ov = proj.get("render_overlap_seconds", proj.get("overlap_seconds", 0.0))
+        self.head_overlap_s = float(raw_ov.get("head", 0.0) if isinstance(raw_ov, dict) else (raw_ov or 0.0))
+        self.tail_overlap_s = float(raw_ov.get("tail", 0.0) if isinstance(raw_ov, dict) else (raw_ov or 0.0))
 
         self.master_audio = resolve_path(self.project_dir, proj["master_audio"])
         self.master_output_template = proj.get("master_output", "All_Or_Nothing_Master_{resolution}_{fps}fps.mp4")
@@ -176,14 +175,7 @@ class ProjectContext:
         self.generate_review_strips = bool(proj.get("generate_review_strips", False))
         self.strips_dir = resolve_path(self.project_dir, dirs.get("review_strips", "work/frames"))
 
-        for d in (
-            self.anchors_dir,
-            self.audio_dir,
-            self.masks_dir,
-            self.jobs_dir,
-            self.renders_dir,
-            self.trimmed_dir,
-        ):
+        for d in (self.anchors_dir, self.audio_dir, self.masks_dir, self.jobs_dir, self.renders_dir, self.trimmed_dir):
             d.mkdir(parents=True, exist_ok=True)
         if self.generate_review_strips:
             self.strips_dir.mkdir(parents=True, exist_ok=True)
@@ -287,6 +279,8 @@ class ProjectContext:
             }
 
         # Anchors & Scenes
+        from .fal_catalog import init_context_fal
+        init_context_fal(self, profiles_raw, raw_models)
         self.anchors = raw.get("anchors") or raw.get("anchor_prompts") or []
         self.scenes = raw.get("scenes", [])
         self.no_stitch = False
@@ -328,35 +322,34 @@ class ProjectContext:
 
     def resolve_anchor_renderer(self, sp: dict) -> tuple[str, dict]:
         override = sp.get("renderer")
-        if override is None or str(override).strip().lower() in ("", "0", "none", "null", "default"):
-            rid = str(self.default_anchor_renderer)
-        else:
-            rid = str(override).strip()
-        if rid not in self.anchor_renderers:
-            valid = ", ".join(sorted(self.anchor_renderers.keys(), key=lambda x: int(x) if x.isdigit() else 999))
-            raise ValueError(
-                f"Invalid anchor renderer '{rid}' on {sp.get('filename', 'anchor')}. Valid renderer numbers: {valid}"
-            )
-        return rid, self.anchor_renderers[rid]
+        rid = str(self.default_anchor_renderer) if (override is None or str(override).strip().lower() in ("", "0", "none", "null", "default")) else str(override).strip()
+        spec = self.anchor_renderers[rid] if rid in self.anchor_renderers else self.fal_anchor_renderers.get(rid)
+        if spec is not None:
+            return rid, spec
+        valid = ", ".join(sorted(self.anchor_renderers.keys(), key=lambda x: int(x) if x.isdigit() else 999))
+        raise ValueError(f"Invalid anchor renderer '{rid}' on {sp.get('filename', 'anchor')}. Valid renderer numbers: {valid}")
 
     def resolve_video_renderer(self, sc: dict, pass_num: int | None = None) -> tuple[str, dict]:
-        override = None
-        if pass_num == 1 and sc.get("renderer_m") is not None:
-            override = sc.get("renderer_m")
-        elif pass_num == 2 and sc.get("renderer_f") is not None:
-            override = sc.get("renderer_f")
+        override = sc.get("renderer_m") if pass_num == 1 else (sc.get("renderer_f") if pass_num == 2 else None)
         if override is None:
             override = sc.get("renderer")
-        if override is None or str(override).strip().lower() in ("", "0", "none", "null", "default"):
-            rid = str(self.default_video_renderer)
-        else:
-            rid = str(override).strip()
-        if rid not in self.video_renderers:
-            valid = ", ".join(sorted(self.video_renderers.keys(), key=lambda x: int(x) if x.isdigit() else 999))
-            raise ValueError(
-                f"Invalid video renderer '{rid}' on scene {sc.get('id', '?')}. Valid renderer numbers: {valid}"
-            )
-        return rid, self.video_renderers[rid]
+        rid = str(self.default_video_renderer) if (override is None or str(override).strip().lower() in ("", "0", "none", "null", "default")) else str(override).strip()
+        spec = self.video_renderers[rid] if rid in self.video_renderers else (
+            self.fal_video_renderers[rid] if rid in self.fal_video_renderers else self.minimax_video_renderers.get(rid)
+        )
+        cli_b = str(getattr(self, "cli_backend", "") or "").strip().lower()
+        pass_b = str((sc.get("backend_m") if pass_num == 1 else sc.get("backend_f")) or "").strip().lower()
+        is_cloud_spec = bool(spec and (spec.get("cloud_only") or spec.get("backend") in ("fal", "minimax")))
+        if is_cloud_spec and (cli_b == "local" or pass_b == "local"):
+            fb = str(self.default_video_renderer) if str(self.default_video_renderer) in self.video_renderers else ""
+            if not fb or self.video_renderers[fb].get("cloud_only") or self.video_renderers[fb].get("backend") in ("fal", "minimax"):
+                fb = next((k for k, v in self.video_renderers.items() if not v.get("cloud_only") and v.get("backend") not in ("fal", "minimax")), "")
+            if fb:
+                return fb, self.video_renderers[fb]
+        if spec is not None:
+            return rid, spec
+        valid = ", ".join(sorted(self.video_renderers.keys(), key=lambda x: int(x) if x.isdigit() else 999))
+        raise ValueError(f"Invalid video renderer '{rid}' on scene {sc.get('id', '?')}. Valid renderer numbers: {valid}")
 
     def resolve_resolution(self, val: Any) -> str:
         """Resolves an integer (1..6), string number ('1'..'6'), dict, or 'WxH' string to a valid 'WxH' string."""
@@ -382,6 +375,56 @@ class ProjectContext:
             if r == target:
                 return k
         return "-"
+
+    def resolve_scene_resolution(
+        self,
+        sc: dict | None,
+        vrspec: dict | None = None,
+        res_override: str | None = None,
+    ) -> str:
+        """Resolves effective render resolution: CLI override -> scene.resolution -> vrspec.resolution -> project default."""
+        if res_override is not None and str(res_override).strip():
+            return self.resolve_resolution(res_override)
+        if isinstance(sc, dict):
+            sc_res = sc.get("resolution")
+            if sc_res is not None and str(sc_res).strip().lower() not in ("", "default", "inherit", "none", "null"):
+                return self.resolve_resolution(sc_res)
+        if isinstance(vrspec, dict) and vrspec.get("resolution"):
+            return self.resolve_resolution(vrspec["resolution"])
+        return self.current_resolution
+
+    def resolve_scene_spatial_upsampling(
+        self,
+        sc: dict | None,
+        vrspec: dict | None = None,
+        res_str: str | None = None,
+        pass_num: int | None = None,
+    ) -> str:
+        """Resolves effective Wan2GP spatial_upsampling with per-scene override and 8GB VRAM OOM guards."""
+        rspec = vrspec or {}
+        vshared = self.video_shared_cfg
+        raw_val: Any = None
+        if isinstance(sc, dict):
+            sc_up = sc.get("spatial_upsampling")
+            if sc_up is not None and str(sc_up).strip().lower() not in ("", "default", "inherit", "null"):
+                raw_val = sc_up
+        if raw_val is None:
+            if "spatial_upsampling" in rspec:
+                raw_val = rspec.get("spatial_upsampling")
+            else:
+                raw_val = vshared.get("spatial_upsampling", "")
+        eff_res = res_str or self.resolve_scene_resolution(sc, rspec)
+        mtype = str(rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd"))
+        m_cfg = str(self.project_cfg.get("master_resolution", "")).strip()
+        t_res = "" if (not m_cfg or m_cfg.lower() in ("match", "render", "auto", "default", "inherit")) else resolve_master_resolution(self, progressive=False)
+        return resolve_effective_spatial_upsampling(raw_val, eff_res, mtype, pass_num=pass_num, target_res_str=t_res)
+
+    def resolve_scene_filters(self, sc: dict | None, vrspec: dict | None = None, pass_num: int | None = None) -> dict:
+        sc = sc or {}
+        rspec = vrspec if vrspec is not None else self.resolve_video_renderer(sc, pass_num=pass_num)[1]
+        sc_up = str(sc.get("spatial_upsampling") or "").strip()
+        raw_up = sc_up if sc_up and sc_up.lower() not in ("default", "inherit", "null") else str(rspec.get("spatial_upsampling") if "spatial_upsampling" in rspec else self.video_shared_cfg.get("spatial_upsampling", "")).strip()
+        return resolve_scene_filters(sc, rspec, self.video_shared_cfg, pass_num=pass_num, raw_spatial_upsampling="" if raw_up.lower() in ("none", "off", "0") else raw_up)
 
     def update_master_output(self):
         """Updates master output path based on template and master resolution/fps."""
@@ -420,20 +463,32 @@ class ProjectContext:
                 pass
         return {"anchors": {}, "tasks": {}}
 
-    def save_state_hashes(self, state: dict):
-        if self.state_hash_file.exists():
-            try:
-                disk = json.loads(self.state_hash_file.read_text(encoding="utf-8"))
-                for section in ("tasks", "task_settings", "scene_renders", "anchors", "anchor_file_hashes", "trim_cache"):
-                    if section in disk and isinstance(disk[section], dict):
-                        target = state.setdefault(section, {})
-                        for k, v in disk[section].items():
-                            target.setdefault(k, v)
-            except Exception:
-                pass
-        payload, alt = json.dumps(state, indent=2), self.project_dir / "work" / "state_hashes.json"
-        self.state_hash_file.write_text(payload, encoding="utf-8")
-        if alt != self.state_hash_file and alt.is_file(): alt.write_text(payload, encoding="utf-8")
+    def save_state_hashes(self, state: dict, updated_keys: set[str] | None = None, updated_sections: set[str] | None = None, updated_anchor_ids: set[str] | None = None):
+        from .media_utils import atomic_write_json, locked_file_op
+        alt = self.project_dir / "work" / "state_hashes.json"
+        with locked_file_op(self.jobs_dir / "state_hashes.lock"):
+            disk = json.loads(self.state_hash_file.read_text(encoding="utf-8")) if self.state_hash_file.exists() else {}
+            if not isinstance(disk, dict): disk = {}
+            partial = bool(updated_keys or updated_sections)
+            out = dict(disk) if partial else dict(state)
+            secs = ("tasks", "task_hashes", "task_settings", "settings_store", "scene_renders", "anchors", "anchor_file_hashes", "trim_cache")
+            for sec in secs:
+                if updated_sections and sec not in updated_sections: continue
+                src = state.get(sec)
+                if not isinstance(src, dict): continue
+                tgt = out.setdefault(sec, {}) if isinstance(out.get(sec), dict) else out.setdefault(sec, {})
+                if updated_sections: tgt.update(src)
+                elif updated_keys and sec in ("tasks", "task_hashes", "task_settings", "settings_store", "scene_renders"):
+                    for k in updated_keys:
+                        if k in src: tgt[k] = src[k]
+                elif updated_keys and sec == "anchor_file_hashes" and updated_anchor_ids is not None:
+                    for aid in updated_anchor_ids:
+                        if aid in src: tgt[aid] = src[aid]
+                elif updated_keys and sec != "trim_cache": tgt.update(src)
+                elif not updated_keys and isinstance(disk.get(sec), dict):
+                    for k, v in disk[sec].items(): tgt.setdefault(k, v)
+            atomic_write_json(self.state_hash_file, out)
+            if alt != self.state_hash_file and alt.is_file(): atomic_write_json(alt, out)
 
     def model_fps(self, rspec: dict | None = None) -> float:
         spec = rspec or {}
@@ -455,16 +510,15 @@ class ProjectContext:
         fps = self.model_fps(rspec)
         needed = math.ceil(min_seconds * fps) + 2
         if formula == "ltx2":
-            needed = max(17, needed)
-            k = math.ceil((needed - 1) / 8)
+            k = math.ceil((max(17, needed) - 1) / 8)
             return 8 * k + 1
+        if formula == "wan":
+            k = math.ceil((max(17, needed) - 1) / 4)
+            return 4 * k + 1
         min_f = 124 if formula == "h3_ref2va" else 107
-        needed = max(min_f, needed)
-        k = math.ceil((needed - 5) / 17)
+        k = math.ceil((max(min_f, needed) - 5) / 17)
         calculated = 17 * k + 5
-        if "max_frames" in spec:
-            calculated = min(int(spec["max_frames"]), calculated)
-        return calculated
+        return min(int(spec["max_frames"]), calculated) if "max_frames" in spec else calculated
 
     def get_scene_render_padding(self, sc: dict) -> tuple[float, float]:
         return resolve_scene_padding(sc, self.head_overlap_s, self.tail_overlap_s)
@@ -608,21 +662,12 @@ class ProjectContext:
         return [Path(p) for p in self.anchor_refs if Path(p).exists()]
 
     def make_video_task(
-        self,
-        output_filename: str,
-        prompt: str,
-        video_length: int,
-        seed: int,
-        image_start: Path,
-        audio_path: Path,
-        rspec: dict,
-        video_guide: Path | None = None,
-        video_mask: Path | None = None,
-        image_refs: list[Path | str] | None = None,
-        image_end: Path | None = None,
-        negative_prompt: str | None = None,
-        sc: dict | None = None,
-        pass_num: int | None = None,
+        self, output_filename: str, prompt: str, video_length: int, seed: int,
+        image_start: Path, audio_path: Path, rspec: dict,
+        video_guide: Path | None = None, video_mask: Path | None = None,
+        image_refs: list[Path | str] | None = None, image_end: Path | None = None,
+        negative_prompt: str | None = None, sc: dict | None = None,
+        pass_num: int | None = None, resolution: str | None = None,
     ) -> dict:
         vshared = self.video_shared_cfg
         expanded = expand_variables(prompt, self.variables)
@@ -634,13 +679,9 @@ class ProjectContext:
             neg_prompt, _ = resolve_scene_negative_prompt(sc, rspec, vshared, pass_num=pass_num)
         else:
             neg_prompt = rspec.get("negative_prompt", vshared.get("negative_prompt", ""))
+        from .fal_catalog import is_ref2va_spec
         mtype = rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd")
-        is_ref2va = (
-            str(rspec.get("frames_formula", "")).lower() == "h3_ref2va"
-            or "ref2va" in mtype.lower()
-            or "fasth3" in mtype.lower()
-            or "singularity" in mtype.lower()
-        )
+        is_ref2va = is_ref2va_spec(rspec)
         supports_refs = bool(rspec.get("supports_image_refs", is_ref2va))
         supports_end = bool(rspec.get("supports_end_anchor", not is_ref2va)) and not (video_guide and video_mask)
         has_end = bool(supports_end and image_end and Path(image_end).exists())
@@ -683,11 +724,12 @@ class ProjectContext:
         if has_end and "E" not in raw_ipt:
             raw_ipt = "SE" if ("S" in raw_ipt or not raw_ipt) else f"{raw_ipt}E"
 
+        eff_res = self.resolve_scene_resolution(sc, rspec, res_override=resolution)
         task = {
             "model_type": mtype,
             "prompt": adapted_prompt,
             "negative_prompt": neg_prompt,
-            "resolution": self.resolve_resolution(rspec.get("resolution", self.current_resolution)),
+            "resolution": eff_res,
             "video_length": video_length,
             "seed": seed,
             "force_fps": str(rspec.get("force_fps", vshared.get("force_fps", ""))),
@@ -728,12 +770,10 @@ class ProjectContext:
         if "flow_shift" in rspec or "flow_shift" in vshared:
             task["flow_shift"] = rspec.get("flow_shift", vshared.get("flow_shift", 12.0))
         mtype = rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd")
-        if "spatial_upsampling" in rspec or "spatial_upsampling" in vshared:
-            upscale = rspec.get("spatial_upsampling", vshared.get("spatial_upsampling", ""))
-            if upscale and ("h3_vae" in upscale) and not mtype.startswith("minimax_h3"):
-                pass
-            elif upscale:
-                task["spatial_upsampling"] = upscale
+        upscale = self.resolve_scene_spatial_upsampling(sc, rspec, res_str=eff_res, pass_num=pass_num)
+        if upscale:
+            task["spatial_upsampling"] = upscale
+        apply_filters_to_video_task(task, self.resolve_scene_filters(sc, rspec, pass_num=pass_num))
         if "config" in rspec or "config" in vshared:
             task["config"] = rspec.get("config", vshared.get("config", ""))
         elif "video_vae" in rspec or "video_vae" in vshared:
@@ -745,18 +785,13 @@ class ProjectContext:
             task["video_mask"] = str(video_mask)
             task["denoising_strength"] = rspec.get("denoising_strength", vshared.get("denoising_strength", 1.0))
             task["masking_strength"] = rspec.get("masking_strength", vshared.get("masking_strength", 1.0))
+        from .fal_catalog import attach_fal_task_meta
+        attach_fal_task_meta(self, task, sc=sc, rspec=rspec, pass_num=pass_num, stage="video")
         return task
 
     def make_anchor_task(
-        self,
-        session,
-        rspec: dict,
-        output_filename: str,
-        prompt: str,
-        seed: int = 42,
-        resolution: str | None = None,
-        sp: dict | None = None,
-        image_refs: list | None = None,
+        self, session, rspec: dict, output_filename: str, prompt: str,
+        seed: int = 42, resolution: str | None = None, sp: dict | None = None, image_refs: list | None = None,
     ) -> dict:
         sp = sp or {}
         shared_cfg = self.anchor_shared_cfg
@@ -774,7 +809,7 @@ class ProjectContext:
         refs = self.anchor_refs if image_refs is None else image_refs
         has_refs = bool(refs)
 
-        cfg = session.get_default_settings(model_type)
+        cfg = session.get_default_settings(model_type) if hasattr(session, "get_default_settings") else {}
         cfg["model_type"] = model_type
         cfg["image_mode"] = rspec.get("image_mode", shared_cfg.get("image_mode", 1))
         cfg["resolution"] = res_val
@@ -790,41 +825,23 @@ class ProjectContext:
             cfg["video_prompt_type"] = ""
             cfg["image_refs"] = None
 
-        for opt_key in (
-            "num_inference_steps",
-            "guidance_scale",
-            "embedded_guidance_scale",
-            "flow_shift",
-            "sample_solver",
-            "multi_prompts_gen_type",
-        ):
-            if opt_key in rspec:
-                cfg[opt_key] = rspec[opt_key]
-            if opt_key in sp:
-                cfg[opt_key] = sp[opt_key]
+        for opt_key in ("num_inference_steps", "guidance_scale", "embedded_guidance_scale", "flow_shift", "sample_solver", "multi_prompts_gen_type"):
+            if opt_key in rspec: cfg[opt_key] = rspec[opt_key]
+            if opt_key in sp: cfg[opt_key] = sp[opt_key]
 
         merged_custom = dict(cfg.get("custom_settings") or {})
-        if isinstance(shared_cfg.get("custom_settings"), dict):
-            merged_custom.update(shared_cfg["custom_settings"])
-        if isinstance(rspec.get("custom_settings"), dict):
-            merged_custom.update(rspec["custom_settings"])
-        if isinstance(sp.get("custom_settings"), dict):
-            merged_custom.update(sp["custom_settings"])
+        for src_cfg in (shared_cfg, rspec, sp):
+            if isinstance(src_cfg.get("custom_settings"), dict):
+                merged_custom.update(src_cfg["custom_settings"])
         cfg["custom_settings"] = merged_custom
         cfg["prompt"] = prompt
+        from .fal_catalog import attach_fal_task_meta
+        attach_fal_task_meta(self, cfg, sc=sp, rspec=rspec, stage="anchor")
         return cfg
 
 
 try:
-    from .scene_ops import (
-        derive_split_scene_ids,
-        split_scene_in_project_data,
-        delete_scene_in_project_data,
-    )
+    from .scene_ops import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data
 except ImportError:
-    from pipeline.scene_ops import (
-        derive_split_scene_ids,
-        split_scene_in_project_data,
-        delete_scene_in_project_data,
-    )
+    from pipeline.scene_ops import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data
 

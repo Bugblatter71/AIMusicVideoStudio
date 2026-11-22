@@ -1,0 +1,424 @@
+/* Responsive Split-View, Draggable Divider, Compact Inspector & 4K Scaling */
+
+#appMain {
+  --split-left-pct: 52%;
+}
+
+/* Draggable vertical splitter between Timeline Inspector and Side Pane */
+.workspace-splitter {
+  display: none;
+  width: 7px;
+  flex: 0 0 7px;
+  background: #0b1120;
+  border-left: 1px solid var(--border-color);
+  border-right: 1px solid var(--border-color);
+  cursor: col-resize;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  touch-action: none;
+  position: relative;
+  z-index: 8;
+  transition: background-color 0.15s ease;
+}
+
+.workspace-splitter::before {
+  content: "";
+  width: 2px;
+  height: 36px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.35);
+  transition: background-color 0.15s ease, height 0.15s ease;
+}
+
+.workspace-splitter:hover,
+.workspace-splitter.is-dragging {
+  background: rgba(56, 189, 248, 0.16);
+}
+
+.workspace-splitter:hover::before,
+.workspace-splitter.is-dragging::before {
+  background: #38bdf8;
+  height: 52px;
+}
+
+#appMain.layout-split:not(.layout-scenes-wide) .workspace-splitter {
+  display: flex;
+}
+
+#appMain.layout-split:not(.layout-scenes-wide) .timeline-bottom {
+  width: auto !important;
+  flex: 0 0 var(--split-left-pct) !important;
+  min-width: 440px;
+  max-width: calc(100% - 350px);
+  border-right: none;
+}
+
+#appMain.layout-split:not(.layout-scenes-wide) #sidePane {
+  width: auto !important;
+  flex: 1 1 0% !important;
+  min-width: 340px;
+}
+
+/* Container-aware Scene Inspector layout (responds smoothly to draggable splitter & 4K) */
+#sceneInspector {
+  container-type: inline-size;
+  container-name: inspector;
+}
+
+.timeline-zoom-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-timeline-fit {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: rgba(15, 23, 42, 0.8);
+  border-color: #334155;
+  color: #cbd5e1;
+}
+
+.btn-timeline-fit:hover {
+  border-color: #38bdf8;
+  color: #7dd3fc;
+}
+
+/* Row 1: Uniform Grid without jagged wrap or orphan trailing cell */
+.inspector-controls-row.inspector-row-visuals {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: start;
+}
+
+.inspector-row-visuals .form-group,
+.inspector-row-visuals .form-group-mode,
+.inspector-row-visuals .form-group-anchor,
+.inspector-row-visuals .form-group-end-anchor,
+.inspector-row-visuals .form-group-model {
+  flex: initial !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  margin-bottom: 0;
+}
+
+.inspector-row-visuals .anchor-thumb-preview {
+  width: 36px;
+  height: 22px;
+}
+
+@container inspector (min-width: 1180px) {
+  .inspector-controls-row.inspector-row-visuals {
+    grid-template-columns: minmax(145px, 0.85fr) repeat(5, minmax(0, 1fr));
+  }
+}
+
+@container inspector (max-width: 680px) {
+  .inspector-controls-row.inspector-row-visuals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Extracted Full-Width Cross-Engine Pass Engines & ROI Bar (below Row 1) */
+.duet-pass-engine-host {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.duet-pass-engine-host:empty {
+  display: none;
+  margin-bottom: 0;
+}
+
+#duetPassEngineRow.duet-pass-row-extracted {
+  display: flex;
+  flex-direction: row !important;
+  flex-wrap: wrap;
+  align-items: center !important;
+  justify-content: space-between;
+  gap: 8px 14px !important;
+  margin-top: 0 !important;
+  padding: 7px 11px !important;
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.06);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+}
+
+#duetPassEngineRow .duet-pass-hdr {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+#duetPassEngineRow .duet-pass-fields-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 12px;
+  flex: 1 1 auto;
+}
+
+#duetPassEngineRow .duet-pass-fields-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex: 1 1 135px;
+  min-width: 120px;
+  margin: 0;
+}
+
+#duetPassEngineRow #scenePass2RoiSideWrap {
+  flex: 0 1 118px;
+  min-width: 105px;
+}
+
+#duetPassEngineRow #scenePass2RoiBoxWrap {
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 210px;
+  min-width: 190px;
+}
+
+#duetPassEngineRow .duet-pass-cost-pill {
+  font-size: 10.5px;
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 4px;
+  padding: 3px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+#sceneFalHint {
+  margin-top: 0 !important;
+  padding-left: 2px;
+}
+
+/* Row 2: Unified Timing, Stems, Seeds & Split Boundary X */
+.inspector-controls-row.inspector-row-timing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.inspector-row-timing > .form-group {
+  margin-bottom: 0;
+}
+
+.inspector-row-timing .duet-controls-row {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  margin-bottom: 0 !important;
+  padding: 0;
+}
+
+.duet-controls-row .form-group-duet-col {
+  flex: 1 1 155px;
+  min-width: 135px;
+  max-width: 240px;
+}
+
+.duet-controls-row .form-group-duet-seed,
+.duet-controls-row .form-group-seed {
+  flex: 0 0 124px;
+  min-width: 118px;
+}
+
+/* Fix Split Boundary X number input clipping ("0.4" diagonal cut) */
+.duet-controls-row .form-group-duet-split {
+  flex: 1.2 1 220px;
+  min-width: 215px;
+  max-width: 295px;
+}
+
+#sceneSplitX {
+  width: 82px !important;
+  min-width: 82px;
+  padding: 5px 6px;
+  font-family: monospace;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+/* Padding & 1x Filter compact horizontal flow inside Accordion */
+#inspectorGroupFilters .insp-collapsible-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+
+#sceneRenderPaddingGroup {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid #334155;
+  border-radius: 6px;
+}
+
+#sceneFiltersRow {
+  flex: 1 1 560px;
+  margin-top: 0 !important;
+}
+
+/* Hide duplicate legacy select bar in Takes Vault while keeping DOM #sceneTakeSelect intact */
+.takes-legacy-select-row {
+  display: none !important;
+}
+
+.takes-upscale-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+#sceneLateUpscaleBackend {
+  max-width: none !important;
+  min-width: 135px;
+  flex: 0 1 165px;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+
+/* Larger clip preview in roomy inspector & 4K screens */
+@container inspector (min-width: 960px) {
+  .scene-clip-video-wrap {
+    width: clamp(340px, 42%, 560px) !important;
+    max-width: 50% !important;
+  }
+
+  .scene-clip-video-wrap video {
+    max-height: 270px !important;
+  }
+}
+
+/* Settings Grid & Inline Checkboxes alignment */
+#tab-settings .form-grid {
+  align-items: end;
+}
+
+.form-group-checkbox-inline {
+  display: flex;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-bottom: 0;
+}
+
+.form-group-checkbox-inline input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.form-group-checkbox-inline label {
+  margin: 0 !important;
+  cursor: pointer;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text-main);
+  font-size: 12px;
+}
+
+/* Master Video Tab: Clean 16:9 framing & wrappable header at narrow split widths */
+.master-tab-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+
+.master-tab-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+#masterVideoContainer {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+#masterVideoPlayer {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: calc(100% - 4px);
+  object-fit: contain;
+}
+
+/* Queue table clean single-line Est/Cost column */
+.queue-est-col {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Viewport-safe Anchor Picker Floating Menu */
+.custom-anchor-dropdown-menu.is-floating-fixed {
+  position: fixed !important;
+  z-index: 9998;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.7);
+}
+
+/* Native 4K UHD & Wide Monitor Scaling (>= 2200px) */
+@media (min-width: 2200px) {
+  body {
+    font-size: 14px;
+  }
+
+  .inspector-pane {
+    padding: 18px 24px;
+  }
+
+  #markerModal > div {
+    width: clamp(440px, 28vw, 660px) !important;
+  }
+
+  #checkpointsModal > div,
+  #anchorPreviewModal > div {
+    width: clamp(760px, 56vw, 1320px) !important;
+    max-width: 88vw;
+  }
+
+  #charInputModal {
+    width: clamp(440px, 30vw, 680px) !important;
+  }
+
+  .scene-cards-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(640px, 1fr));
+    gap: 14px;
+  }
+
+  .scene-clip-video-wrap video {
+    max-height: 360px !important;
+  }
+}

@@ -364,14 +364,28 @@ function parseRawPromptToComponentsJS(rawPrompt) {
   return res;
 }
 
-function hydrateSceneComponentsFromRawIfNeeded(sc) {
+function _componentsMatchCanonicalJS(sc, isTwo) {
+  const sim = { ...sc, prompt_mode: "components" };
+  if (isTwo) {
+    if ((sc.prompt_m && sc.prompt_performance_m === undefined) || (sc.prompt_f && sc.prompt_performance_f === undefined)) return false;
+    return compileModularPromptJS(sim, 1).trim() === String(sc.prompt_m || "").trim()
+        && compileModularPromptJS(sim, 2).trim() === String(sc.prompt_f || "").trim();
+  }
+  if (sc.prompt && sc.prompt_performance === undefined) return false;
+  return compileModularPromptJS(sim, null).trim() === String(sc.prompt || "").trim();
+}
+
+function hydrateSceneComponentsFromRawIfNeeded(sc, preferRaw = false) {
   if (!sc) return;
   const isTwo = isTwoPassScene(sc);
-  const hasAnyComp = Boolean(
-    sc.prompt_camera || sc.prompt_atmosphere || sc.prompt_performance ||
-    sc.prompt_performance_m || sc.prompt_performance_f || sc.prompt_musicians
-  );
-  if (hasAnyComp) return;
+  const hasModeComp = isTwo
+    ? Boolean(sc.prompt_camera || sc.prompt_atmosphere || sc.prompt_performance_m || sc.prompt_performance_f || sc.prompt_musicians)
+    : Boolean(sc.prompt_camera || sc.prompt_atmosphere || sc.prompt_performance || sc.prompt_musicians);
+  const missingActivePerf = isTwo
+    ? Boolean((sc.prompt_m && sc.prompt_performance_m === undefined) || (sc.prompt_f && sc.prompt_performance_f === undefined))
+    : Boolean(sc.prompt && sc.prompt_performance === undefined);
+  const shouldParse = preferRaw ? !_componentsMatchCanonicalJS(sc, isTwo) : (!hasModeComp || missingActivePerf);
+  if (!shouldParse) return;
 
   if (isTwo) {
     const p1 = parseRawPromptToComponentsJS(sc.prompt_m || sc.prompt || "");
@@ -392,6 +406,28 @@ function hydrateSceneComponentsFromRawIfNeeded(sc) {
     sc.prompt_soundscape = parsed.prompt_soundscape;
   }
 }
+window.hydrateSceneComponentsFromRawIfNeeded = hydrateSceneComponentsFromRawIfNeeded;
+
+function onSceneModeChangedPromptSync(sc, newMode, oldMode) {
+  if (!sc) return;
+  const wasTwo = isTwoPassMode(oldMode), isTwo = isTwoPassMode(newMode);
+  if (wasTwo && !isTwo) {
+    if (isStereoDuetMode(newMode) && sc.prompt_performance === undefined && sc.prompt_performance_m && sc.prompt_performance_f) {
+      sc.prompt_performance = `${String(sc.prompt_performance_m).trim()} ${String(sc.prompt_performance_f).trim()}`.trim();
+      if (!sc.prompt_soundscape) sc.prompt_soundscape = sc.prompt_soundscape_m || "Studio room tone under the duet vocal performance.";
+      if (sc.prompt_mode === "components") sc.prompt = compileModularPromptJS({ ...sc, prompt_mode: "components" }, null);
+    } else if (sc.prompt_performance === undefined && (sc.prompt_performance_m || sc.prompt_performance_f || sc.prompt)) {
+      hydrateSceneComponentsFromRawIfNeeded(sc, true);
+    }
+    delete sc.prompt_performance_m; delete sc.prompt_performance_f;
+    delete sc.prompt_soundscape_m; delete sc.prompt_soundscape_f;
+  } else if (!wasTwo && isTwo) {
+    if (sc.prompt_performance_m === undefined || sc.prompt_performance_f === undefined) {
+      hydrateSceneComponentsFromRawIfNeeded(sc, true);
+    }
+  }
+}
+window.onSceneModeChangedPromptSync = onSceneModeChangedPromptSync;
 
 function syncCanonicalPromptsFromComponents(sc) {
   if (!sc || sc.prompt_mode !== "components") return;
@@ -413,6 +449,7 @@ function syncCanonicalPromptsFromComponents(sc) {
     }
   }
 }
+window.syncCanonicalPromptsFromComponents = syncCanonicalPromptsFromComponents;
 
 function updateSceneNegativeBadgeAndChips(sc) {
   const el = (id) => document.getElementById(id);
@@ -519,7 +556,7 @@ function initModularAndNegativePromptEvents() {
   document.getElementById("btnPromptModeComponents")?.addEventListener("click", () => {
     const sc = getActiveSc();
     if (!sc || sc.prompt_mode === "components") return;
-    hydrateSceneComponentsFromRawIfNeeded(sc);
+    hydrateSceneComponentsFromRawIfNeeded(sc, true);
     sc.prompt_mode = "components";
     syncSceneModularAndNegativeUI(sc);
     markProjectDirty();
@@ -557,6 +594,7 @@ function initModularAndNegativePromptEvents() {
     sc.duet_lock_camera = Boolean(e.target.checked);
     syncCanonicalPromptsFromComponents(sc);
     markProjectDirty();
+    window.recordHistorySnapshot?.(`Toggle ${sc.id} Lock Camera`);
   });
 
   document.querySelectorAll(".comp-cam-chip").forEach((btn) => {

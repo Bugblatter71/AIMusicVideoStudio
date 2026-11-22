@@ -54,6 +54,7 @@ work/test_trimmed_exact/
 # --- State Hashes & Runtime Job Manifests ---
 state_hashes.json
 takes_manifest.json
+takes_manifest.lock
 **/work/jobs/
 **/work/jobs_*/
 *.log

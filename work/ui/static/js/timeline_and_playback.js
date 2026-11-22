@@ -170,6 +170,7 @@ function updateClipVideoPlayheadLoop() {
 function updateMasterVideoPlayheadLoop() {
   const masterVideo = document.getElementById("masterVideoPlayer");
   if (!masterVideo || masterVideo.paused || masterVideo.ended) return;
+  window.enforceMasterSceneLoop?.(masterVideo);
   updatePlayheadVisual(masterVideo.currentTime, true);
   requestAnimationFrame(updateMasterVideoPlayheadLoop);
 }
@@ -219,21 +220,13 @@ function initMediaSyncEvents() {
   // Master Video Player Events
   const masterVideo = document.getElementById("masterVideoPlayer");
   if (masterVideo) {
-    masterVideo.addEventListener("play", () => {
-      requestAnimationFrame(updateMasterVideoPlayheadLoop);
-    });
-    masterVideo.addEventListener("timeupdate", () => {
-      if (!isScrubbingRuler) {
-        updatePlayheadVisual(masterVideo.currentTime, !masterVideo.paused);
-      }
-    });
-    masterVideo.addEventListener("seeked", () => {
-      if (!isScrubbingRuler) {
-        updatePlayheadVisual(masterVideo.currentTime, false);
-      }
-    });
+    masterVideo.addEventListener("play", () => { window.enforceMasterSceneLoop?.(masterVideo); requestAnimationFrame(updateMasterVideoPlayheadLoop); });
+    masterVideo.addEventListener("timeupdate", () => { window.enforceMasterSceneLoop?.(masterVideo); if (!isScrubbingRuler) updatePlayheadVisual(masterVideo.currentTime, !masterVideo.paused); });
+    masterVideo.addEventListener("ended", () => { window.enforceMasterSceneLoop?.(masterVideo); });
+    masterVideo.addEventListener("seeked", () => { if (!isScrubbingRuler) updatePlayheadVisual(masterVideo.currentTime, false); });
   }
 }
+let timelineLoopBtns = [];
 
 // Canvas Image Cache for fast thumbnail/filmstrip rendering
 const canvasImageCache = {};
@@ -257,6 +250,7 @@ function getCanvasImage(url) {
 
 // Waveform Canvas Rendering
 function redrawTimeline() {
+  timelineLoopBtns = [];
   const dur = Math.max(state.audioDuration, 1);
   const pps = state.pixelsPerSecond * state.zoom;
   // Enforce maximum safe canvas width below browser/GPU texture limits to prevent white canvas bug
@@ -265,7 +259,7 @@ function redrawTimeline() {
 
   // Dynamic vertical scaling: track height and scene thumbnails resize proportionally with zoom
   const baseTrackHeight = 60;
-  const trackHeight = Math.max(30, Math.round(baseTrackHeight * state.zoom));
+  const trackHeight = Math.max(36, Math.round(baseTrackHeight * state.zoom));
   const trackTop = 84;
   const bottomMargin = 16;
   const totalHeight = trackTop + trackHeight + bottomMargin;
@@ -462,34 +456,43 @@ function redrawTimeline() {
     ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
     ctx.fillRect(sx, trackTop, sw, 18);
 
-    // Status badge calculations
+    // Status badge + compact Repeat button calculations (measure badge dynamically to prevent overflow)
     const aid = extractAnchorId(sc.anchor);
-    const badgeW = (hasClip && sw > 90) ? 48 : (aid && sw > 90 ? 46 : 0);
-    const rightLimit = sx + sw - (badgeW > 0 ? badgeW + 6 : 6);
-
-    // Sticky Scene ID & timing (stays visible while scrolling left until no room)
-    const curScrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
-    const labelX = Math.max(sx + 6, curScrollLeft + 6);
-    const fullLabel = `${sc.id} [${(sc.end - sc.start).toFixed(1)}s]`;
-    ctx.font = "bold 11px sans-serif";
-    const fullW = ctx.measureText(fullLabel).width;
-    const shortW = ctx.measureText(sc.id).width;
-    const labelToDraw = (labelX + fullW <= rightLimit) ? fullLabel : ((labelX + shortW <= rightLimit) ? sc.id : null);
-    if (labelToDraw) {
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(labelToDraw, labelX, trackTop + 13);
-    }
-
     const qItem = (state.renderQueue || []).find((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
     const isQueued = qItem && (qItem.status === "queued" || qItem.needs_render);
     const isRendering = qItem && qItem.status === "rendering";
+    let bBg = "rgba(56, 189, 248, 0.85)", bTxt = aid ? `⚓ ${aid}` : "", tCol = "#000000";
+    if (isRendering) { bBg = "rgba(56, 189, 248, 0.95)"; bTxt = sw > 135 ? "⚡ RENDERING" : "⚡ RENDER"; tCol = "#ffffff"; }
+    else if (isQueued) { bBg = "rgba(245, 158, 11, 0.95)"; bTxt = sw > 115 ? "▶ QUEUED" : "▶ Q"; tCol = "#ffffff"; }
+    else if (hasClip) { bBg = "rgba(16, 185, 129, 0.95)"; bTxt = "▶ VIDEO"; tCol = "#ffffff"; }
+    ctx.font = "bold 8.5px sans-serif";
+    const measuredBadgeW = bTxt ? Math.ceil(ctx.measureText(bTxt).width + 12) : 0;
+    const badgeW = (bTxt && sw >= measuredBadgeW + 58) ? measuredBadgeW : 0;
+    const hasLoopBtn = sw >= 46;
+    const loopW = hasLoopBtn ? 20 : 0;
+    const rightLimit = sx + sw - (badgeW > 0 ? badgeW + 6 : 6) - loopW;
+
+    // Sticky Scene ID & timing (clipped cleanly within scene header bounds)
+    const curScrollLeft = scrollContainer ? scrollContainer.scrollLeft : 0;
+    const labelX = Math.max(sx + 6, curScrollLeft + 6);
+    const shortLbl = `${sc.locked ? "🔒 " : ""}${sc.id}`;
+    const fullLabel = `${shortLbl} [${(sc.end - sc.start).toFixed(1)}s]`;
+    ctx.font = "bold 11px sans-serif";
+    const fullW = ctx.measureText(fullLabel).width;
+    const shortW = ctx.measureText(shortLbl).width;
+    const labelToDraw = (labelX + fullW <= rightLimit) ? fullLabel : ((labelX + shortW <= rightLimit) ? shortLbl : null);
+    if (labelToDraw && rightLimit > sx + 8) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(sx + 2, trackTop, Math.max(4, rightLimit - (sx + 2)), 20);
+      ctx.clip();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(labelToDraw, labelX, trackTop + 13);
+      ctx.restore();
+    }
 
     // Status badge (Top right of block)
     if (badgeW > 0) {
-      let bBg = "rgba(56, 189, 248, 0.85)", bTxt = `⚓ ${aid}`, tCol = "#000000";
-      if (isRendering) { bBg = "rgba(56, 189, 248, 0.95)"; bTxt = "⚡ RENDERING"; tCol = "#ffffff"; }
-      else if (isQueued) { bBg = "rgba(245, 158, 11, 0.95)"; bTxt = "▶ QUEUED"; tCol = "#ffffff"; }
-      else if (hasClip) { bBg = "rgba(16, 185, 129, 0.95)"; bTxt = "▶ VIDEO"; tCol = "#ffffff"; }
       ctx.fillStyle = bBg;
       const bx = sx + sw - badgeW;
       if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(bx, trackTop + 2, badgeW - 4, 14, 2); ctx.fill(); }
@@ -498,10 +501,20 @@ function redrawTimeline() {
       ctx.font = "bold 8.5px sans-serif";
       ctx.fillText(bTxt, bx + 4, trackTop + 12);
     }
+    if (hasLoopBtn) {
+      const lx = sx + sw - badgeW - 20, ly = trackTop + 2, isL = state.masterLoopSceneId === sc.id;
+      ctx.fillStyle = isL ? "rgba(14, 165, 233, 0.95)" : "rgba(30, 41, 59, 0.88)";
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(lx, ly, 16, 14, 2); ctx.fill(); } else ctx.fillRect(lx, ly, 16, 14);
+      ctx.fillStyle = isL ? "#ffffff" : "#94a3b8";
+      ctx.font = "bold 9px sans-serif";
+      ctx.fillText("↻", lx + 4, trackTop + 12);
+      timelineLoopBtns.push({ idx, x: lx, y: ly, w: 16, h: 14 });
+    }
 
     // Outline Border
     let borderCol = "rgba(255, 255, 255, 0.25)";
     if (isSelected) borderCol = "#38bdf8";
+    else if (sc.locked) borderCol = "rgba(245, 158, 11, 0.8)";
     else if (isRendering) borderCol = "rgba(56, 189, 248, 0.8)";
     else if (isQueued) borderCol = "rgba(245, 158, 11, 0.75)";
     else if (hasClip) borderCol = "rgba(16, 185, 129, 0.55)";
@@ -559,8 +572,9 @@ function redrawTimeline() {
     ctx.restore();
   });
 
-  // Draw Timeline Markers (Dashed vertical guidelines & Flags on ruler)
+  // Draw Timeline Markers (Dashed vertical guidelines & 2-lane staggered Flags on ruler)
   const markers = state.projectData?.markers || [];
+  const markerLaneEnd = [-Infinity, -Infinity];
   markers.forEach((m, idx) => {
     const mx = m.time * pps;
     const color = m.color || "#f59e0b";
@@ -576,15 +590,17 @@ function redrawTimeline() {
     ctx.stroke();
     ctx.restore();
 
-    // 2. Marker flag on ruler (top bar)
+    // 2. Marker flag on ruler (2-lane stagger avoids label overlap)
     ctx.save();
     const label = `🚩 ${m.name || "Cue"}`;
-    ctx.font = "bold 9px sans-serif";
+    ctx.font = "bold 8.5px sans-serif";
     const textWidth = ctx.measureText(label).width;
-    const flagW = textWidth + 8;
-    const flagH = 16;
+    const flagW = Math.min(180, textWidth + 8);
+    const flagH = 11;
     const flagX = mx;
-    const flagY = 3;
+    const lane = flagX >= markerLaneEnd[0] + 3 ? 0 : (flagX >= markerLaneEnd[1] + 3 ? 1 : (markerLaneEnd[0] <= markerLaneEnd[1] ? 0 : 1));
+    markerLaneEnd[lane] = flagX + flagW;
+    const flagY = lane === 0 ? 1 : 11;
 
     // Flag background pill
     ctx.fillStyle = color;
@@ -598,9 +614,10 @@ function redrawTimeline() {
 
     // Flag text
     ctx.fillStyle = "#0f172a";
-    ctx.fillText(label, flagX + 4, flagY + 11);
+    ctx.fillText(label, flagX + 4, flagY + 8.5, Math.max(20, flagW - 6));
     ctx.restore();
   });
+  window.renderSceneJumpBar?.();
 }
 
 function findHoveredBoundary(clickX, clickY) {
@@ -630,7 +647,7 @@ function setupCanvasEvents() {
 
     zoomSlider.addEventListener("input", (e) => {
       const val = parseFloat(e.target.value);
-      state.zoom = Math.max(1.0, isNaN(val) ? 1.0 : val);
+      state.zoom = Math.max(0.2, isNaN(val) ? 1.0 : val);
       redrawTimeline();
       updatePlayheadVisual(state.playheadTime || audioEl.currentTime);
     });
@@ -683,9 +700,10 @@ function setupCanvasEvents() {
     // 0. Check if clicked on a draggable scene boundary
     const boundaryIdx = findHoveredBoundary(clickX, clickY);
     if (boundaryIdx !== null) {
+      const scA = state.projectData?.scenes?.[boundaryIdx], scB = state.projectData?.scenes?.[boundaryIdx + 1];
+      if (scA?.locked || scB?.locked) { showToast("🔒 Scene is locked — unlock it first to adjust timing"); return; }
       if (typeof window.beginEditSession === "function") {
-        const sc = state.projectData?.scenes?.[boundaryIdx];
-        window.beginEditSession(`boundary:${boundaryIdx}`, `Drag Scene Boundary ${sc ? sc.id : ""}`.trim());
+        window.beginEditSession(`boundary:${boundaryIdx}`, `Drag Scene Boundary ${scA ? scA.id : ""}`.trim());
       }
       state.isDraggingBoundary = true;
       state.draggedBoundaryIdx = boundaryIdx;
@@ -715,7 +733,9 @@ function setupCanvasEvents() {
       return;
     }
 
-    // 2. Check if clicked inside a scene block
+    // 2. Check if clicked inside a scene block (small Repeat button first)
+    const loopHit = timelineLoopBtns.find((b) => clickX >= b.x && clickX <= b.x + b.w && clickY >= b.y && clickY <= b.y + b.h);
+    if (loopHit) { window.toggleSceneMasterLoop?.(loopHit.idx); return; }
     const curTrackBottom = 84 + Math.max(30, Math.round(60 * (state.zoom || 1)));
     if (clickY >= 84 && clickY <= curTrackBottom) {
       const scenes = state.projectData?.scenes || [];
@@ -763,38 +783,18 @@ function setupCanvasEvents() {
   });
 
   window.addEventListener("mouseup", () => {
-    if (isRightClickDragging) {
-      isRightClickDragging = false;
-      canvas.style.cursor = "";
-      if (scrollContainer) scrollContainer.style.cursor = "";
-    }
+    if (isRightClickDragging) { isRightClickDragging = false; canvas.style.cursor = ""; if (scrollContainer) scrollContainer.style.cursor = ""; }
     if (state.isDraggingBoundary) {
-      state.isDraggingBoundary = false;
-      state.draggedBoundaryIdx = null;
-      redrawTimeline();
-      if (typeof window.commitEditSession === "function") {
-        window.commitEditSession();
-      }
+      state.isDraggingBoundary = false; state.draggedBoundaryIdx = null; redrawTimeline();
+      if (typeof window.commitEditSession === "function") window.commitEditSession();
     }
-    if (isScrubbingRuler) {
-      isScrubbingRuler = false;
-    }
+    if (isScrubbingRuler) isScrubbingRuler = false;
   });
-
   // Dynamic hover cursor over timeline canvas
   canvas.addEventListener("mousemove", (e) => {
-    if (isRightClickDragging) {
-      canvas.style.cursor = "grabbing";
-      return;
-    }
-    if (state.isDraggingBoundary) {
-      canvas.style.cursor = "col-resize";
-      return;
-    }
-    if (isScrubbingRuler) {
-      canvas.style.cursor = "ew-resize";
-      return;
-    }
+    if (isRightClickDragging) { canvas.style.cursor = "grabbing"; return; }
+    if (state.isDraggingBoundary) { canvas.style.cursor = "col-resize"; return; }
+    if (isScrubbingRuler) { canvas.style.cursor = "ew-resize"; return; }
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const my = e.clientY - rect.top;

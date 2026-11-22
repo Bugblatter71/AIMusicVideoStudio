@@ -10,7 +10,7 @@ from .prompts import extract_anchor_id
 from .stage1_anchors import import_anchors_from_dir, match_anchor_id, run_stage1_anchors
 from .stage2_scenes import _scene_id_matches, run_stage2_scenes
 from .stage3_master import run_stage3_assemble_master
-from .wgp_bridge import LazyWgpSession, write_engine_status
+from .wgp_bridge import LazyWgpSession, SessionRouter, write_engine_status
 
 
 def print_catalog(ctx: ProjectContext):
@@ -135,6 +135,8 @@ def parse_cli_and_config(argv: list[str]):
     cli_profiles: str | None = None
     cli_import_dir: str | None = None
     cli_skip_anchors: bool = False
+    cli_backend: str = ""
+    cli_upscale_backend: str = ""
     other_tokens: list[str] = []
 
     i = 0
@@ -188,6 +190,20 @@ def parse_cli_and_config(argv: list[str]):
             cli_skip_anchors = True
             i += 1
             continue
+        if tok == "--backend" and i + 1 < len(argv):
+            cli_backend = argv[i + 1]; i += 2; continue
+        if tok.lower().startswith("--backend="):
+            cli_backend = tok.split("=", 1)[1]; i += 1; continue
+        if tok.lower() == "--fal":
+            cli_backend = "fal"; i += 1; continue
+        if tok.lower() == "--minimax":
+            cli_backend = "minimax"; i += 1; continue
+        if tok.lower() == "--local":
+            cli_backend = "local"; i += 1; continue
+        if tok == "--upscale-backend" and i + 1 < len(argv):
+            cli_upscale_backend = argv[i + 1]; i += 2; continue
+        if tok.lower().startswith("--upscale-backend="):
+            cli_upscale_backend = tok.split("=", 1)[1]; i += 1; continue
         if tok.lower().endswith(".json") and json_arg is None:
             json_arg = tok
             i += 1
@@ -220,6 +236,8 @@ def parse_cli_and_config(argv: list[str]):
             raise FileNotFoundError(f"Configuration JSON or project not found: {json_arg}")
 
     ctx = ProjectContext(json_path, profiles_path=Path(cli_profiles) if cli_profiles else None)
+    ctx.cli_backend = cli_backend
+    ctx.cli_upscale_backend = cli_upscale_backend
     if cli_renderer is not None:
         ctx.default_anchor_renderer = str(cli_renderer).strip()
     if cli_video_renderer is not None:
@@ -426,6 +444,64 @@ def init_new_project(target_name: str, force: bool = False):
     print("=" * 76 + "\n", flush=True)
 
 
+def _run_upscale_cli(args: list[str]) -> bool:
+    """Handles `<config> upscale <scene_id> [--method <method>] [--ai-refiner <ref>] [--film-grain <f>] [--take-id <id>] [--dummy]`."""
+    idx = next((i for i, a in enumerate(args) if a.lower() in ("upscale", "--upscale")), -1)
+    if idx < 0:
+        return False
+    remaining = [a for j, a in enumerate(args) if j != idx]
+    method, ai_refiner, film_grain, take_id, upscale_backend, scene_tok = "", "", 0.0, None, "", None
+    has_method = False
+    clean_args = []
+    i = 0
+    while i < len(remaining):
+        tok = remaining[i]
+        if tok in ("--method", "-m") and i + 1 < len(remaining):
+            method = remaining[i + 1]; has_method = True; i += 2; continue
+        if tok.lower().startswith("--method="):
+            method = tok.split("=", 1)[1]; has_method = True; i += 1; continue
+        if tok in ("--ai-refiner", "--refiner") and i + 1 < len(remaining):
+            ai_refiner = remaining[i + 1]; i += 2; continue
+        if tok.lower().startswith("--ai-refiner="):
+            ai_refiner = tok.split("=", 1)[1]; i += 1; continue
+        if tok == "--film-grain" and i + 1 < len(remaining):
+            film_grain = float(remaining[i + 1] or 0.0); i += 2; continue
+        if tok.lower().startswith("--film-grain="):
+            film_grain = float(tok.split("=", 1)[1] or 0.0); i += 1; continue
+        if tok in ("--take-id", "--take") and i + 1 < len(remaining):
+            take_id = remaining[i + 1]; i += 2; continue
+        if tok.lower().startswith("--take-id="):
+            take_id = tok.split("=", 1)[1]; i += 1; continue
+        if tok in ("--upscale-backend", "--backend") and i + 1 < len(remaining):
+            upscale_backend = remaining[i + 1]; i += 2; continue
+        if tok.lower().startswith("--upscale-backend=") or tok.lower().startswith("--backend="):
+            upscale_backend = tok.split("=", 1)[1]; i += 1; continue
+        clean_args.append(tok)
+        i += 1
+    if not has_method and not ai_refiner and film_grain <= 0:
+        method = "flashvsrplus*2"
+    ctx, _, force_scenes, _, _, _, _, _, _, _, dummy_render = parse_cli_and_config(clean_args)
+    scene_tok = force_scenes[0] if force_scenes else next(
+        (t for t in clean_args if not t.startswith("-") and not t.lower().endswith(".json")),
+        "",
+    )
+    if not scene_tok:
+        raise SystemExit("Usage: run_overnight_v3.py <config.json> upscale <scene_id> --method <method>")
+    from .upscale import upscale_scene_clip
+
+    lazy_session = SessionRouter(ctx)
+    try:
+        upscale_scene_clip(
+            ctx, lazy_session, scene_tok, method,
+            take_id=take_id, dummy_render=dummy_render,
+            ai_refiner=ai_refiner, film_grain_intensity=film_grain,
+            backend=upscale_backend,
+        )
+    finally:
+        lazy_session.close()
+    return True
+
+
 def main():
     args = sys.argv[1:]
     for i, a in enumerate(args):
@@ -435,6 +511,17 @@ def main():
             target = remaining[0] if remaining else "new_project.json"
             init_new_project(target, force=force)
             return
+
+    if _run_upscale_cli(args):
+        return
+
+    from .duet_roi import run_repair_lipsync_cli
+    if run_repair_lipsync_cli(args):
+        return
+
+    from .clip_import import run_import_clip_cli
+    if run_import_clip_cli(args):
+        return
 
     t_start = time.time()
     (
@@ -457,7 +544,7 @@ def main():
 
     print(f"[Config] Loaded project '{ctx.project_name}' from: {ctx.json_path}", flush=True)
     state = ctx.load_state_hashes()
-    lazy_session = LazyWgpSession(ctx)
+    lazy_session = SessionRouter(ctx)
 
     if sync_only:
         run_stage1_anchors(ctx, lazy_session, state, [], sync_only=True)
@@ -477,6 +564,7 @@ def main():
         if scene_meta:
             project_scenes_by_id = {s["id"]: s for s in ctx.scenes if isinstance(s, dict) and "id" in s}
             scene_renders = state.setdefault("scene_renders", {})
+            from .upscale import resolve_scene_canonical_stem
             for entry in scene_meta:
                 sid = entry.get("id")
                 curr_sc = project_scenes_by_id.get(sid)
@@ -486,6 +574,12 @@ def main():
                     entry["dur"] = round(entry["end"] - entry["start"], 3)
                     if "anchor" in curr_sc:
                         entry["anchor"] = curr_sc["anchor"]
+                    _, vrspec = ctx.resolve_video_renderer(curr_sc)
+                    res_str = ctx.resolve_scene_resolution(curr_sc, vrspec)
+                    c_stem, _, _ = resolve_scene_canonical_stem(curr_sc, ctx.renders_dir, res_str)
+                    cand_mp4 = f"{c_stem}.mp4"
+                    if (ctx.renders_dir / cand_mp4).exists() or not (ctx.renders_dir / str(entry.get("clip", ""))).exists():
+                        entry["clip"] = cand_mp4
                 stem = Path(entry.get("clip", "")).stem
                 r_info = scene_renders.get(stem)
                 if r_info and "render_start" in r_info:
@@ -497,7 +591,6 @@ def main():
                 pass
         else:
             scene_meta = []
-            res_str = ctx.resolve_resolution(ctx.current_resolution)
             scene_renders = state.setdefault("scene_renders", {})
             for sc in ctx.scenes:
                 sid = sc["id"]
@@ -505,6 +598,8 @@ def main():
                 end = float(sc["end"])
                 edit_dur = round(end - start, 3)
                 mode = sc["mode"]
+                _, vrspec = ctx.resolve_video_renderer(sc)
+                res_str = ctx.resolve_scene_resolution(sc, vrspec)
                 if mode in ("duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
                     out_clip = f"{sid}_Pass2_Final_{res_str}.mp4"
                 elif mode in ("duet_method_a", "duet_a"):
@@ -546,7 +641,7 @@ def main():
             regen_anchors = run_stage1_anchors(ctx, lazy_session, state, force_anchors, dummy_render=dummy_render).union(imported_anchors)
 
         if anchors_only:
-            write_engine_status(ctx, {"state": "idle"})
+            write_engine_status(ctx, {"state": "idle"}, backend=getattr(ctx, "cli_backend", "") or None)
             print(f"\n[Anchors-Only Mode] Finished anchor processing in {time.time() - t_start:.1f}s.", flush=True)
             print(f"Preview your updated anchors in: {ctx.anchors_dir}", flush=True)
             return
@@ -565,7 +660,8 @@ def main():
         )
         if not getattr(ctx, "no_stitch", False):
             run_stage3_assemble_master(ctx, scene_meta)
-        write_engine_status(ctx, {"state": "idle"})
+        if not (force_scenes or getattr(ctx, "no_queue_sync", False)):
+            write_engine_status(ctx, {"state": "idle"}, backend=getattr(ctx, "cli_backend", "") or None)
         print(f"\nPipeline finished in {(time.time() - t_start) / 60:.1f} minutes.", flush=True)
     finally:
         lazy_session.close()

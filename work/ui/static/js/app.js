@@ -20,7 +20,16 @@ if (!window.state) {
     "js/characters_studio.js",
     "js/markers_and_prompts.js",
     "js/anchors_and_settings.js",
+    "js/fal_settings.js",
+    "js/duet_repair.js",
+    "js/queue_engines.js",
     "js/queue_and_console.js",
+    "js/master_and_export.js",
+    "js/scenes_tab.js",
+    "js/fal_settings.js",
+    "js/duet_repair.js",
+    "js/clip_import.js",
+    "js/split_resizer.js",
   ];
   scripts.forEach((src) => {
     const el = document.createElement("script");

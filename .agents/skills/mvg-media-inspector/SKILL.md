@@ -1,32 +1,33 @@
 ---
 name: mvg-media-inspector
-description: Inspects generated video clips, anchor portraits, filmstrips, and ffprobe stream metadata without heavy token overhead.
+description: Inspects generated video clips, anchor/reference images, audio files, filmstrips, and ffprobe stream metadata without heavy token overhead.
 ---
 
 # MVG Media Inspector
 
-Use this skill whenever you need to inspect rendered MP4 video clips, anchor portraits, audio streams, or filmstrips in the Music Video Generation Studio.
+Use this skill whenever you need to inspect rendered MP4 clips, anchor/character images, audio stems, or filmstrips in the Music Video Generation Studio.
 
 ---
 
 ## 1. Fast CLI Commands (`inspect_clip.py`)
 
-Inspect any media file without loading raw binary bytes or flooding the context with ffprobe noise:
-
-### 1.1 Inspect Video Metadata
-Outputs resolution, exact duration, frame count, FPS, video codec, audio sample rate, and channels:
+### 1.1 Inspect Video, Image, or Audio File
+Outputs resolution, exact duration, frame count, FPS, codec, pixel format, and audio sample rate/channels:
 ```bash
 python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/renders_v3/S01_male_solo_1344x768.mp4
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/anchors_v3/A01.jpg --json
 ```
 
-### 1.2 Output JSON Summary
+### 1.2 Generate Evenly-Spaced 5-Frame Review Filmstrip
+Spaced proportionally across the full duration of the clip (works for any length clip):
 ```bash
-python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/renders_v3/S01_male_solo_1344x768.mp4 --json
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py <path_to_mp4> --strip
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py <path_to_mp4> --strip --output-dir <dir>
 ```
 
-### 1.3 Generate Contact Sheet / Filmstrip
-Generates a 5x1 composite review filmstrip of the clip using local FFmpeg:
+### 1.3 Batch-Scan a Project's Audio Folder (Useful for New Projects)
+Lists every audio track/stem in `projects/<slug>/audio/` with duration, sample rate, channels, and codec:
 ```bash
-python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/renders_v3/S01_male_solo_1344x768.mp4 --strip
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/<slug>/audio --scan-audio
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/<slug>/audio --scan-audio --json
 ```
-Writes `<filename>_strip.jpg` to the project's review strips directory.

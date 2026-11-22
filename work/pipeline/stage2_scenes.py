@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 from .context import ProjectContext, resolve_scene_padding
+from .duet_roi import apply_pass2_guide_and_roi, finalize_local_roi_pass2_output
 from .media_utils import (
     _file_sha256,
     _sha256,
@@ -35,12 +36,15 @@ from .stage2_hashes import (
     match_scene_pass,
     _stem_matches_legacy_render,
     compute_project_task_hashes,
+    load_queue_backend_overrides,
 )
+from .upscale import run_chained_ai_refiners
 from .wgp_bridge import (
     LazyWgpSession,
     check_cancel_requested,
     clear_cancel_request,
     execute_wgp_job,
+    resolve_session_for_backend,
     write_engine_status,
 )
 
@@ -71,7 +75,8 @@ def run_stage2_scenes(
     anchor_hashes = state.setdefault("anchors", {})
     task_hashes = state.setdefault("tasks", {})
     settings_store = state.setdefault("task_settings", {})
-    project_task_hashes = compute_project_task_hashes(ctx)
+    q_overrides = load_queue_backend_overrides(ctx, force_scenes=force_scenes) if no_queue_sync else {}
+    project_task_hashes = compute_project_task_hashes(ctx, backend_overrides=q_overrides or None)
 
     all_tasks: list[tuple[dict, str, str, bool]] = []
     scene_meta: list[dict] = []
@@ -118,7 +123,7 @@ def run_stage2_scenes(
             target_render_start = req_start
             target_render_end = target_render_start + gen_dur
 
-            res_str = ctx.resolve_resolution(vrspec.get("resolution", ctx.current_resolution))
+            res_str = ctx.resolve_scene_resolution(sc, vrspec)
             if mode in ("duet_method_a", "duet_a"):
                 stem_l = sc.get("stem_m") or sc.get("stem_left") or sc.get("stem_l") or "male"
                 stem_r = sc.get("stem_f") or sc.get("stem_right") or sc.get("stem_r") or "female"
@@ -275,7 +280,7 @@ def run_stage2_scenes(
             target_render_start = req_start
             target_render_end = target_render_start + gen_dur
 
-            res_str = ctx.resolve_resolution(vrspec_p2.get("resolution", ctx.current_resolution))
+            res_str = ctx.resolve_scene_resolution(sc, vrspec_p2)
             out_p1 = f"{sid}_Pass1_Left_{res_str}"
             out_p2 = f"{sid}_Pass2_Final_{res_str}"
 
@@ -321,7 +326,7 @@ def run_stage2_scenes(
             t_p1 = ctx.make_video_task(
                 output_filename=out_p1,
                 prompt=prompt_m_for_task,
-                video_length=frames,
+                video_length=ctx.valid_video_frames(req_dur, vrspec_p1),
                 seed=seed_m,
                 image_start=anchor_path,
                 audio_path=wav_m,
@@ -330,6 +335,7 @@ def run_stage2_scenes(
                 image_end=anchor_end_path,
                 sc=sc,
                 pass_num=1,
+                resolution=res_str,
             )
             t_p1["render_start"] = target_render_start
             t_p1["render_end"] = target_render_end
@@ -481,9 +487,10 @@ def run_stage2_scenes(
                 "anchor": sc.get("anchor")
             })
 
-    ctx.save_state_hashes(state)
-    (ctx.jobs_dir / "v3_manifest.json").write_text(json.dumps([t[0] for t in all_tasks], indent=2), encoding="utf-8")
-    (ctx.jobs_dir / "v3_timeline.json").write_text(json.dumps(scene_meta, indent=2), encoding="utf-8")
+    if not (has_scene_filter and no_queue_sync):
+        ctx.save_state_hashes(state)
+        (ctx.jobs_dir / "v3_manifest.json").write_text(json.dumps([t[0] for t in all_tasks], indent=2), encoding="utf-8")
+        (ctx.jobs_dir / "v3_timeline.json").write_text(json.dumps(scene_meta, indent=2), encoding="utf-8")
 
     queue_summary = []
     for idx, (t, t_hash, reason, needs_render) in enumerate(all_tasks, 1):
@@ -597,10 +604,12 @@ def run_stage2_scenes(
                 queue_summary[idx - 1].pop(k, None)
             _sync_queue()
             before_scene_render(ctx, sc_obj, out_name, out_mp4, state)
+            dummy_b = str(t.get("_backend") or t.get("backend") or "local").strip().lower()
             write_engine_status(
                 ctx,
                 {
                     "state": "rendering",
+                    "backend": dummy_b,
                     "stage": "scene",
                     "idx": idx,
                     "total": len(all_tasks),
@@ -621,18 +630,20 @@ def run_stage2_scenes(
                     "started_at": round(t0, 3),
                 },
                 merge=False,
+                backend=dummy_b,
+                task_stem=out_name,
             )
 
             # Emit mock progress steps
             total_dummy_steps = 5
             for step in range(1, total_dummy_steps + 1):
-                if check_cancel_requested(ctx):
+                if check_cancel_requested(ctx, backend=dummy_b, task_stem=out_name):
                     restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
-                    clear_cancel_request(ctx)
+                    clear_cancel_request(ctx, backend=dummy_b, task_stem=out_name, include_global=True)
                     queue_summary[idx - 1]["status"] = "queued"
                     queue_summary[idx - 1]["reason"] = "STOPPED BY USER"
                     _sync_queue()
-                    write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"})
+                    write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"}, backend=dummy_b, task_stem=out_name)
                     raise RuntimeError(f"Cancelled rendering {out_mp4.name}")
                 time.sleep(0.04)
                 pct = round((step / total_dummy_steps) * 100, 1)
@@ -652,7 +663,7 @@ def run_stage2_scenes(
                     f"\n[QUEUE_PROGRESS] {json.dumps(prog)}",
                     flush=True,
                 )
-                write_engine_status(ctx, prog)
+                write_engine_status(ctx, prog, backend=dummy_b, task_stem=out_name)
                 queue_summary[idx - 1]["pct"] = pct
                 _sync_queue()
 
@@ -663,7 +674,7 @@ def run_stage2_scenes(
             w, h = [int(x) for x in res.split("x")]
             cmd = [
                 str(ctx.ffmpeg), "-y",
-                "-f", "lavfi", "-i", f"color=c=0x1e293b:s={w}x{h}:r={ctx.fps}:d={dur:.3f}",
+                "-f", "lavfi", "-i", f"testsrc2=size={w}x{h}:rate={ctx.fps}:d={dur:.3f}",
             ]
             audio_file = t.get("audio_guide")
             if audio_file and Path(audio_file).exists() and Path(audio_file).stat().st_size > 100:
@@ -673,7 +684,7 @@ def run_stage2_scenes(
 
             cmd.extend([
                 "-vf", f"drawtext=text='[DUMMY RENDER - {out_name}]':fontcolor=white:fontsize=24:x=(w-text_w)/2:y=(h-text_h)/2",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-t", f"{dur:.3f}", str(out_mp4),
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-t", f"{dur:.3f}", str(out_mp4),
             ])
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elapsed = round(time.time() - t0, 1)
@@ -695,6 +706,8 @@ def run_stage2_scenes(
                     "pct": 100.0,
                     "elapsed": elapsed,
                 },
+                backend=dummy_b,
+                task_stem=out_name,
             )
 
             task_hashes[out_name] = t_hash
@@ -707,27 +720,29 @@ def run_stage2_scenes(
                 "elapsed": elapsed,
                 "completed_at": round(time.time(), 3),
             }
+            used_aids = set()
             for img_k in ("image_start", "image_end"):
                 img_p = t.get(img_k)
                 if img_p and Path(img_p).exists():
                     aid_k = extract_anchor_id(Path(img_p).name)
                     if aid_k.startswith("A") and aid_k[1:].isdigit():
-                        state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p))
-            ctx.save_state_hashes(state)
+                        state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p)); used_aids.add(aid_k)
+            ctx.save_state_hashes(state, updated_keys={out_name}, updated_anchor_ids=used_aids)
             after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state)
 
             if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch):
                 assemble_progressive_master(ctx, scene_meta, log_prefix="      ")
             continue
 
-        session = lazy_session.get()
+        task_backend = str(t.get("_backend") or t.get("backend") or "local").strip().lower()
+        session = resolve_session_for_backend(lazy_session, task_backend)
         print(
             f"  [{idx:02d}/{len(all_tasks)}] Rendering {out_mp4.name} [{reason}] "
-            f"(model={t['model_type']}, {t['video_length']}f, vpt={t['video_prompt_type'] or 'S'})...",
+            f"(backend={task_backend}, model={t['model_type']}, {t['video_length']}f, vpt={t['video_prompt_type'] or 'S'})...",
             flush=True,
         )
         print(
-            f"[QUEUE_ACTIVE] {json.dumps({'idx': idx, 'total': len(all_tasks), 'filename': out_mp4.name, 'reason': reason, 'model': t.get('model_type'), 'frames': t.get('video_length'), 'resolution': t.get('resolution')})}",
+            f"[QUEUE_ACTIVE] {json.dumps({'idx': idx, 'total': len(all_tasks), 'filename': out_mp4.name, 'reason': reason, 'backend': task_backend, 'model': t.get('model_type'), 'frames': t.get('video_length'), 'resolution': t.get('resolution'), 'started_at': round(time.time(), 3)})}",
             flush=True,
         )
         queue_summary[idx - 1]["status"] = "rendering"
@@ -736,41 +751,50 @@ def run_stage2_scenes(
         _sync_queue()
         before_scene_render(ctx, sc_obj, out_name, out_mp4, state)
 
-        wangp_task = {k: v for k, v in t.items() if k not in ("render_start", "render_end")}
+        if task_backend in ("fal", "minimax"):
+            exec_task = {k: v for k, v in t.items() if k not in ("render_start", "render_end")}
+        else:
+            exec_task = {k: v for k, v in t.items() if k not in ("render_start", "render_end") and not k.startswith("_")}
+        roi_meta = None
         try:
+            exec_task, roi_meta = apply_pass2_guide_and_roi(ctx, sc_obj, pass_num, exec_task, task_backend)
             res, was_cancelled, t0 = execute_wgp_job(
-                ctx=ctx, session=session, task_cfg=wangp_task, idx=idx, total=len(all_tasks),
+                ctx=ctx, session=session, task_cfg=exec_task, idx=idx, total=len(all_tasks),
                 filename=out_mp4.name, stage="scene", reason=reason, model=str(t.get("model_type") or ""),
                 frames=int(t.get("video_length") or 0), resolution=str(t.get("resolution") or ""),
                 on_progress_item=queue_summary[idx - 1], sync_queue_fn=_sync_queue,
             )
-        except BaseException:
+            if was_cancelled:
+                restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
+                clear_cancel_request(ctx, backend=task_backend, task_stem=out_name, include_global=True)
+                queue_summary[idx - 1]["status"] = "queued"
+                queue_summary[idx - 1]["reason"] = "STOPPED BY USER"
+                _sync_queue()
+                write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"}, backend=task_backend, task_stem=out_name)
+                raise RuntimeError(f"Cancelled rendering {out_mp4.name}")
+            if not res.success or not res.generated_files:
+                restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
+                err_list = [e.message for e in (res.errors or [])]
+                queue_summary[idx - 1]["status"] = "failed"
+                queue_summary[idx - 1]["error"] = err_list
+                _sync_queue()
+                write_engine_status(ctx, {"state": "failed", "phase": "failed", "error": err_list}, backend=task_backend, task_stem=out_name)
+                print(f"[QUEUE_FAIL] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'error': err_list})}", flush=True)
+                raise RuntimeError(f"Failed rendering {out_mp4.name}: {err_list}")
+            finalize_local_roi_pass2_output(ctx, Path(res.generated_files[0]), out_mp4, roi_meta)
+            roi_meta = None
+            if t.get("_chained_ai_refiners"):
+                run_chained_ai_refiners(ctx, lazy_session, out_mp4, t, dummy_render=dummy_render)
+        except BaseException as exc:
             restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
+            if "Cancelled rendering" not in str(exc):
+                write_engine_status(ctx, {"state": "failed", "phase": "failed"}, backend=task_backend, task_stem=out_name)
+            for tf in ((roi_meta or {}).get("tmp_files") or []):
+                try: Path(tf).unlink(missing_ok=True)
+                except OSError: pass
+            try: (ctx.renders_dir / f".roi_crop_{out_name}.mp4").unlink(missing_ok=True)
+            except OSError: pass
             raise
-        if was_cancelled:
-            restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
-            clear_cancel_request(ctx)
-            queue_summary[idx - 1]["status"] = "queued"
-            queue_summary[idx - 1]["reason"] = "STOPPED BY USER"
-            _sync_queue()
-            write_engine_status(ctx, {"state": "cancelled", "phase": "cancelled", "raw_phase": "Stopped by user"})
-            raise RuntimeError(f"Cancelled rendering {out_mp4.name}")
-        if not res.success or not res.generated_files:
-            restore_previous_active_take_if_missing(ctx, sid, out_name, out_mp4)
-            err_list = [e.message for e in (res.errors or [])]
-            queue_summary[idx - 1]["status"] = "failed"
-            queue_summary[idx - 1]["error"] = err_list
-            _sync_queue()
-            write_engine_status(ctx, {"state": "failed", "phase": "failed", "error": err_list})
-            print(
-                f"[QUEUE_FAIL] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'error': err_list})}",
-                flush=True,
-            )
-            raise RuntimeError(f"Failed rendering {out_mp4.name}: {err_list}")
-
-        gen_path = Path(res.generated_files[0])
-        if gen_path.resolve() != out_mp4.resolve():
-            shutil.copy2(gen_path, out_mp4)
         elapsed = round(time.time() - t0, 1)
         print(f"      -> Completed {out_mp4.name} in {elapsed:.1f}s", flush=True)
         print(
@@ -790,6 +814,8 @@ def run_stage2_scenes(
                 "pct": 100.0,
                 "elapsed": elapsed,
             },
+            backend=task_backend,
+            task_stem=out_name,
         )
 
         task_hashes[out_name] = t_hash
@@ -802,13 +828,14 @@ def run_stage2_scenes(
             "elapsed": elapsed,
             "completed_at": round(time.time(), 3),
         }
+        used_aids = set()
         for img_k in ("image_start", "image_end"):
             img_p = t.get(img_k)
             if img_p and Path(img_p).exists():
                 aid_k = extract_anchor_id(Path(img_p).name)
                 if aid_k.startswith("A") and aid_k[1:].isdigit():
-                    state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p))
-        ctx.save_state_hashes(state)
+                    state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p)); used_aids.add(aid_k)
+        ctx.save_state_hashes(state, updated_keys={out_name}, updated_anchor_ids=used_aids)
         after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state)
 
         # Update progressive master if this pass completed a full scene (not an intermediate pass 1 guide)

@@ -14,6 +14,7 @@ from .takes import (
     after_scene_render,
     before_scene_render,
     create_project_checkpoint,
+    delete_scene_take,
     ensure_baseline_takes_seeded,
     get_vault_stats,
     handle_takes_api,
@@ -106,8 +107,19 @@ from .stage2_scenes import (
 )
 from .stage3_master import (
     assemble_progressive_master,
+    build_stage3_scale_filters,
     run_stage3_assemble_master,
 )
+from .upscale import (
+    SPATIAL_UPSAMPLER_OPTIONS,
+    handle_upscale_api,
+    parse_upsampling_scale,
+    resolve_effective_spatial_upsampling,
+    resolve_scene_canonical_stem,
+    upscale_scene_clip,
+    validate_late_upsampling_method,
+)
+from .clip_import import import_video_clip_as_take, run_import_clip_cli
 from .wgp_bridge import (
     LazyWgpSession,
     check_cancel_requested,
@@ -199,9 +211,12 @@ __all__ = [
     "restore_previous_active_take_if_missing",
     "try_auto_promote_vault_hit",
     "promote_take_to_active",
+    "delete_scene_take",
     "create_project_checkpoint",
     "list_project_checkpoints",
     "rollback_project_checkpoint",
     "get_vault_stats",
     "handle_takes_api",
+    "import_video_clip_as_take",
+    "run_import_clip_cli",
 ]

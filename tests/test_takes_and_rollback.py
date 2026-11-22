@@ -40,6 +40,7 @@ from pipeline.takes import (
     restore_previous_active_take_if_missing,
     try_auto_promote_vault_hit,
     promote_take_to_active,
+    delete_scene_take,
     create_project_checkpoint,
     list_project_checkpoints,
     rollback_project_checkpoint,
@@ -528,6 +529,46 @@ class TestTakesAndRollback(unittest.TestCase):
         handle_media_stream(h, "test_slug/clip/S01_solo.mp4")
         self.assertEqual(h.sent_status, HTTPStatus.OK)
 
+        # Streaming bare scene ID without ?take= must resolve active_take_id (not first alphabetical resolution/Pass1)
+        (self.renders_dir / "S01_Pass1_Left_1280x720.mp4").write_bytes(b"OLD_1280_P1" + b"x" * 60000)
+        (self.renders_dir / "S01_Pass2_Final_1280x720.mp4").write_bytes(b"OLD_1280_P2" + b"x" * 60000)
+        act_vault = self.renders_dir / "takes" / "S01" / "S01_Pass2_Final_1920x1088__act1920.mp4"
+        act_vault.write_bytes(b"ACT_1920_P2" + b"y" * 60000)
+        (self.renders_dir / "S01_Pass2_Final_1920x1088.mp4").write_bytes(b"ACT_1920_P2" + b"y" * 60000)
+        manifest["scenes"]["S01"]["active_take_id"] = "take_act1920"
+        manifest["scenes"]["S01"]["takes"].append({
+            "take_id": "take_act1920",
+            "take_number": 2,
+            "scene_id": "S01",
+            "pass_num": 2,
+            "out_name": "S01_Pass2_Final_1920x1088",
+            "vault_rel_mp4": "takes/S01/S01_Pass2_Final_1920x1088__act1920.mp4",
+            "file_path": "work/renders_v3/takes/S01/S01_Pass2_Final_1920x1088__act1920.mp4",
+            "resolution": "1920x1088",
+        })
+        (self.proj_dir / "work" / "takes_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        import ui.server_queue as srv_q
+        clips = srv_q.collect_project_clips(self.proj_dir, self.initial_project_data)
+        self.assertEqual(clips["S01"]["filename"], "S01_Pass2_Final_1920x1088.mp4")
+
+        import io
+        from unittest import mock
+        cap_buf = io.BytesIO()
+        h_bare = MediaMockHandler("/media/test_slug/clip/S01?t=123")
+        with mock.patch.object(MediaMockHandler, "wfile", new_callable=mock.PropertyMock, return_value=cap_buf):
+            handle_media_stream(h_bare, "test_slug/clip/S01")
+        self.assertEqual(h_bare.sent_status, HTTPStatus.OK)
+        self.assertTrue(cap_buf.getvalue().startswith(b"ACT_1920_P2"))
+
+        # Frontend JS must always include take=<active_take_id> when previewing active take (never bare scene id)
+        takes_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "takes_and_history.js").read_text(encoding="utf-8")
+        self.assertIn("?take=${encodeURIComponent(chosenTake.take_id)}", takes_js)
+        scenes_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "scenes_tab.js").read_text(encoding="utf-8")
+        self.assertIn("?take=${encodeURIComponent(t.take_id)}", scenes_js)
+        insp_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "scene_inspector.js").read_text(encoding="utf-8")
+        self.assertIn("canon?.filename", insp_js)
+
     # =========================================================================
     # USER JOURNEY (UJ) END-TO-END TESTS
     # =========================================================================
@@ -848,6 +889,258 @@ class TestTakesAndRollback(unittest.TestCase):
         for q_item in queue:
             self.assertEqual(q_item["status"], "completed")
             self.assertFalse(q_item["needs_render"])
+
+    def test_16_uj_revert_edited_active_scene_to_rendered_take(self):
+        """UJ 6: Edited active scene reverts cleanly via /api/takes/activate and keeps clip UP-TO-DATE."""
+        import server
+        server.PROJECTS_DIR = Path(self.test_dir)
+
+        ctx = ProjectContext(self.config_file)
+        real_h = compute_project_task_hashes(ctx, target_resolution="768x432")
+        h_s01 = real_h["S01_solo_768x432"][0]
+
+        s01_render = self.renders_dir / "S01_solo_768x432.mp4"
+        s01_render.write_bytes(b"s01_rendered_on_disk_" + b"x" * 60000)
+        state = json.loads(self.state_hashes_file.read_text(encoding="utf-8"))
+        state.setdefault("tasks", {})["S01_solo_768x432"] = h_s01
+        state.setdefault("task_hashes", {})["S01_solo_768x432"] = h_s01
+        state.setdefault("scene_renders", {})["S01_solo_768x432"] = {"render_start": 0.0, "render_end": 5.0}
+        save_state_hashes_data(self.proj_dir, state)
+        ensure_baseline_takes_seeded(self.proj_dir, self.config_file)
+
+        manifest = load_takes_manifest(self.proj_dir)
+        take1_id = manifest["scenes"]["S01"]["active_take_id"]
+
+        # Edit S01 heavily: prompt, seed, resolution override, upsampling, filters, negative prompt, timing
+        cfg = json.loads(self.config_file.read_text(encoding="utf-8"))
+        sc1 = cfg["scenes"][0]
+        sc1["prompt"] = "Totally changed prompt"
+        sc1["seed"] = 99999
+        sc1["start"] = 0.5
+        sc1["end"] = 6.5
+        sc1["resolution"] = "1280x720"
+        sc1["spatial_upsampling"] = "flashvsrplus*2"
+        sc1["filters"] = {"film_grain": 0.25, "deband": False}
+        sc1["negative_prompt"] = "extra blur"
+        self.config_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+        q_edited = server.compute_fast_project_queue("test_slug", force_recheck=True)
+        s01_edited = next(x for x in q_edited if x.get("scene_id") == "S01")
+        self.assertTrue(s01_edited["needs_render"])
+
+        # Revert scene via POST /api/takes/activate with restore_timing=True
+        h_act = DummyRequestHandler()
+        handle_takes_api(
+            h_act, "activate",
+            body={"project": "test_slug", "scene_id": "S01", "take_id": take1_id, "restore_timing": True},
+        )
+        self.assertEqual(h_act.sent_status, HTTPStatus.OK)
+        self.assertTrue(h_act.sent_json_data["success"])
+
+        restored_sc = json.loads(self.config_file.read_text(encoding="utf-8"))["scenes"][0]
+        self.assertEqual(restored_sc["prompt"], "Solo vocalist singing intro")
+        self.assertEqual(restored_sc["seed"], 1001)
+        self.assertEqual(restored_sc["start"], 0.0)
+        self.assertEqual(restored_sc["end"], 5.0)
+        for added_key in ("resolution", "spatial_upsampling", "filters", "negative_prompt"):
+            self.assertNotIn(added_key, restored_sc)
+        self.assertEqual(s01_render.read_bytes()[:21], b"s01_rendered_on_disk_")
+
+        q_reverted = server.compute_fast_project_queue("test_slug", force_recheck=True)
+        s01_reverted = next(x for x in q_reverted if x.get("scene_id") == "S01")
+        self.assertEqual(s01_reverted["status"], "completed")
+        self.assertFalse(s01_reverted["needs_render"])
+
+    def test_17_vault_discovery_dedup_and_delete_take(self):
+        """Verify vault MP4 discovery, duplicate ID dedup, lock preservation, and take deletion."""
+        import server
+        orig_pdir = server.PROJECTS_DIR
+        server.PROJECTS_DIR = Path(self.test_dir)
+        try:
+            # 1. Pre-seed duplicate take_baseline_default entries + unindexed vault MP4s
+            s01_render = self.renders_dir / "S01_solo_768x432.mp4"
+            s01_render.write_bytes(b"active_s01_" + b"a" * 60000)
+
+            s01_vault = self.renders_dir / "takes" / "S01"
+            s01_vault.mkdir(parents=True, exist_ok=True)
+            dup1 = s01_vault / "dup1.mp4"
+            dup2 = s01_vault / "dup2.mp4"
+            vault_a = s01_vault / "S01_solo_768x432_vA.mp4"
+            vault_b = s01_vault / "S01_solo_768x432_vB.mp4"
+            dup1.write_bytes(b"dup1_bytes_" + b"b" * 60000)
+            dup2.write_bytes(b"dup2_bytes_" + b"c" * 60000)
+            vault_a.write_bytes(b"vault_alpha_" + b"d" * 60000)
+            vault_b.write_bytes(b"vault_beta_" + b"e" * 60000)
+
+            legacy_manifest = {
+                "version": 1,
+                "scenes": {
+                    "S01": {
+                        "active_take_id": "take_baseline_default",
+                        "active_takes": {"S01_solo_768x432": "take_baseline_default"},
+                        "takes": [
+                            {"take_id": "take_baseline_default", "scene_id": "S01", "out_name": "S01_solo_768x432", "vault_rel_mp4": "takes/S01/dup1.mp4", "created_at": "2026-11-01T10:00:00Z"},
+                            {"take_id": "take_baseline_default", "scene_id": "S01", "out_name": "S01_solo_768x432", "vault_rel_mp4": "takes/S01/dup2.mp4", "created_at": "2026-11-02T10:00:00Z"},
+                        ],
+                    }
+                },
+            }
+            save_takes_manifest(self.proj_dir, legacy_manifest)
+
+            # GET /api/takes/<slug>/<sid> must trigger vault sync even when takes list is non-empty
+            h_get = DummyRequestHandler()
+            handle_takes_api(h_get, "get_takes", path="/api/takes/test_slug/S01")
+            self.assertEqual(h_get.sent_status, HTTPStatus.OK)
+            takes_s01 = h_get.sent_json_data["takes"]
+            self.assertEqual(len(takes_s01), 4)
+            self.assertEqual(len({t["take_id"] for t in takes_s01}), 4)
+            rels_s01 = {t.get("vault_rel_mp4") for t in takes_s01}
+            self.assertIn("takes/S01/S01_solo_768x432_vA.mp4", rels_s01)
+            self.assertIn("takes/S01/S01_solo_768x432_vB.mp4", rels_s01)
+
+            # 2. Delete a historical (non-active) take via API -> unlinks vault file, keeps active MP4
+            active_tid = h_get.sent_json_data["active_take_id"]
+            hist_t = next(t for t in takes_s01 if t["take_id"] != active_tid and "vA" in (t.get("vault_rel_mp4") or ""))
+            h_del = DummyRequestHandler()
+            handle_takes_api(h_del, "delete_take", body={"project": "test_slug", "scene_id": "S01", "take_id": hist_t["take_id"]})
+            self.assertEqual(h_del.sent_status, HTTPStatus.OK)
+            self.assertTrue(h_del.sent_json_data["success"])
+            self.assertEqual(len(h_del.sent_json_data["takes"]), 3)
+            self.assertEqual([t["take_number"] for t in h_del.sent_json_data["takes"]], [1, 2, 3])
+            self.assertFalse(vault_a.exists())
+            self.assertEqual(s01_render.read_bytes()[:11], b"active_s01_")
+
+            # 3. Lock S02, render 2 takes, verify promote_take_to_active preserves locked=True
+            ctx = MockContext(self.proj_dir, self.config_file)
+            sc2 = self.initial_project_data["scenes"][1]
+            out_s02 = "S02_solo_768x432"
+            s02_render = self.renders_dir / f"{out_s02}.mp4"
+            state = json.loads(self.state_hashes_file.read_text(encoding="utf-8"))
+
+            before_scene_render(ctx, sc2, out_s02, s02_render, state)
+            s02_render.write_bytes(b"s02_take1_" + b"1" * 60000)
+            after_scene_render(ctx, sc2, pass_num=None, out_name=out_s02, out_mp4=s02_render, t_hash="h_s02_t1", t_dict=dict(sc2, seed=1002), elapsed=10.0, state=state)
+            before_scene_render(ctx, sc2, out_s02, s02_render, state)
+            s02_render.write_bytes(b"s02_take2_" + b"2" * 60000)
+            after_scene_render(ctx, sc2, pass_num=None, out_name=out_s02, out_mp4=s02_render, t_hash="h_s02_t2", t_dict=dict(sc2, seed=2002), elapsed=12.0, state=state)
+
+            state = json.loads(self.state_hashes_file.read_text(encoding="utf-8"))
+            state.setdefault("tasks", {})[out_s02] = "h_s02_t2"
+            state.setdefault("task_hashes", {})[out_s02] = "h_s02_t2"
+            save_state_hashes_data(self.proj_dir, state)
+
+            cfg = json.loads(self.config_file.read_text(encoding="utf-8"))
+            cfg["scenes"][1]["locked"] = True
+            self.config_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            s02_takes = load_takes_manifest(self.proj_dir)["scenes"]["S02"]["takes"]
+            t1_id = next(t["take_id"] for t in s02_takes if t.get("task_hash") == "h_s02_t1")
+            t2_id = next(t["take_id"] for t in s02_takes if t.get("task_hash") == "h_s02_t2")
+
+            prom = promote_take_to_active(self.proj_dir, self.config_file, "S02", t1_id)
+            self.assertTrue(prom["success"])
+            self.assertTrue(json.loads(self.config_file.read_text(encoding="utf-8"))["scenes"][1].get("locked"))
+            self.assertEqual(s02_render.read_bytes()[:10], b"s02_take1_")
+
+            # 4. Deleting active Take 1 auto-promotes remaining Take 2 and updates state_hashes
+            del1 = delete_scene_take(self.proj_dir, self.config_file, "S02", t1_id)
+            self.assertTrue(del1["success"])
+            self.assertEqual(del1["active_take_id"], t2_id)
+            self.assertEqual(len(del1["takes"]), 1)
+            self.assertEqual(s02_render.read_bytes()[:10], b"s02_take2_")
+            sh_after_del1 = json.loads(self.state_hashes_file.read_text(encoding="utf-8"))
+            self.assertEqual(sh_after_del1["task_hashes"].get(out_s02), "h_s02_t2")
+
+            # 5. Deleting last remaining take unlinks active MP4 and clears state_hashes
+            del2 = delete_scene_take(self.proj_dir, self.config_file, "S02", t2_id)
+            self.assertTrue(del2["success"])
+            self.assertEqual(del2["takes"], [])
+            self.assertIsNone(del2["active_take_id"])
+            self.assertFalse(s02_render.exists())
+            sh_after_del2 = json.loads(self.state_hashes_file.read_text(encoding="utf-8"))
+            self.assertNotIn(out_s02, sh_after_del2.get("task_hashes", {}))
+            self.assertNotIn(out_s02, sh_after_del2.get("tasks", {}))
+
+            # 6. Deleting missing take returns NOT_FOUND
+            h_missing = DummyRequestHandler()
+            handle_takes_api(h_missing, "delete_take", body={"project": "test_slug", "scene_id": "S02", "take_id": "nonexistent_take"})
+            self.assertEqual(h_missing.sent_status, HTTPStatus.NOT_FOUND)
+        finally:
+            server.PROJECTS_DIR = orig_pdir
+
+    def test_18_revert_scene_after_default_resolution_change_and_pass2(self):
+        """Regression: reverting a scene rendered under an older project default resolution restores resolution & clears queue."""
+        import server
+        orig_pdir = getattr(server, "PROJECTS_DIR", None)
+        server.PROJECTS_DIR = Path(self.test_dir)
+        try:
+            # Configure project at preset 3 (1280x720) with a two-pass duet scene inheriting default resolution
+            cfg = json.loads(self.config_file.read_text(encoding="utf-8"))
+            cfg["models"] = {"default_video_resolution": 3}
+            cfg["scenes"] = [{
+                "id": "S20", "mode": "duet_method_b", "output_name": "S20_Duet",
+                "start": 0.0, "end": 5.0, "anchor": "A01", "split_x": 0.5,
+                "prompt_m": "Male vocalist left", "seed_m": 1111, "stem_m": "master.wav",
+                "prompt_f": "Female vocalist right", "seed_f": 2222, "stem_f": "master.wav",
+            }]
+            self.config_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            p1_name, p2_name = "S20_Pass1_Left_1280x720", "S20_Pass2_Final_1280x720"
+            p1_mp4, p2_mp4 = self.renders_dir / f"{p1_name}.mp4", self.renders_dir / f"{p2_name}.mp4"
+            p1_mp4.write_bytes(b"p1_1280x720_" + b"a" * 60000)
+            p2_mp4.write_bytes(b"p2_1280x720_" + b"b" * 60000)
+
+            ctx = ProjectContext(self.config_file)
+            real_h = compute_project_task_hashes(ctx)
+            h_p1, h_p2 = real_h[p1_name][0], real_h[p2_name][0]
+
+            state = {"tasks": {p1_name: h_p1, p2_name: h_p2}, "task_hashes": {p1_name: h_p1, p2_name: h_p2}, "scene_renders": {}}
+            save_state_hashes_data(self.proj_dir, state)
+            sc20 = json.loads(json.dumps(cfg["scenes"][0]))
+            after_scene_render(ctx, sc20, pass_num=1, out_name=p1_name, out_mp4=p1_mp4, t_hash=h_p1, t_dict=dict(sc20, resolution="1280x720"), elapsed=20.0, state=state)
+            after_scene_render(ctx, sc20, pass_num=2, out_name=p2_name, out_mp4=p2_mp4, t_hash=h_p2, t_dict=dict(sc20, resolution="1280x720"), elapsed=25.0, state=state)
+
+            manifest = load_takes_manifest(self.proj_dir)
+            p2_tid = manifest["scenes"]["S20"]["active_take_id"]
+
+            # Change project default resolution to 6 (1920x1088) and add stale scene edits (no resolution on S20)
+            cfg["models"]["default_video_resolution"] = 6
+            cfg["scenes"][0]["prompt_f"] = "Edited female prompt"
+            cfg["scenes"][0]["spatial_upsampling"] = "flashvsrplus*2"
+            self.config_file.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            # Simulate Pass 1 newer on disk too (common after intermediate P1 run)
+            os.utime(p1_mp4, (time.time() + 10.0, time.time() + 10.0))
+
+            q_before = server.compute_fast_project_queue("test_slug", force_recheck=True)
+            self.assertTrue(all(x["needs_render"] for x in q_before if x.get("scene_id") == "S20"))
+
+            # 1) Revert via POST /api/takes/activate (pass_num=None path)
+            h_act = DummyRequestHandler()
+            handle_takes_api(h_act, "activate", body={"project": "test_slug", "scene_id": "S20", "take_id": p2_tid})
+            self.assertEqual(h_act.sent_status, HTTPStatus.OK)
+            restored = json.loads(self.config_file.read_text(encoding="utf-8"))["scenes"][0]
+            self.assertEqual(restored.get("resolution"), 3)
+            self.assertEqual(restored.get("prompt_f"), "Female vocalist right")
+            self.assertNotIn("spatial_upsampling", restored)
+
+            q_after = server.compute_fast_project_queue("test_slug", force_recheck=True)
+            s20_items = [x for x in q_after if x.get("scene_id") == "S20"]
+            self.assertEqual(len(s20_items), 2)
+            self.assertTrue(all(x["status"] == "completed" and not x["needs_render"] for x in s20_items))
+
+            # 2) Also verify pass_num=2 direct activation restores resolution & clears stale upsampling
+            cfg2 = json.loads(self.config_file.read_text(encoding="utf-8"))
+            cfg2["scenes"][0].pop("resolution", None)
+            cfg2["scenes"][0]["spatial_upsampling"] = "flashvsrplus*2"
+            self.config_file.write_text(json.dumps(cfg2, indent=2), encoding="utf-8")
+            prom_p2 = promote_take_to_active(self.proj_dir, self.config_file, "S20", 2, take_id=p2_tid)
+            self.assertTrue(prom_p2["success"])
+            restored2 = json.loads(self.config_file.read_text(encoding="utf-8"))["scenes"][0]
+            self.assertEqual(restored2.get("resolution"), 3)
+            self.assertNotIn("spatial_upsampling", restored2)
+        finally:
+            server.PROJECTS_DIR = orig_pdir
 
 
 if __name__ == "__main__":
