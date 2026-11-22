@@ -1,6 +1,4 @@
-// ============================================================================
 // Render Queue: Queue, Status & SSE Terminal Stream
-// ============================================================================
 function setConsoleView(mode) {
   const isQueue = mode === "queue";
   const queueView = document.getElementById("consoleQueueView");
@@ -90,7 +88,7 @@ async function loadProjectQueue(slug = state.currentSlug) {
       // Reconcile queue rows against active per-engine statuses and SSE stream
       window.reconcileQueueStatuses?.(json.queue, st, engStatus, isRunning);
 
-      state.renderQueue = json.queue;
+      if (window.applyQueueApiResponse) window.applyQueueApiResponse(json); else state.renderQueue = json.queue;
       state.calibrationAlphaByRes = {};
       json.queue.forEach((t) => {
         const resKey = String(t.effective_resolution || t.resolution || "").toLowerCase();
@@ -171,7 +169,8 @@ function renderQueueUI() {
   const queuedOnlyCount = queue.filter((t) => t.status === "queued").length;
   const failedCount = queue.filter((t) => t.status === "failed").length;
   const queuedCount = renderingCount + queuedOnlyCount + failedCount;
-  const doneCount = queue.filter((t) => t.status === "completed").length;
+  const doneItems = window.getDoneQueueEntries ? window.getDoneQueueEntries(queue) : queue.filter((t) => t.status === "completed");
+  const doneCount = doneItems.length;
   const skippedCount = queue.filter((t) => t.status === "skipped").length;
   const pendingEstSec = queue
     .filter((t) => t.status === "queued" || t.status === "rendering" || t.status === "failed")
@@ -240,6 +239,7 @@ function renderQueueUI() {
     if (u.length === 2) {
       if (u[1].status === "rendering" && u[0].status === "queued") u[0].status = "completed";
       else if ((u[0].status === "queued" || u[0].status === "rendering") && u[1].status !== "queued" && u[1].status !== "rendering") {
+        window.preserveDoneQueueItems?.([u[1]]);
         u[1].status = "queued";
         u[1].needs_render = true;
         u[1].reason = `PASS 1 RE-RENDERED (${u[0].reason || "QUEUED"})`;
@@ -257,7 +257,7 @@ function renderQueueUI() {
   const showActions = filter === "queued";
   const showReason = filter !== "completed";
 
-  let filtered = orderedQueue.filter((t) => {
+  let filtered = isDoneFilter ? doneItems : orderedQueue.filter((t) => {
     if (filter === "all") return true;
     if (filter === "queued") return t.status === "queued" || t.status === "rendering" || t.status === "failed";
     if (filter === "completed") return t.status === "completed";
@@ -480,6 +480,7 @@ function handleQueueSSEEvent(line) {
         match.elapsed = payload.elapsed;
         match.completed_at = payload.completed_at || Math.floor(Date.now() / 1000);
       }
+      window.recordDoneQueueItem?.(match || { filename: fnKey, output_filename: stemKey }, payload);
       window.handleMultiEngineSSEEvent?.(tag, payload);
       if (state.activeRenderTask && (!fnKey || state.activeRenderTask.filename === fnKey)) {
         if (window.promoteActiveRenderTaskFromState) window.promoteActiveRenderTaskFromState(fnKey);
@@ -724,7 +725,7 @@ document.getElementById("btnQueueAll")?.addEventListener("click", async () => {
     const slug = state.currentSlug || "all_or_nothing";
     const res = await fetch("/api/queue/enqueue_all", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
     const data = await res.json();
-    if (data.queue) { state.sseTaskStatuses?.clear(); state.renderQueue = data.queue; renderQueueUI(); showToast("All unrendered items enqueued"); }
+    if (data.queue) { state.sseTaskStatuses?.clear(); if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI(); showToast("All unrendered items enqueued"); }
   } catch (err) { showToast("Failed to queue all items"); }
 });
 
@@ -733,7 +734,7 @@ document.getElementById("btnClearQueue")?.addEventListener("click", async () => 
     const slug = state.currentSlug || "all_or_nothing";
     const res = await fetch("/api/queue/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
     const data = await res.json();
-    if (data.queue) { state.sseTaskStatuses?.clear(); state.renderQueue = data.queue; renderQueueUI(); showToast("Queue cleared"); }
+    if (data.queue) { state.sseTaskStatuses?.clear(); if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI(); showToast("Queue cleared"); }
   } catch (err) { showToast("Failed to clear queue"); }
 });
 
@@ -756,7 +757,7 @@ document.getElementById("queueTableBody")?.addEventListener("click", async (e) =
       const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.queue) {
-        state.renderQueue = data.queue; renderQueueUI();
+        if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI();
         if (endpoint.includes("remove")) showToast("Removed from queue");
         if (endpoint.includes("enqueue")) showToast("Added to queue (will render automatically)");
       }
@@ -804,7 +805,7 @@ if (qTbody && !qTbody.dataset.dndBound) {
     try {
       const res = await fetch("/api/queue/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: state.currentSlug || "all_or_nothing", id: srcId, target_id: targetId, position: isBefore ? "before" : "after" }) });
       const data = await res.json();
-      if (data.queue) { state.renderQueue = data.queue; renderQueueUI(); showToast(`↕️ Reordered ${sid || "scene"} in queue`); }
+      if (data.queue) { if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI(); showToast(`↕️ Reordered ${sid || "scene"} in queue`); }
       else if (data.error) showToast(`Reorder failed: ${data.error}`);
     } catch (err) { console.error("Reorder error:", err); }
   });

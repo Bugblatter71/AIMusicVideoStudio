@@ -965,6 +965,66 @@ class TestStudioUiPlaywrightE2E(unittest.TestCase):
         page.locator("#btnCloseCheckpointsModal").click()
         self.assertEqual(env["page_errors"], [])
 
+    def test_12_done_queue_preserves_completed_history_on_requeue(self):
+        env = self._start_studio_session()
+        ffmpeg_bin = resolve_ffmpeg_path(WORKSPACE_ROOT, "", None)
+        ctx = ProjectContext(env["cfg_path"])
+        hashes = compute_project_task_hashes(ctx)
+        s01_stem = next(k for k in hashes if k.startswith("S01_"))
+        mp4_1 = ctx.renders_dir / f"{s01_stem}.mp4"
+        _make_dummy_mp4(ffmpeg_bin, mp4_1, duration_s=1.5, color="navy")
+        sh = ctx.load_state_hashes()
+        sh.setdefault("tasks", {})[s01_stem] = hashes[s01_stem][0]
+        after_scene_render(
+            ctx, ctx.scenes[0], None, s01_stem, mp4_1,
+            hashes[s01_stem][0], {"prompt": ctx.scenes[0]["prompt"], "seed": 1001}, 4.5, sh,
+        )
+        ctx.save_state_hashes(sh)
+
+        page = env["page"]
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_function("() => window.state?.projectData?.scenes?.length >= 2", timeout=15000)
+
+        page.locator('.tab-btn[data-tab="console"]').click()
+        page.wait_for_function("() => Number(document.getElementById('countDone')?.textContent || '0') >= 1", timeout=10000)
+        page.locator("#btnFilterDone").click()
+        page.wait_for_function(
+            "stem => document.getElementById('queueTableBody')?.innerText?.includes(stem)",
+            arg=f"{s01_stem}.mp4",
+            timeout=5000,
+        )
+
+        # Edit S01 prompt & save so S01 becomes re-queued into Pending
+        self._click_scene_on_canvas(page, time_s=1.0, expected_id="S01")
+        page.locator("#scenePrompt").fill("Updated S01 prompt to force re-queue")
+        page.locator("#btnSaveProject").click()
+        page.wait_for_function("() => !window.state.isDirty", timeout=8000)
+
+        # Verify S01 is in Pending AND STILL remains in Done queue (including across full reload)
+        page.locator("#btnFilterQueued").click()
+        page.wait_for_function(
+            "stem => document.getElementById('queueTableBody')?.innerText?.includes(stem)",
+            arg=f"{s01_stem}.mp4",
+            timeout=5000,
+        )
+        page.locator("#btnFilterDone").click()
+        page.wait_for_function(
+            "stem => Number(document.getElementById('countDone')?.textContent || '0') >= 1 && document.getElementById('queueTableBody')?.innerText?.includes(stem)",
+            arg=f"{s01_stem}.mp4",
+            timeout=5000,
+        )
+
+        page.reload(wait_until="domcontentloaded")
+        page.wait_for_function("() => Number(document.getElementById('countDone')?.textContent || '0') >= 1", timeout=15000)
+        page.locator('.tab-btn[data-tab="console"]').click()
+        page.locator("#btnFilterDone").click()
+        page.wait_for_function(
+            "stem => document.getElementById('queueTableBody')?.innerText?.includes(stem)",
+            arg=f"{s01_stem}.mp4",
+            timeout=5000,
+        )
+        self.assertEqual(env["page_errors"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

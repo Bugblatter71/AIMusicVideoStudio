@@ -239,7 +239,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug or not item_id:
                 self.send_error_json("slug and id are required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: self.send_json({"success": True, "queue": srv.move_in_project_queue(slug, item_id, direction)})
+            try: q = srv.move_in_project_queue(slug, item_id, direction); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -249,7 +249,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug or (not order and (not item_id or not target_id)):
                 self.send_error_json("slug and (order or (id and target_id)) are required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: self.send_json({"success": True, "queue": srv.reorder_in_project_queue(slug, item_id=item_id, target_id=target_id, position=position, order=order)})
+            try: q = srv.reorder_in_project_queue(slug, item_id=item_id, target_id=target_id, position=position, order=order); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -258,7 +258,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug or not item_id:
                 self.send_error_json("slug and id are required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: self.send_json({"success": True, "queue": srv.remove_from_project_queue(slug, item_id)})
+            try: q = srv.remove_from_project_queue(slug, item_id); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -270,7 +270,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             try:
                 items = srv.enqueue_in_project_queue(slug, item_id)
                 srv.run_queue_worker(slug, force_restart=False)
-                self.send_json({"success": True, "queue": items})
+                self.send_json({"success": True, "queue": items, "done_queue": srv.get_done_queue_history(srv, slug, items)})
             except RuntimeError as e: self.send_error_json(str(e), status=HTTPStatus.CONFLICT)
             except Exception as e: self.send_error_json(str(e))
             return
@@ -284,7 +284,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             reset_session_blocks_for_items(srv, [x for x in (queue or []) if x.get("status") == "queued" and x.get("needs_render")], clear_failed=True)
             try: srv.run_queue_worker(slug, force_restart=False)
             except RuntimeError as e: self.send_error_json(str(e), status=HTTPStatus.CONFLICT); return
-            self.send_json({"success": True, "queue": queue})
+            self.send_json({"success": True, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue)})
             return
 
         if path == "/api/queue/clear":
@@ -292,7 +292,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug:
                 self.send_error_json("slug is required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: self.send_json({"success": True, "queue": srv.clear_project_queue(slug)})
+            try: q = srv.clear_project_queue(slug); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -407,7 +407,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     "scene1": sc1,
                     "scene2": sc2,
                     "scenes": updated_data.get("scenes", []),
-                    "queue": updated_queue,
+                    "queue": updated_queue, "done_queue": srv.get_done_queue_history(srv, slug, updated_queue),
                 })
             except Exception as e:
                 self.send_error_json(str(e))
@@ -441,7 +441,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     "success": True,
                     "deleted_scene": del_sc,
                     "scenes": updated_data.get("scenes", []),
-                    "queue": updated_queue,
+                    "queue": updated_queue, "done_queue": srv.get_done_queue_history(srv, slug, updated_queue),
                 })
             except Exception as e:
                 self.send_error_json(str(e))
@@ -530,7 +530,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         srv.wake_enabled_engine_workers(srv, slug)
                 except Exception:
                     pass
-                self.send_json({"success": True, "saved": str(target_json.name), "queue": queue})
+                self.send_json({"success": True, "saved": str(target_json.name), "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue)})
             except Exception as e:
                 self.send_error_json(f"Failed to write file: {e}")
             return
@@ -581,7 +581,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         queue = srv.compute_fast_project_queue(slug)
         eng_status = srv.read_project_engine_status(slug)
-        self.send_json({"success": True, "queue": queue, "engine_status": eng_status})
+        self.send_json({"success": True, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue), "engine_status": eng_status})
 
     def handle_get_project(self, slug: str, config_name: str | None = None):
         srv = _srv()

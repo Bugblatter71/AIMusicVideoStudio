@@ -70,6 +70,10 @@ except ImportError:
         write_queue_json_locked,
         write_starting_slot_status,
     )
+try: from .server_queue_history import record_done_items
+except ImportError:
+    try: from work.ui.server_queue_history import record_done_items
+    except ImportError: from server_queue_history import record_done_items
 
 
 def ensure_engine_state(srv) -> None:
@@ -596,6 +600,8 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
                                 it.update({"status": "completed", "needs_render": False, "reason": "COMPLETED", "completed_at": t_done, "elapsed": t_elapsed})
                                 it.pop("user_skipped_hash", None)
                                 it.pop("error", None)
+                                try: record_done_items(srv, proj_dir, [it], only_completed=True)
+                                except Exception: pass
                             else:
                                 fail_reason, fail_err = read_task_failure_summary(proj_dir, b, out_fn, code)
                                 it.update({"status": "failed", "reason": fail_reason, "error": fail_err})

@@ -277,7 +277,8 @@ def handle_fal_post(handler, path: str, body: dict | None) -> bool:
                 return True
         try:
             items = srv.set_queue_item_backend_override(srv, str(slug).strip(), item_id, ovr_norm)
-            handler.send_json({"success": True, "queue": items})
+            done_q = srv.get_done_queue_history(srv, str(slug).strip(), items) if hasattr(srv, "get_done_queue_history") else None
+            handler.send_json({"success": True, "queue": items, **({"done_queue": done_q} if done_q is not None else {})})
         except KeyError as exc:
             handler.send_error_json(str(exc), status=HTTPStatus.NOT_FOUND)
         except RuntimeError as exc:

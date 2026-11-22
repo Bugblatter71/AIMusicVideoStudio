@@ -191,6 +191,7 @@ try:
         set_queue_item_backend_override,
         wake_enabled_engine_workers,
     )
+    from work.ui.server_queue_history import get_done_queue_history, record_done_items
 except ImportError:
     from server_workers import (
         derive_scene_id,
@@ -234,6 +235,7 @@ except ImportError:
         set_queue_item_backend_override,
         wake_enabled_engine_workers,
     )
+    from server_queue_history import get_done_queue_history, record_done_items
 
 __all__ = [
     "WORKSPACE_ROOT",
@@ -290,6 +292,8 @@ __all__ = [
     "enqueue_in_project_queue",
     "clear_project_queue",
     "prepare_targeted_queue_items",
+    "get_done_queue_history",
+    "record_done_items",
     "StudioRequestHandler",
     "run_server",
 ]

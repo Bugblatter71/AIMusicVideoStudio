@@ -741,7 +741,8 @@ async function saveProjectData(showNotice = true) {
       markProjectDirty(false);
       state._savingProject = false;
       if (Array.isArray(json.queue)) {
-        state.renderQueue = json.queue;
+        if (typeof window.applyQueueApiResponse === "function") window.applyQueueApiResponse(json);
+        else state.renderQueue = json.queue;
         if (typeof renderQueueUI === "function") renderQueueUI();
       }
       loadProjectQueue(state.currentSlug);

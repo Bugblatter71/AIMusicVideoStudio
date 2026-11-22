@@ -1,14 +1,7 @@
 """Queue computation, state validation, and scene ordering for Studio UI."""
 
 from __future__ import annotations
-
-import datetime
-import hashlib
-import json
-import re
-import shutil
-import sys
-import time
+import datetime, hashlib, json, re, shutil, sys, time
 from pathlib import Path
 
 try:
@@ -28,14 +21,17 @@ except ImportError:
 try:
     from ui.server_fal import enrich_queue_with_fal_metadata
     from ui.server_engines import active_rendering_map, extract_backend_overrides, read_queue_json_locked, reset_session_blocks_for_items, write_queue_json_locked
+    from ui.server_queue_history import record_done_items
     from ui.server_security import resolve_project_dir_safe
 except ImportError:
     try:
         from work.ui.server_fal import enrich_queue_with_fal_metadata
         from work.ui.server_engines import active_rendering_map, extract_backend_overrides, read_queue_json_locked, reset_session_blocks_for_items, write_queue_json_locked
+        from work.ui.server_queue_history import record_done_items
         from work.ui.server_security import resolve_project_dir_safe
     except ImportError:
         from server_engines import active_rendering_map, extract_backend_overrides, read_queue_json_locked, reset_session_blocks_for_items, write_queue_json_locked
+        from server_queue_history import record_done_items
         from server_security import resolve_project_dir_safe
         try: from server_fal import enrich_queue_with_fal_metadata
         except ImportError: enrich_queue_with_fal_metadata = None
@@ -276,7 +272,7 @@ def _compute_fast_project_queue_impl(slug: str, force_recheck: bool = False) -> 
             task_hashes_current = compute_project_task_hashes(ctx, backend_overrides=b_overrides) if b_overrides else compute_project_task_hashes(ctx)
         except Exception as _hash_err:
             if hasattr(srv, "broadcast_log"): srv.broadcast_log(f"[Queue Warning] Failed computing task hashes: {_hash_err}")
-    queue, seen, seen_keys, p1_needs_rerender = [], set(), set(), {}
+    queue, seen, seen_keys, p1_needs_rerender, done_snaps = [], set(), set(), {}, []
     live_eng = srv.read_project_engine_status(slug)
     is_engine_active, active_eng_map = active_rendering_map(srv, slug, legacy_eng=live_eng)
 
@@ -395,6 +391,7 @@ def _compute_fast_project_queue_impl(slug: str, force_recheck: bool = False) -> 
             out_name, spec = old_name, valid_passes[old_name]
         elif (sid_guess, p_guess) in valid_by_key:
             out_name, spec = valid_by_key[(sid_guess, p_guess)]
+            if item.get("status") == "completed": done_snaps.append(dict(item))
             item.update({"id": out_name, "output_filename": out_name, "filename": f"{out_name}.mp4", "resolution": spec["resolution"]})
             for k in ("status", "reason", "completed_at", "elapsed", "user_skipped_hash", "user_skipped_anchor_mtime", "estimated_seconds", "estimated_str"):
                 item.pop(k, None)
@@ -412,6 +409,7 @@ def _compute_fast_project_queue_impl(slug: str, force_recheck: bool = False) -> 
         item.update({"scene_id": sid, "target_arg": spec["target_arg"], "pass": pass_num, "resolution": spec["resolution"]})
 
         status, reason, needs_render, t_hash, a_mtime = _evaluate_pass(out_name, sid, pass_num, current_item=item)
+        if item.get("status") == "completed" and status != "completed": done_snaps.append(dict(item))
         item.update({"status": status, "reason": reason, "needs_render": needs_render, "task_hash": t_hash, "anchor_mtime": a_mtime})
         if status != "failed":
             item.pop("error", None)
@@ -489,16 +487,16 @@ def _compute_fast_project_queue_impl(slug: str, force_recheck: bool = False) -> 
             if alt_h != hashes_file and alt_h.is_file(): alt_h.write_text(h_txt, encoding="utf-8")
         except Exception: pass
 
-    try: write_queue_json_locked(srv, queue_file, queue)
+    try:
+        write_queue_json_locked(srv, queue_file, queue)
+        record_done_items(srv, proj_dir, done_snaps + [q for q in queue if q.get("status") == "completed"])
     except Exception: pass
 
     return queue
 
 
 def is_scene_match(sid: str, out_fn: str, target_base: str) -> bool:
-    """Checks whether a scene ID or output filename matches the target scene string.
-    Normalizes single-digit scene prefixes (e.g. 'S1' matches 'S01', 'S2' matches 'S02'),
-    while strictly preventing false positives (e.g. 'S1' will NEVER match 'S10', 'S11', 'S12a')."""
+    """Exact scene ID match (S1 matches S01, never S10/S11)."""
     if not target_base:
         return False
     target_base = target_base.strip().upper()
@@ -694,6 +692,8 @@ def enqueue_in_project_queue(slug: str, item_id: str) -> list[dict]:
             items = compute_fast_project_queue(slug, force_recheck=True)
             target_item = next((it for it in items if it.get("output_filename") in (item_id, clean_id) or it.get("filename") in (item_id, clean_id) or it.get("id") in (item_id, clean_id)), None)
         if target_item:
+            try: record_done_items(srv, slug, items)
+            except Exception: pass
             target_item.update({"status": "queued", "needs_render": True, "reason": "FORCED"})
             target_item.pop("user_skipped_hash", None); target_item.pop("user_skipped_anchor_mtime", None)
             touched = [target_item]
@@ -775,6 +775,8 @@ def prepare_targeted_queue_items(slug: str, target_sid: str, is_worker_running: 
             except Exception as ge:
                 srv.broadcast_log(f"[Studio UI Warning] Could not resolve target scene queue metadata for {target_sid}: {ge}")
 
+        try: record_done_items(srv, proj_dir, items)
+        except Exception: pass
         matched_items, pruned_items = [], []
         for item in items:
             out_fn = item.get("output_filename", "")

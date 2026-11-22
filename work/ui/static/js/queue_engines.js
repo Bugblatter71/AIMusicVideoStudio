@@ -474,7 +474,8 @@ function initMultiEngineControls() {
       });
       const data = await res.json();
       if (data?.success && data.queue) {
-        state.renderQueue = data.queue;
+        if (typeof window.applyQueueApiResponse === "function") window.applyQueueApiResponse(data);
+        else state.renderQueue = data.queue;
         renderQueueUI();
         showToast(ovr ? `🎛️ ${sel.dataset.id} → ${window.ENGINE_META[ovr].short}` : `🎛️ ${sel.dataset.id} → Auto engine`);
       } else if (data?.error) {
@@ -506,5 +507,96 @@ window.handleCompletedAssetSSE = function (tag, rawText) {
     }
   });
 };
+
+(function () {
+  function _ensureDoneStore() {
+    if (!window.state) return [];
+    const slug = window.state.currentSlug || "";
+    if (window.state._doneQueueSlug !== slug) {
+      window.state._doneQueueSlug = slug;
+      window.state.doneQueue = [];
+    }
+    if (!Array.isArray(window.state.doneQueue)) window.state.doneQueue = [];
+    return window.state.doneQueue;
+  }
+
+  function _mergeOneDone(list, rawItem) {
+    if (!rawItem || typeof rawItem !== "object") return;
+    const outFn = String(rawItem.output_filename || String(rawItem.filename || "").replace(/\.mp4$/i, "")).trim();
+    if (!outFn) return;
+    const comp = rawItem.completed_at !== undefined && rawItem.completed_at !== null ? Number(rawItem.completed_at) : null;
+    if (comp === null || isNaN(comp) || comp <= 0) return;
+    const rec = {
+      ...rawItem,
+      id: rawItem.id || outFn,
+      output_filename: outFn,
+      filename: rawItem.filename || `${outFn}.mp4`,
+      status: "completed",
+      needs_render: false,
+      completed_at: comp,
+    };
+    const tid = rec.take_id;
+    const hit = list.find((ex) => (tid && ex.take_id && ex.take_id === tid && ex.output_filename === outFn)
+      || (ex.output_filename === outFn && Math.abs(Number(ex.completed_at || 0) - comp) <= 5));
+    if (hit) {
+      ["elapsed", "duration", "fal_endpoint", "resolution", "take_id", "take_number", "scene_id", "pass", "model_type", "backend"].forEach((k) => {
+        if ((hit[k] === undefined || hit[k] === null || hit[k] === "") && rec[k] !== undefined && rec[k] !== null && rec[k] !== "") hit[k] = rec[k];
+      });
+    } else {
+      list.push(rec);
+    }
+  }
+
+  window.preserveDoneQueueItems = function (items) {
+    const store = _ensureDoneStore();
+    (Array.isArray(items) ? items : []).forEach((t) => {
+      if (t && t.status === "completed") _mergeOneDone(store, t);
+    });
+    return store;
+  };
+
+  window.recordDoneQueueItem = function (item, payload = null) {
+    const store = _ensureDoneStore();
+    const base = item && typeof item === "object" ? { ...item } : {};
+    if (payload && typeof payload === "object") {
+      if (payload.filename && !base.filename) base.filename = payload.filename;
+      if (payload.elapsed !== undefined && payload.elapsed !== null) base.elapsed = payload.elapsed;
+      if (payload.completed_at !== undefined && payload.completed_at !== null) base.completed_at = payload.completed_at;
+    }
+    if (!base.completed_at) base.completed_at = Math.floor(Date.now() / 1000);
+    base.status = "completed";
+    base.needs_render = false;
+    _mergeOneDone(store, base);
+    return store;
+  };
+
+  window.getDoneQueueEntries = function (queue) {
+    const store = _ensureDoneStore();
+    const merged = store.map((x) => ({ ...x }));
+    (Array.isArray(queue) ? queue : []).forEach((t) => {
+      if (t && t.status === "completed") {
+        if (t.completed_at !== undefined && t.completed_at !== null && Number(t.completed_at) > 0) {
+          _mergeOneDone(merged, t);
+        } else if (!merged.some((ex) => (ex.output_filename || ex.filename) === (t.output_filename || t.filename))) {
+          merged.push({ ...t, status: "completed" });
+        }
+      }
+    });
+    return merged;
+  };
+
+  window.applyQueueApiResponse = function (data) {
+    if (!window.state || !data) return;
+    window.preserveDoneQueueItems(window.state.renderQueue);
+    const store = _ensureDoneStore();
+    if (Array.isArray(data.done_queue)) {
+      data.done_queue.forEach((d) => _mergeOneDone(store, d));
+    }
+    if (Array.isArray(data.queue)) {
+      window.preserveDoneQueueItems(data.queue);
+      window.state.renderQueue = data.queue;
+    }
+  };
+})();
 
 initMultiEngineControls();

@@ -1702,5 +1702,118 @@ class WorkerPipeEncodingRegressionTests(unittest.TestCase):
         self.assertTrue(any("DONE_OK" in line for line in logs), f"Process output cut short: {logs}")
 
 
+class DoneQueueHistoryPersistenceTests(unittest.TestCase):
+    """Ensure re-queueing, editing, or changing resolution never removes past completions from Done history."""
+
+    def test_01_done_queue_persists_across_requeue_edit_resolution_and_vm(self):
+        from ui import server_queue_history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "done_hist_proj")
+            ctx = ProjectContext(cfg_path)
+            hashes = compute_project_task_hashes(ctx)
+            s01_stem = next(k for k in hashes if k.startswith("S01_"))
+            mp4 = pdir / "work" / "renders_v3" / f"{s01_stem}.mp4"
+            mp4.write_bytes(b"\x00" * 60000)
+            sh_file = pdir / "work" / "jobs_v3" / "state_hashes.json"
+            sh_file.write_text(
+                json.dumps({
+                    "tasks": {s01_stem: hashes[s01_stem][0]},
+                    "scene_renders": {s01_stem: {"completed_at": 1700000100.0, "elapsed": 42.5}},
+                }),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(server, "PROJECTS_DIR", root):
+                q1 = server.compute_fast_project_queue("done_hist_proj", force_recheck=True)
+                self.assertEqual(next(x for x in q1 if x["scene_id"] == "S01")["status"], "completed")
+                d1 = server.get_done_queue_history(server, "done_hist_proj", q1)
+                self.assertEqual(len(d1), 1)
+                self.assertEqual(d1[0]["scene_id"], "S01")
+                self.assertEqual(d1[0]["elapsed"], 42.5)
+
+                # 1. Force re-queue via enqueue_in_project_queue: active item is queued, Done history still keeps S01
+                q2 = server.enqueue_in_project_queue("done_hist_proj", s01_stem)
+                self.assertEqual(next(x for x in q2 if x["scene_id"] == "S01")["status"], "queued")
+                d2 = server.get_done_queue_history(server, "done_hist_proj", q2)
+                self.assertEqual(len(d2), 1)
+                self.assertEqual(d2[0]["output_filename"], s01_stem)
+
+                # 2. Targeted render + prompt edit + resolution switch: Done history still keeps the completed 832x480 record
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                cfg["scenes"][0]["prompt"] = "Updated prompt"
+                cfg["scenes"][0]["resolution"] = "4"
+                cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+                q3 = server.compute_fast_project_queue("done_hist_proj", force_recheck=True)
+                self.assertEqual(next(x for x in q3 if x["scene_id"] == "S01")["status"], "queued")
+                server.prepare_targeted_queue_items("done_hist_proj", "S01", is_worker_running=False)
+                d3 = server.get_done_queue_history(server, "done_hist_proj")
+                self.assertEqual(len(d3), 1)
+                self.assertEqual(d3[0]["output_filename"], s01_stem)
+
+                # 3. Completing a second render later records both completions newest-first, while same-run <=5s deduplicates
+                server_queue_history.record_done_items(
+                    server, "done_hist_proj",
+                    {"output_filename": s01_stem, "scene_id": "S01", "completed_at": 1700000102.0, "elapsed": 42.5, "status": "completed"},
+                )
+                self.assertEqual(len(server.get_done_queue_history(server, "done_hist_proj")), 1)
+                server_queue_history.record_done_items(
+                    server, "done_hist_proj",
+                    {"output_filename": "S01_solo_1344x768", "scene_id": "S01", "completed_at": 1700000500.0, "elapsed": 90.0, "status": "completed"},
+                )
+                d4 = server.get_done_queue_history(server, "done_hist_proj")
+                self.assertEqual(len(d4), 2)
+                self.assertGreaterEqual(d4[0]["completed_at"], d4[1]["completed_at"])
+
+        # Frontend Node VM verification for queue_engines.js + queue_and_console.js
+        node_script = """
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+const noopEl = () => ({ style: {}, dataset: {}, children: [], classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, appendChild() {}, innerHTML: "", textContent: "" });
+const ctx = vm.createContext({
+  console, Date, Math, JSON, Map, Set, Array, Number, String, Boolean,
+  location: { search: "" },
+  URLSearchParams: class { get() { return null; } },
+  EventSource: class { close() {} },
+  fetch: async () => ({ ok: true, json: async () => ({}) }),
+  document: { _els: {}, getElementById(id) { return this._els[id] || (this._els[id] = noopEl()); }, querySelectorAll: () => [], createElement: noopEl },
+  state: { currentSlug: "projA", queueFilter: "completed", renderQueue: [], sseTaskStatuses: new Map(), engineLive: {} },
+  showToast() {}, refreshProjectAssets() {}, formatDurationEstimate: (s) => `${Math.round(s)}s`,
+  formatCompletedAt: () => "2026-11-22 12:00", formatElapsed: (s) => `${s}s`,
+  escapeHtml: (s) => String(s || ""),
+});
+ctx.window = ctx; ctx.window.state = ctx.state;
+vm.runInContext(fs.readFileSync("work/ui/static/js/queue_engines.js", "utf8"), ctx);
+vm.runInContext(fs.readFileSync("work/ui/static/js/queue_and_console.js", "utf8"), ctx);
+
+ctx.applyQueueApiResponse({
+  queue: [{ idx: 1, filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "completed", completed_at: 1700000100, elapsed: 40 }],
+  done_queue: [{ idx: 1, filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "completed", completed_at: 1700000100, elapsed: 40 }],
+});
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 1);
+
+// Re-queue S01 in queue payload (even if done_queue isn't passed back): Done count & table keep S01
+ctx.applyQueueApiResponse({
+  queue: [{ idx: 1, filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "queued", needs_render: true, reason: "FORCED" }],
+});
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 1);
+assert.ok(ctx.document.getElementById("queueTableBody").innerHTML.includes("S01_solo.mp4"));
+
+// Switching projects isolates doneQueue
+ctx.state.currentSlug = "projB";
+ctx.applyQueueApiResponse({ queue: [], done_queue: [] });
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 0);
+console.log("DONE_HISTORY_VM_OK");
+"""
+        res = subprocess.run(["node", "-e", node_script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Node VM failed:\nSTDOUT:{res.stdout}\nSTDERR:{res.stderr}")
+        self.assertIn("DONE_HISTORY_VM_OK", res.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
