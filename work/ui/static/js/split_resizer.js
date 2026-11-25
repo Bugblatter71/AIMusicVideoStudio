@@ -97,29 +97,37 @@
     }
   }
 
+  function fitTimelineToContainer({ onlyIfShort = false } = {}) {
+    const sc = document.getElementById("timelineScrollContainer");
+    const slider = document.getElementById("timelineZoom");
+    const st = window.state;
+    if (!sc || !st) return false;
+    const dur = Math.max(st.audioDuration || st.projectData?.project?.total_duration || 60, 1);
+    const basePps = st.pixelsPerSecond || 60;
+    const availW = Math.max(320, sc.clientWidth - 20);
+    if (onlyIfShort && dur * basePps >= availW * 0.85) return false;
+    const fitZoom = Math.max(0.2, Math.min(3.5, availW / (dur * basePps)));
+    st.zoom = Number(fitZoom.toFixed(2));
+    if (slider) {
+      if (st.zoom < 1.0) { slider.min = "0.2"; slider.step = "0.05"; }
+      slider.value = String(st.zoom);
+    }
+    sc.scrollLeft = 0;
+    window.redrawTimeline?.();
+    window.updatePlayheadVisual?.(st.playheadTime || 0, false);
+    return true;
+  }
+
   function initTimelineFitZoom() {
     const btnFit = document.getElementById("btnTimelineFit");
-    if (!btnFit || btnFit.dataset.wired) return;
-    btnFit.dataset.wired = "1";
-
-    btnFit.addEventListener("click", () => {
-      const sc = document.getElementById("timelineScrollContainer");
-      const slider = document.getElementById("timelineZoom");
-      const st = window.state;
-      if (!sc || !st) return;
-      const dur = Math.max(st.audioDuration || st.projectData?.project?.total_duration || 60, 1);
-      const basePps = st.pixelsPerSecond || 60;
-      const availW = Math.max(320, sc.clientWidth - 20);
-      const fitZoom = Math.max(0.2, Math.min(3.5, availW / (dur * basePps)));
-      st.zoom = Number(fitZoom.toFixed(2));
-      if (slider) {
-        if (st.zoom < 1.0) { slider.min = "0.2"; slider.step = "0.05"; }
-        slider.value = String(st.zoom);
-      }
-      sc.scrollLeft = 0;
-      window.redrawTimeline?.();
-      window.updatePlayheadVisual?.(st.playheadTime || 0, false);
-    });
+    if (btnFit && !btnFit.dataset.wired) {
+      btnFit.dataset.wired = "1";
+      btnFit.addEventListener("click", () => fitTimelineToContainer({ onlyIfShort: false }));
+    }
+    if (!window._mvgAutoFitWired) {
+      window._mvgAutoFitWired = true;
+      window.addEventListener("projectLoaded", () => fitTimelineToContainer({ onlyIfShort: true }));
+    }
   }
 
   function positionAnchorDropdownInViewport(btnId, menuId) {

@@ -34,13 +34,13 @@ class TestResolutionAndUpsampling(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = Path(tempfile.mkdtemp(prefix="mvg_res_up_"))
         self.proj_dir = self.tmp_dir / "demo_proj"
-        for sub in ("audio", "work/anchors_v3", "work/audio_v3", "work/masks_v3", "work/jobs_v3", "work/renders_v3", "work/trimmed_v3", "work/frames_v3"):
+        for sub in ("audio", "work/anchors", "work/audio", "work/masks", "work/jobs", "work/renders", "work/trimmed", "work/frames"):
             (self.proj_dir / sub).mkdir(parents=True, exist_ok=True)
         # Copy minimal model_profiles.json or reuse repo one
         shutil.copy2(WORKSPACE_ROOT / "model_profiles.json", self.tmp_dir / "model_profiles.json")
         # Create valid dummy anchor images & silent wav using ffmpeg
         self.ffmpeg = Path(shutil.which("ffmpeg") or resolve_ffmpeg_path(self.proj_dir, "", ""))
-        anchor_path = self.proj_dir / "work/anchors_v3/A01_test.jpg"
+        anchor_path = self.proj_dir / "work/anchors/A01_test.jpg"
         subprocess.run(
             [str(self.ffmpeg), "-y", "-f", "lavfi", "-i", "color=c=blue:s=640x360:d=0.1", "-frames:v", "1", str(anchor_path)],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -63,13 +63,13 @@ class TestResolutionAndUpsampling(unittest.TestCase):
                 "master_sharpen": 0.25,
                 "fps": 24,
                 "directories": {
-                    "anchors": "work/anchors_v3",
-                    "audio_slices": "work/audio_v3",
-                    "masks": "work/masks_v3",
-                    "jobs": "work/jobs_v3",
-                    "renders": "work/renders_v3",
-                    "trimmed": "work/trimmed_v3",
-                    "review_strips": "work/frames_v3",
+                    "anchors": "work/anchors",
+                    "audio_slices": "work/audio",
+                    "masks": "work/masks",
+                    "jobs": "work/jobs",
+                    "renders": "work/renders",
+                    "trimmed": "work/trimmed",
+                    "review_strips": "work/frames",
                 },
             },
             "profiles_file": "../model_profiles.json",
@@ -149,7 +149,7 @@ class TestResolutionAndUpsampling(unittest.TestCase):
         _, vrspec = ctx.resolve_video_renderer(ctx.scenes[1])
         t_s2 = ctx.make_video_task(
             "S02_male_solo_1920x1088", "Hero prompt", 124, 102,
-            self.proj_dir / "work/anchors_v3/A01_test.jpg",
+            self.proj_dir / "work/anchors/A01_test.jpg",
             self.proj_dir / "audio/master.mp3",
             vrspec, sc=ctx.scenes[1],
         )
@@ -282,7 +282,7 @@ class TestResolutionAndUpsampling(unittest.TestCase):
         _, vr1 = ctx.resolve_video_renderer(ctx.scenes[0])
         t1 = ctx.make_video_task(
             "S01_male_solo_960x544", "Prompt", 124, 101,
-            self.proj_dir / "work/anchors_v3/A01_test.jpg", self.proj_dir / "audio/master.mp3", vr1, sc=ctx.scenes[0],
+            self.proj_dir / "work/anchors/A01_test.jpg", self.proj_dir / "audio/master.mp3", vr1, sc=ctx.scenes[0],
         )
         self.assertEqual(t1["spatial_upsampling"], "h3_vae*2")
         self.assertEqual(t1["_chained_ai_refiners"], ["h3facerefine", "seedvr2*1"])
@@ -292,7 +292,7 @@ class TestResolutionAndUpsampling(unittest.TestCase):
         _, vr2 = ctx.resolve_video_renderer(ctx.scenes[1])
         t2 = ctx.make_video_task(
             "S02_male_solo_1920x1088", "Hero", 124, 102,
-            self.proj_dir / "work/anchors_v3/A01_test.jpg", self.proj_dir / "audio/master.mp3", vr2, sc=ctx.scenes[1],
+            self.proj_dir / "work/anchors/A01_test.jpg", self.proj_dir / "audio/master.mp3", vr2, sc=ctx.scenes[1],
         )
         # h3_vae*2 is skipped at 1920x1088, leaving spatial_upsampling slot free for h3facerefine inline!
         self.assertEqual(t2["spatial_upsampling"], "h3facerefine")
@@ -538,7 +538,7 @@ console.log('EST_PARITY_OK:' + eLo.total_estimated_seconds + '<' + eHi.total_est
             self.assertEqual(len(q2), 3)
 
             # Even if a stale old-resolution row was injected into v3_queue.json, prepare_targeted_queue_items replaces it cleanly
-            q_file = self.proj_dir / "work/jobs_v3/v3_queue.json"
+            q_file = self.proj_dir / "work/jobs/v3_queue.json"
             stale = list(q2) + [{"idx": 4, "id": "S01_solo_1280x720", "scene_id": "S01", "target_arg": "S01", "pass": None, "filename": "S01_solo_1280x720.mp4", "output_filename": "S01_solo_1280x720", "status": "queued", "needs_render": True, "resolution": "1280x720"}]
             q_file.write_text(json.dumps(stale, indent=2), encoding="utf-8")
             srv.prepare_targeted_queue_items("demo_proj", "S01", is_worker_running=False)
@@ -700,8 +700,11 @@ console.log('EST_PARITY_OK:' + eLo.total_estimated_seconds + '<' + eHi.total_est
         ui_dir = WORKSPACE_ROOT / "work" / "ui" / "static"
         index_html = (ui_dir / "index.html").read_text(encoding="utf-8")
         queue_js = (ui_dir / "js" / "queue_and_console.js").read_text(encoding="utf-8")
-        for dom_id in ('id="masterVideoContainer"', 'id="masterStitchOverlay"', 'id="masterStitchPhase"', 'id="masterStitchBar"', 'id="masterStitchDetail"', 'id="masterStitchPct"', 'js/queue_and_console.js?v=45', 'js/master_and_export.js?v=47'):
+        for dom_id in ('id="masterVideoContainer"', 'id="masterStitchOverlay"', 'id="masterStitchPhase"', 'id="masterStitchBar"', 'id="masterStitchDetail"', 'id="masterStitchPct"'):
             self.assertIn(dom_id, index_html)
+        import re as _re
+        for js_name in ("queue_and_console.js", "master_and_export.js"):
+            self.assertRegex(index_html, rf'js/{_re.escape(js_name)}\?v=\d+')
         self.assertIn("handleMasterStitchSSE", queue_js)
 
         oversized = [
@@ -800,9 +803,9 @@ console.log('EST_PARITY_OK:' + eLo.total_estimated_seconds + '<' + eHi.total_est
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             proj_dir = tmp_path / "projects" / "duet_demo"
-            anchors_dir = proj_dir / "work" / "anchors_v3"
-            renders_dir = proj_dir / "work" / "renders_v3"
-            jobs_dir = proj_dir / "work" / "jobs_v3"
+            anchors_dir = proj_dir / "work" / "anchors"
+            renders_dir = proj_dir / "work" / "renders"
+            jobs_dir = proj_dir / "work" / "jobs"
             audio_dir = proj_dir / "audio"
             for d in (anchors_dir, renders_dir, jobs_dir, audio_dir):
                 d.mkdir(parents=True, exist_ok=True)

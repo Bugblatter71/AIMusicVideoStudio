@@ -4,9 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Music Video Generation Studio</title>
-  <link rel="stylesheet" href="css/studio.css?v=47">
-  <link rel="stylesheet" href="css/scenes_tab.css?v=47">
-  <link rel="stylesheet" href="css/layout_responsive.css?v=1">
+  <link rel="stylesheet" href="css/studio.css?v=49">
+  <link rel="stylesheet" href="css/scenes_tab.css?v=54">
+  <link rel="stylesheet" href="css/layout_responsive.css?v=2">
+  <link rel="stylesheet" href="css/char_mask_editor.css?v=1">
 </head>
 <body>
 
@@ -82,6 +83,7 @@
               <button type="button" class="btn" id="btnRevertSceneToRendered" style="display: none; color: #c4b5fd; border-color: rgba(167, 139, 250, 0.45); background: rgba(139, 92, 246, 0.14);" title="Revert this scene back to the settings and video already rendered on disk">↺ Revert to Rendered</button>
               <button type="button" class="btn" id="btnToggleSceneLock" title="Lock or unlock scene to prevent accidental edits">🔓 Lock</button>
               <button type="button" class="btn btn-accent" id="btnPlaySceneAudio">🔊 Play Scene Audio</button>
+              <button type="button" class="btn" id="btnDuplicateScene" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.4); background: rgba(56, 189, 248, 0.08);" title="Duplicate this scene (with takes) immediately after it in the timeline">📋 Duplicate</button>
               <button type="button" class="btn" id="btnDeleteScene" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.08);" title="Delete this scene from the timeline">🗑️ Delete</button>
             </div>
           </div>
@@ -100,7 +102,13 @@
               </div>
 
               <div class="form-group form-group-anchor" style="position: relative;" id="anchorPickerGroup">
-                <label>Start Anchor Image</label>
+                <div class="form-label-row">
+                  <label>Start Anchor Image</label>
+                  <span class="label-actions" style="display: flex; gap: 8px; align-items: center;">
+                    <span id="btnEditSceneAnchor" title="Edit prompt & regenerate this anchor in Anchor Studio" style="font-size: 11px; color: #c084fc; cursor: pointer;">🎨 Edit/Gen</span>
+                    <span id="btnNewAnchorFromCurrentScene" title="Create a new editable anchor prefilled from this scene's prompt" style="font-size: 11px; color: #34d399; cursor: pointer;">✨ New</span>
+                  </span>
+                </div>
                 <!-- Native select (kept for programmatic state sync) -->
                 <select id="sceneAnchor" style="display: none;"></select>
 
@@ -173,20 +181,20 @@
               <div class="form-group form-group-timing"><label for="sceneEnd">End (s)</label><input type="number" id="sceneEnd" step="0.1" min="0" class="timing-spinner" title="Scene end timecode in seconds"></div>
               <div id="singleStemGroup" class="form-group form-group-stem">
                 <label for="sceneStem">Audio Stem</label>
-                <select id="sceneStem"><option value="male">male (vocal)</option><option value="female">female (vocal)</option><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select>
+                <select id="sceneStem"><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select>
               </div>
               <div id="singleSeedGroup" class="form-group form-group-seed">
                 <label for="sceneSeed">Seed</label>
                 <div style="display: flex; gap: 4px;"><input type="number" id="sceneSeed" style="flex: 1; min-width: 65px; font-family: monospace;"><button type="button" class="btn-mini" id="btnRandomSeed" title="Generate Random Seed">🎲</button></div>
               </div>
               <div id="stereoDuetControlsRow" class="inspector-controls-row duet-controls-row" style="display: none;">
-                <div class="form-group form-group-duet-col"><label for="sceneStemLeft">Left Channel Audio Stem</label><select id="sceneStemLeft" title="Left Channel (Singer 1 / Left Actor)"><option value="male">L: male</option><option value="female">L: female</option><option value="master">L: master</option><option value="silent">L: silent</option></select></div>
-                <div class="form-group form-group-duet-col"><label for="sceneStemRight">Right Channel Audio Stem</label><select id="sceneStemRight" title="Right Channel (Singer 2 / Right Actor)"><option value="female">R: female</option><option value="male">R: male</option><option value="master">R: master</option><option value="silent">R: silent</option></select></div>
+                <div class="form-group form-group-duet-col"><label for="sceneStemLeft">Left Channel Audio Stem</label><select id="sceneStemLeft" title="Left Channel (Singer 1 / Left Actor)"><option value="master">L: full audio (master)</option><option value="silent">L: silent (no lip sync)</option></select></div>
+                <div class="form-group form-group-duet-col"><label for="sceneStemRight">Right Channel Audio Stem</label><select id="sceneStemRight" title="Right Channel (Singer 2 / Right Actor)"><option value="master">R: full audio (master)</option><option value="silent">R: silent (no lip sync)</option></select></div>
               </div>
               <div id="duetTimingControlsRow" class="inspector-controls-row duet-controls-row" style="display: none;">
-                <div class="form-group form-group-duet-col"><label for="sceneStemM">Pass 1 Audio Stem (Left)</label><select id="sceneStemM"><option value="male">male</option><option value="female">female</option><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select></div>
+                <div class="form-group form-group-duet-col"><label for="sceneStemM">Pass 1 Audio Stem (Left)</label><select id="sceneStemM"><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select></div>
                 <div class="form-group form-group-duet-seed"><label for="sceneSeedM">Pass 1 Seed</label><div style="display: flex; gap: 4px;"><input type="number" id="sceneSeedM" style="flex: 1; min-width: 65px; font-family: monospace;"><button type="button" class="btn-mini" id="btnRandomSeedM" title="Generate Random Seed">🎲</button></div></div>
-                <div class="form-group form-group-duet-col"><label for="sceneStemF">Pass 2 Audio Stem (Right)</label><select id="sceneStemF"><option value="female">female</option><option value="male">male</option><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select></div>
+                <div class="form-group form-group-duet-col"><label for="sceneStemF">Pass 2 Audio Stem (Right)</label><select id="sceneStemF"><option value="master">full audio (master)</option><option value="silent">silent (no lip sync)</option></select></div>
                 <div class="form-group form-group-duet-seed"><label for="sceneSeedF">Pass 2 Seed</label><div style="display: flex; gap: 4px;"><input type="number" id="sceneSeedF" style="flex: 1; min-width: 65px; font-family: monospace;"><button type="button" class="btn-mini" id="btnRandomSeedF" title="Generate Random Seed">🎲</button></div></div>
                 <div class="form-group form-group-duet-split">
                   <div class="form-label-row"><label for="sceneSplitX" style="margin: 0;">Split Boundary X</label><span id="sceneSplitXVal" style="font-size: 11px; font-family: monospace; color: #38bdf8;">0.48</span></div>
@@ -348,6 +356,8 @@
               </details>
             </div>
 
+            <div id="sceneDirectRefsHost" style="margin-top: 8px;"></div>
+
             <!-- Scene-Specific Negative Prompt Card -->
             <div id="sceneNegativePromptGroup" style="margin-top: 10px; padding: 10px 12px; background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 6px;">
               <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px;">
@@ -420,8 +430,9 @@
                 <div id="clipFileInfo" style="font-size: 11px; color: var(--text-muted); font-family: monospace;"></div>
               </div>
               <div class="scene-clip-body">
-                <div class="scene-clip-video-wrap">
+                <div class="scene-clip-video-wrap" style="position: relative;">
                   <video id="clipVideoPlayer" controls></video>
+                  <div id="clipSplitOverlay" style="display: none; position: absolute; inset: 0; pointer-events: none; overflow: hidden; border-radius: 6px;"></div>
                 </div>
                 <div id="clipExtraMeta" class="scene-clip-meta">
                   <span>Timeline-synced scene preview. When rendered, this clip scrubs automatically in sync with the song audio and markers.</span>
@@ -458,7 +469,7 @@
               <button class="btn btn-primary" id="btnNewCharacter">+ New Character / Group</button>
             </div>
           </div>
-          <div id="charactersStudioLayout" style="display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start;">
+          <div id="charactersStudioLayout" class="characters-studio-grid">
             <div id="characterRosterList" style="display: flex; flex-direction: column; gap: 8px;"></div>
             <div id="characterDetailPane" style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;"></div>
           </div>
@@ -466,16 +477,25 @@
 
         <!-- 2. ANCHOR STUDIO TAB -->
         <div id="tab-anchors" class="tab-pane" style="padding: 16px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;">
         <div>
           <h2 style="font-size: 18px; color: var(--text-main);">Character & Scene Anchors (Stage 1)</h2>
-          <p style="font-size: 12px; color: var(--text-muted);">High-resolution reference images used as seed portraits for Wan2.1 video generation.</p>
+          <p style="font-size: 12px; color: var(--text-muted);">Create anchors, edit prompts with <code>@character</code> refs, or drag/import custom still frames.</p>
         </div>
-        <div style="display: flex; gap: 8px;">
-          <button class="btn btn-primary" id="btnGenAllAnchors">⚡ Regenerate All Anchors</button>
-          <button class="btn" id="btnAddAnchor">+ New Anchor</button>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+          <label style="display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); background: #0f172a; padding: 4px 8px; border: 1px solid #334155; border-radius: 6px;" title="Default Stage 1 anchor image resolution (overridable per anchor card)">
+            <span>Default Anchor Res:</span>
+            <select id="selDefaultAnchorResolution" style="font-size: 11px; padding: 2px 4px; background: transparent; color: #38bdf8; border: none; font-weight: 600;"></select>
+          </label>
+          <button type="button" class="btn btn-primary" id="btnAddAnchor">+ New Anchor</button>
+          <select id="selNewAnchorFromScene" title="Create a new editable anchor prefilled from a scene's prompt" style="font-size: 12px; padding: 6px 8px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px;"></select>
+          <button type="button" class="btn" id="btnGenMissingAnchors" title="Generate only missing/unrendered anchors">⚡ Generate Missing</button>
+          <button type="button" class="btn" id="btnGenAllAnchors">⚡ Regenerate All</button>
+          <button type="button" class="btn" id="btnScanAnchors" title="Rescan anchors folder for newly dropped image files">🔄 Scan</button>
         </div>
       </div>
+      <div id="anchorGenStatusBanner" class="anchor-gen-banner" style="display: none;"></div>
+      <input type="file" id="anchorFileUploadInput" accept="image/*" style="display: none;">
 
       <div class="anchor-grid" id="anchorCardsContainer"></div>
     </div>
@@ -487,7 +507,7 @@
 
           <div class="form-grid">
             <div class="form-group"><label>Project Name</label><input type="text" id="cfgProjectName"></div>
-            <div class="form-group"><label>Master Audio Path</label><input type="text" id="cfgMasterAudio"></div>
+            <div class="form-group"><label>Master Audio Path</label><input type="text" id="cfgMasterAudio" list="cfgMasterAudioList" placeholder="audio/master_audio.flac"><datalist id="cfgMasterAudioList"></datalist></div>
             <div class="form-group"><label>FPS</label><input type="number" id="cfgFps" value="24"></div>
             <div class="form-group"><label>Fade Out Duration (s)</label><input type="number" id="cfgFadeOut" value="2.0" min="0" step="0.5"></div>
             <div class="form-group"><label>Fade Out Complete At (s — blank = end of video)</label><input type="number" id="cfgFadeOutEnd" value="" min="0" step="0.5" placeholder="End of video"></div>
@@ -506,10 +526,12 @@
             <div class="form-group"><label for="cfgProgressiveStitchMode">Batch Queue Auto-Stitch Mode</label><select id="cfgProgressiveStitchMode"><option value="always_master">Always Stitch at Master Resolution</option><option value="fast_preview">Fast Preview During Queue (Upscale on Manual Stitch)</option></select></div>
           </div>
 
-          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Model Profiles</h3>
+          <h3 style="font-size: 14px; margin: 20px 0 8px; color: var(--primary);">Model Profiles &amp; Default Render Resolutions</h3>
           <div class="form-grid">
-            <div class="form-group"><label>Default Anchor Generator Model</label><select id="cfgDefaultAnchorRenderer"></select></div>
-            <div class="form-group"><label>Default Video Generator Model</label><select id="cfgDefaultVideoRenderer"></select></div>
+            <div class="form-group"><label for="cfgDefaultAnchorRenderer">Default Anchor Generator Model</label><select id="cfgDefaultAnchorRenderer"></select></div>
+            <div class="form-group"><label for="cfgDefaultAnchorResolution">Default Anchor Render Resolution (Stage 1)</label><select id="cfgDefaultAnchorResolution"><option value="1920x1080">1920×1080 (1080p Full HD — Profile Default)</option><option value="1920x1088">1920×1088 (1080p Block-Aligned)</option><option value="1664x960">1664×960 (2K Qwen Native)</option><option value="1344x768">1344×768 (768p WXGA Widescreen)</option><option value="1280x720">1280×720 (720p HD Standard)</option><option value="960x544">960×544 (540p qHD Balanced)</option><option value="832x480">832×480 (480p Fast Draft)</option><option value="2720x1536">2720×1536 (16:9, 4 MP H3-Image Native)</option><option value="3872x2176">3872×2176 (16:9, 8 MP P-H3 Native)</option><option value="5472x3072">5472×3072 (16:9, 16 MP H3-Image Best)</option><option value="2048x2048">2048×2048 (1:1, 4 MP Square)</option><option value="2912x2912">2912×2912 (1:1, 8 MP Square)</option><option value="4096x4096">4096×4096 (1:1, 16 MP Square)</option></select></div>
+            <div class="form-group"><label for="cfgDefaultVideoRenderer">Default Video Generator Model</label><select id="cfgDefaultVideoRenderer"></select></div>
+            <div class="form-group"><label for="cfgDefaultVideoResolutionSelect">Default Scene Video Render Resolution (Stage 2)</label><select id="cfgDefaultVideoResolutionSelect"></select></div>
             <div class="form-group"><label for="cfgDefaultSpatialUpsampling">Default AI Spatial Upsampling (Stage 2, >1x)</label><select id="cfgDefaultSpatialUpsampling" title="Runs inside Wan2GP when scenes render below target resolution and below 1536px wide."><option value="">None (Stage 3 FFmpeg Scale Only)</option><option value="h3_vae*2">MiniMax H3 Detail VAE x2 (Best for 540p → 1088p)</option><option value="h3_vae*1.5">MiniMax H3 Detail VAE x1.5 (Best for 720p → 1080p)</option><option value="flashvsrplus*2">FlashVSR+ Turbo x2 (AI Video Super-Res)</option><option value="flashvsrplus2pass*2">FlashVSR+ 2-Pass x2 (AI High Detail)</option><option value="seedvr2*2">SeedVR2 x2 (Diffusion Detail Restoration)</option></select></div>
           </div>
 
@@ -585,12 +607,18 @@
                 </div>
 
                 <!-- Queue Filter / Header Bar -->
-                <div style="display: flex; justify-content: space-between; align-items: center; padding: 0 2px;">
-                  <div style="display: flex; gap: 4px; align-items: center;">
+                <div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; padding: 0 2px;">
+                  <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">
                     <span style="font-size: 11px; font-weight: 600; color: var(--text-muted); margin-right: 4px;">QUEUE:</span>
                     <button type="button" class="btn btn-filter active" data-filter="queued" id="btnFilterQueued" style="padding: 2px 8px; font-size: 11px; color: #f59e0b;"><span id="lblQueuedTab">Pending</span> (<span id="countQueued">0</span>)</button>
                     <button type="button" class="btn btn-filter" data-filter="completed" id="btnFilterDone" style="padding: 2px 8px; font-size: 11px; color: #10b981;">Done (<span id="countDone">0</span>)</button>
                     <button type="button" class="btn btn-filter" data-filter="all" id="btnFilterAll" style="padding: 2px 8px; font-size: 11px;">All (<span id="countAll">0</span>)</button>
+                    <div id="queueSortControls" style="display: inline-flex; gap: 3px; align-items: center; margin-left: 6px; padding-left: 8px; border-left: 1px solid #334155;">
+                      <span style="font-size: 10px; font-weight: 600; color: var(--text-muted); margin-right: 2px;">SORT:</span>
+                      <button type="button" class="btn btn-queue-sort" data-sort="scene" id="btnSortScene" title="Sort queued list by scene order within the video (click again to reverse)" style="padding: 2px 7px; font-size: 11px;">🎬 Scene Order</button>
+                      <button type="button" class="btn btn-queue-sort" data-sort="engine" id="btnSortEngine" title="Sort queued list by execution engine (Local / fal.ai / MiniMax)" style="padding: 2px 7px; font-size: 11px;">⚙️ Engine</button>
+                      <button type="button" class="btn btn-queue-sort" data-sort="length" id="btnSortLength" title="Sort queued list by clip length" style="padding: 2px 7px; font-size: 11px;">⏱ Length</button>
+                    </div>
                   </div>
                   <div style="display: flex; gap: 6px; align-items: center;">
                     <button type="button" class="btn btn-accent" id="btnQueueAll" title="Queue all unrendered or changed scenes" style="font-size: 11px; padding: 2px 10px;">➕ Queue Missing / Changed</button>
@@ -654,13 +682,15 @@
                 <option value="2560x1440">Master Res: 1440p 2K QHD</option>
                 <option value="3840x2160">Master Res: 4K UHD</option>
               </select>
+              <button type="button" class="btn" id="btnToggleMasterRoiOverlay" title="Toggle interactive Split X &amp; ROI bounding box overlay on video players" style="font-size: 11px; padding: 4px 8px;">📐 Guides: On</button>
               <button type="button" class="btn" id="btnRefreshMasterVideo" title="Reload master video player">🔄 Reload</button>
               <button type="button" class="btn btn-primary" id="btnStitchMasterFromTab" title="Re-stitch all clips and anchors into a full master video">🧵 Stitch Master Video</button>
             </div>
           </div>
 
           <div id="masterVideoContainer" style="position: relative; background: #000; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; display: flex; align-items: center; justify-content: center; flex: 1; min-height: 280px;">
-            <video id="masterVideoPlayer" controls style="width: 100%; height: 100%; max-height: calc(100vh - 260px); object-fit: contain; background: #000; display: block;"></video>
+            <video id="masterVideoPlayer" controls style="width: 100%; height: auto; max-height: calc(100vh - 260px); object-fit: contain; background: #000; display: block;"></video>
+            <div id="masterRoiOverlay" style="display: none; position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 4;"></div>
             <div id="masterStitchOverlay" style="display: none; flex-direction: column; align-items: center; justify-content: center; gap: 12px; width: 100%; max-width: 460px; padding: 28px; box-sizing: border-box;">
               <div id="masterStitchPhase" style="font-size: 15px; font-weight: 700; color: #38bdf8; text-align: center;">🧵 Stitching Master Video...</div>
               <div style="width: 100%; height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; border: 1px solid #334155;">
@@ -751,21 +781,29 @@
   <audio id="audioElement" preload="auto"></audio>
 
   <!-- Application Scripts (Modularized) -->
-  <script src="js/state_and_utils.js?v=47"></script>
+  <script src="js/state_and_utils.js?v=50"></script>
   <script src="js/scene_jump_bar.js?v=2"></script>
-  <script src="js/timeline_and_playback.js?v=45"></script>
-  <script src="js/scene_inspector.js?v=48"></script>
-  <script src="js/takes_and_history.js?v=46"></script>
-  <script src="js/characters_studio.js?v=46"></script>
+  <script src="js/timeline_and_playback.js?v=46"></script>
+  <script src="js/scene_inspector.js?v=52"></script>
+  <script src="js/takes_and_history.js?v=51"></script>
+  <script src="js/characters_studio.js?v=48"></script>
+  <script src="js/char_mask_editor.js?v=2"></script>
+  <script src="js/scene_ref_picker.js?v=2"></script>
   <script src="js/markers_and_prompts.js?v=45"></script>
-  <script src="js/anchors_and_settings.js?v=45"></script>
-  <script src="js/queue_engines.js?v=1"></script>
-  <script src="js/queue_and_console.js?v=45"></script>
-  <script src="js/master_and_export.js?v=47"></script>
-  <script src="js/scenes_tab.js?v=47"></script>
+  <script src="js/anchors_and_settings.js?v=51"></script>
+  <script src="js/anchors_studio.js?v=10"></script>
+  <script src="js/anchor_source_refs.js?v=4"></script>
+  <script src="js/anchor_take_lightbox.js?v=2"></script>
+  <script src="js/anchor_and_char_takes.js?v=9"></script>
+  <script src="js/queue_engines.js?v=4"></script>
+  <script src="js/queue_and_console.js?v=47"></script>
+  <script src="js/master_and_export.js?v=48"></script>
+  <script src="js/scenes_tab.js?v=53"></script>
   <script src="js/fal_settings.js?v=1"></script>
-  <script src="js/duet_repair.js?v=2"></script>
+  <script src="js/duet_repair.js?v=4"></script>
+  <script src="js/video_roi_overlay.js?v=1"></script>
   <script src="js/clip_import.js?v=1"></script>
+  <script src="js/scene_duplicate.js?v=2"></script>
   <script src="js/split_resizer.js?v=1"></script>
 </body>
 </html>

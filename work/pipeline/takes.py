@@ -9,54 +9,31 @@ import sys
 import time
 from pathlib import Path
 from .prompts import extract_anchor_id
+from .project_paths import (
+    _BUILTIN_RES_MAP, _P1_SYNC_KEYS, _P2_SYNC_KEYS, _resolve_take_target_resolution,
+    find_companion_pass1_take, path_rel_str, resolve_project_dirs, resolve_state_hashes_paths,
+    resolve_take_target_renderer, resolve_vault_media_path, restore_active_files_after_vault,
+    sync_restored_scene_fields,
+)
 
 
 def safe_link_or_copy(src: Path, dst: Path) -> bool:
-    """Safely replace dst with a hardlink (or copy) to src.
-    CRITICAL: Always unlinks dst first so we never truncate a shared NTFS inode in-place!
-    """
-    src = Path(src)
-    dst = Path(dst)
-    if not src.exists():
-        raise FileNotFoundError(f"Source file missing: {src}")
+    """Safely replace dst with a hardlink (or copy) to src, retrying transient Windows file locks."""
+    src, dst = Path(src), Path(dst)
+    if not src.exists(): raise FileNotFoundError(f"Source file missing: {src}")
     dst.parent.mkdir(parents=True, exist_ok=True)
-    if dst.exists() or dst.is_symlink():
+    for att in range(8):
         try:
-            if dst.resolve() == src.resolve() and dst.stat().st_ino == src.stat().st_ino:
-                return True
-        except OSError:
-            pass
-        dst.unlink(missing_ok=True)
-    try:
-        os.link(str(src), str(dst))
-        return True
-    except OSError:
-        shutil.copy2(str(src), str(dst))
-        return True
-
-
-_BUILTIN_RES_MAP = {"1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1088"}
-_P1_SYNC_KEYS = ("prompt_m", "seed_m", "stem_m", "anchor", "anchor_end", "split_x", "render_pad_start", "render_pad_end", "resolution", "filters", "negative_prompt", "negative_mode", "negative_prompt_m", "prompt_mode", "prompt_components", "video_renderer", "renderer", "renderer_m", "backend", "backend_m", "mode")
-_P2_SYNC_KEYS = ("prompt_f", "seed_f", "stem_f", "resolution", "spatial_upsampling", "filters", "negative_prompt", "negative_mode", "negative_prompt_f", "prompt_mode", "prompt_components", "video_renderer", "renderer", "renderer_f", "backend", "backend_f", "pass2_roi_mode", "pass2_roi_side", "pass2_roi_box", "mode")
-
-def _resolve_take_target_resolution(proj_data: dict, sc: dict, target_take: dict):
-    """Return a resolution preset/WxH to write onto sc if effective resolution != take's rendered resolution."""
-    rm = proj_data.get("models") or {}
-    res_map = {**_BUILTIN_RES_MAP, **{str(k): str(v["resolution"] if isinstance(v, dict) else v) for k, v in (rm.get("video_resolutions") or {}).items() if (isinstance(v, dict) and v.get("resolution")) or (isinstance(v, str) and "x" in v)}}
-    vs = rm.get("video_shared_settings") if isinstance(rm.get("video_shared_settings"), dict) else {}
-    def_raw = rm.get("default_video_resolution") or rm.get("resolution") or vs.get("resolution") or proj_data.get("master_resolution") or 4
-    sc_raw = sc.get("resolution")
-    if sc_raw is not None and str(sc_raw).strip().lower() not in ("", "default", "inherit", "none", "null"):
-        cur_res = res_map.get(str(sc_raw).strip(), str(sc_raw).strip())
-    else:
-        vr = (rm.get("video_renderers") or {}).get(str(sc.get("renderer") or sc.get("video_renderer") or ""))
-        vr_res = vr.get("resolution") if isinstance(vr, dict) else None
-        cur_res = res_map.get(str(vr_res or def_raw).strip(), str(vr_res or def_raw).strip())
-    take_res = str(target_take.get("resolution") or "").strip() or (re.search(r"_(\d+x\d+)$", str(target_take.get("out_name") or "")) or [None, ""])[1]
-    if not take_res or cur_res == take_res: return None
-    for k, v in res_map.items():
-        if v == take_res: return int(k) if k.isdigit() else k
-    return take_res
+            if dst.exists() or dst.is_symlink():
+                try:
+                    if dst.resolve() == src.resolve() and dst.stat().st_ino == src.stat().st_ino: return True
+                except OSError: pass
+                dst.unlink(missing_ok=True)
+            try: os.link(str(src), str(dst)); return True
+            except OSError: shutil.copy2(str(src), str(dst)); return True
+        except PermissionError as pe:
+            if att < 7: time.sleep(0.12); continue
+            raise PermissionError(f"Clip file '{dst.name}' is locked by another player or preview; close/unload it and retry ({pe})") from pe
 
 
 def get_takes_manifest_path(proj_dir: Path) -> Path:
@@ -65,7 +42,8 @@ def get_takes_manifest_path(proj_dir: Path) -> Path:
 
 def _find_strip(proj_dir: Path, sid: str, out_name: str) -> Path | None:
     p = Path(proj_dir)
-    for d in (p / "work" / "frames_v3", p / "work" / "frames", p / "work" / "renders_v3"):
+    pdirs = resolve_project_dirs(p)
+    for d in (pdirs["strips"], pdirs["renders"]):
         for cand in (d / f"{sid}_strip.jpg", d / f"{out_name}_strip.jpg"):
             if cand.is_file() and cand.stat().st_size > 0: return cand
     return None
@@ -73,15 +51,14 @@ def _find_strip(proj_dir: Path, sid: str, out_name: str) -> Path | None:
 
 def _active_strip_path(proj_dir: Path, sid: str) -> Path:
     p = Path(proj_dir)
-    fdir = p / "work" / "frames_v3"
+    fdir = resolve_project_dirs(p)["strips"]
     if not fdir.is_dir() and (p / "work" / "frames").is_dir(): fdir = p / "work" / "frames"
     return fdir / f"{sid}_strip.jpg"
 
 
 def get_state_hashes_file(proj_dir: Path) -> Path:
-    p1, p2 = Path(proj_dir) / "work" / "state_hashes.json", Path(proj_dir) / "work" / "jobs_v3" / "state_hashes.json"
-    if p1.is_file() and p2.is_file(): return p1 if p1.stat().st_mtime >= p2.stat().st_mtime else p2
-    return p1 if p1.is_file() else (p2 if p2.is_file() else p1)
+    cands = resolve_state_hashes_paths(proj_dir)
+    return next((c for c in cands if c.is_file()), cands[0])
 
 
 def save_state_hashes_data(proj_dir: Path, data: dict) -> None:
@@ -89,8 +66,10 @@ def save_state_hashes_data(proj_dir: Path, data: dict) -> None:
     pdir = Path(proj_dir)
     th = data.get("task_hashes") or data.get("tasks") or {}
     data["task_hashes"] = data["tasks"] = th
-    with locked_file_op(pdir / "work" / "jobs_v3" / "state_hashes.lock"):
-        for p in (pdir / "work" / "state_hashes.json", pdir / "work" / "jobs_v3" / "state_hashes.json"):
+    jdir = resolve_project_dirs(pdir)["jobs"]
+    jdir.mkdir(parents=True, exist_ok=True)
+    with locked_file_op(jdir / "state_hashes.lock"):
+        for p in resolve_state_hashes_paths(pdir):
             if p.parent.is_dir():
                 try: atomic_write_json(p, data)
                 except Exception: pass
@@ -115,6 +94,11 @@ def _pass_key(pass_num: int | None) -> str:
     return f"p{pass_num}" if pass_num is not None else "default"
 
 
+def _file_path_for_vault(proj_dir: Path, renders_dir: Path | None, vault_rel: str) -> str:
+    rdir = Path(renders_dir) if renders_dir else resolve_project_dirs(proj_dir)["renders"]
+    return f"{path_rel_str(proj_dir, rdir, 'work/renders')}/{vault_rel}"
+
+
 def _build_seeded_take_entry(
     proj_dir: Path, sid: str, out_name: str, pass_num: int | None, mp4_path: Path, vault_rel_mp4: str,
     vault_rel_strip: str | None, t_hash: str, take_id: str, take_number: int,
@@ -131,8 +115,8 @@ def _build_seeded_take_entry(
         "anchor_sha256": state_data.get("anchor_file_hashes", {}).get(sc_info.get("anchor", "")),
         "parent_p1_task_hash": None, "created_at": round(float(created_ts), 3), "created_iso": iso,
         "vault_rel_mp4": vault_rel_mp4, "vault_rel_strip": vault_rel_strip,
-        "file_path": f"work/renders_v3/{vault_rel_mp4}",
-        "strip_path": f"work/renders_v3/{vault_rel_strip}" if vault_rel_strip else None,
+        "file_path": _file_path_for_vault(proj_dir, mp4_path.parent.parent.parent if "takes" in mp4_path.parts else None, vault_rel_mp4),
+        "strip_path": _file_path_for_vault(proj_dir, mp4_path.parent.parent.parent if "takes" in mp4_path.parts else None, vault_rel_strip) if vault_rel_strip else None,
         "render_start": r_info.get("render_start", float(sc_info.get("start", 0))),
         "render_end": r_info.get("render_end", float(sc_info.get("end", 0))),
         "frames": r_info.get("frames", 0), "elapsed_s": r_info.get("elapsed", 0.0),
@@ -178,10 +162,10 @@ def sid_fallback(t: dict) -> str:
 
 
 def ensure_baseline_takes_seeded(proj_dir: Path, config_file: Path | None = None) -> dict:
-    """Ensures existing renders in renders_v3 and takes vault are registered in takes_manifest.json."""
+    """Ensures existing renders and takes vault are registered in takes_manifest.json."""
     from .media_utils import locked_file_op
     proj_dir = Path(proj_dir)
-    renders_dir = proj_dir / "work" / "renders_v3"
+    renders_dir = resolve_project_dirs(proj_dir, config_file=config_file)["renders"]
     if not renders_dir.is_dir():
         return load_takes_manifest(proj_dir)
     with locked_file_op(get_takes_manifest_path(proj_dir).with_suffix(".lock")):
@@ -214,14 +198,20 @@ def _ensure_baseline_takes_seeded_locked(proj_dir: Path, renders_dir: Path, conf
         try: proj_data = json.loads(Path(config_file).read_text(encoding="utf-8"))
         except Exception: pass
     scene_by_id = {s.get("id"): s for s in proj_data.get("scenes", []) if s.get("id")}
+    has_cfg_scenes = isinstance(proj_data.get("scenes"), list) and Path(config_file).is_file()
+    valid_sids_u = {str(k).strip().upper() for k in scene_by_id}
+    def _skip_sid(s: str) -> bool: return (not s) or s.startswith((".", "_")) or bool(re.match(r"^tmp[0-9a-f]{6,}$", s, re.I)) or (has_cfg_scenes and s.strip().upper() not in valid_sids_u)
 
-    # 1. Seed any active top-level renders_v3/*.mp4 not yet indexed by out_name
+    # 1. Seed any active top-level renders/*.mp4 not yet indexed by out_name
     for mp4_path in sorted(renders_dir.glob("*.mp4")):
         if mp4_path.name.endswith(".tmp.mp4") or "takes" in mp4_path.parts or mp4_path.stat().st_size < 50000:
+            continue
+        if mp4_path.stem.startswith("tmp") and "_continue" in mp4_path.stem:
             continue
         out_name = mp4_path.stem
         parts = out_name.split("_")
         sid = parts[0] if parts else out_name
+        if _skip_sid(sid): continue
         pass_num = 1 if "_Pass1" in out_name else (2 if "_Pass2" in out_name else None)
         pkey = _pass_key(pass_num)
         sc_entry = scenes_map.setdefault(sid, {"active_takes": {}, "takes": []})
@@ -255,13 +245,14 @@ def _ensure_baseline_takes_seeded_locked(proj_dir: Path, renders_dir: Path, conf
         sc_entry["is_baseline_seeded"] = True
         changed = True
 
-    # 2. Index any vaulted MP4s in renders_v3/takes/ not yet referenced in manifest
+    # 2. Index any vaulted MP4s in renders/takes/ not yet referenced in manifest
     takes_root = renders_dir / "takes"
     if takes_root.is_dir():
         for sid_dir in sorted(takes_root.iterdir()):
             if not sid_dir.is_dir():
                 continue
             sid = sid_dir.name
+            if _skip_sid(sid): continue
             sc_entry = scenes_map.setdefault(sid, {"active_takes": {}, "takes": []})
             existing_takes = sc_entry.setdefault("takes", [])
             known_rels = {t.get("vault_rel_mp4") for t in existing_takes if t.get("vault_rel_mp4")}
@@ -326,8 +317,8 @@ def restore_previous_active_take_if_missing(ctx, sid: str, out_name: str, out_mp
     cands = [t for t in takes if t.get("take_id") == active_id and t.get("out_name") == out_name]
     cands += [t for t in reversed(takes) if t.get("out_name") == out_name and t not in cands]
     for t in cands:
-        v_path = pdir / "work" / "renders_v3" / (t.get("vault_rel_mp4") or "")
-        if v_path.is_file():
+        v_path = resolve_vault_media_path(pdir, None, t)
+        if v_path and v_path.is_file():
             safe_link_or_copy(v_path, out_mp4)
             return True
     return False
@@ -335,40 +326,37 @@ def restore_previous_active_take_if_missing(ctx, sid: str, out_name: str, out_mp
 
 def after_scene_render(
     ctx, sc: dict, pass_num: int | None, out_name: str, out_mp4: Path,
-    t_hash: str, t_dict: dict, elapsed: float, state: dict
+    t_hash: str, t_dict: dict, elapsed: float, state: dict,
+    created_at: float | None = None, preserve_existing_active: bool = True,
 ) -> dict:
-    """Post-render hook: Stores generated clip in vault and promotes it to active."""
-    out_mp4 = Path(out_mp4)
-    renders_dir = ctx.project_dir / "work" / "renders_v3"
+    """Post-render hook: Archives generated clip into vault; keeps previously chosen active take if present."""
+    out_mp4, renders_dir = Path(out_mp4), Path(getattr(ctx, "renders_dir", None) or (ctx.project_dir / "work" / "renders"))
     sid = sc.get("id") or out_name.split("_")[0]
     t_hash_prefix = t_hash[:12] if t_hash else "take"
-    take_id = f"take_{t_hash_prefix}"
-    pkey = _pass_key(pass_num)
-
+    take_id, pkey = f"take_{t_hash_prefix}", _pass_key(pass_num)
     vault_rel_mp4 = f"takes/{sid}/{out_name}__{t_hash_prefix}.mp4"
     vault_mp4 = renders_dir / vault_rel_mp4
     vault_mp4.parent.mkdir(parents=True, exist_ok=True)
-
-    # Copy output to vault if not already there, then link active
     if out_mp4.resolve() != vault_mp4.resolve():
         shutil.copy2(str(out_mp4), str(vault_mp4))
-        safe_link_or_copy(vault_mp4, out_mp4)
-
-    # Handle filmstrip thumbnail
-    strip_src = _find_strip(ctx.project_dir, sid, out_name)
-    vault_rel_strip = None
+    strip_src, vault_rel_strip = _find_strip(ctx.project_dir, sid, out_name), None
     if strip_src and strip_src.is_file():
         vault_rel_strip = f"takes/{sid}/{out_name}__{t_hash_prefix}_strip.jpg"
         safe_link_or_copy(strip_src, renders_dir / vault_rel_strip)
-
     from .media_utils import locked_file_op
     with locked_file_op(get_takes_manifest_path(ctx.project_dir).with_suffix(".lock")):
         manifest = load_takes_manifest(ctx.project_dir)
         sc_entry = manifest.setdefault("scenes", {}).setdefault(sid, {"active_takes": {}, "takes": []})
         existing = sc_entry.setdefault("takes", [])
-        created_ts = time.time()
+        active_map, prev_overall_tid = sc_entry.setdefault("active_takes", {}), sc_entry.get("active_take_id")
+        prev_pass_tid = active_map.get(pkey) or (prev_overall_tid if next((t for t in existing if t.get("take_id") == prev_overall_tid and _pass_key(t.get("pass_num")) == pkey), None) else None)
+        prev_act = next((t for t in existing if t.get("take_id") == prev_pass_tid), None)
+        prev_vp = resolve_vault_media_path(ctx.project_dir, renders_dir, prev_act) if prev_act else None
+        keep_prev = bool(preserve_existing_active and prev_act and prev_act.get("take_id") != take_id and prev_vp and prev_vp.is_file() and prev_vp.stat().st_size > 0)
+        created_ts = float(created_at) if created_at is not None else time.time()
         iso = datetime.datetime.fromtimestamp(created_ts, datetime.timezone.utc).isoformat()
         def_res = str(sc.get("renderer") or (getattr(ctx, "models", {}) or {}).get("default_video_renderer", 1))
+        r_rel = path_rel_str(ctx.project_dir, renders_dir, "work/renders")
         take_entry = {
             "take_id": take_id, "take_number": len(existing) + 1, "scene_id": sid, "pass_num": pass_num,
             "out_name": out_name, "task_hash": t_hash, "seed": t_dict.get("seed", sc.get("seed")),
@@ -376,26 +364,31 @@ def after_scene_render(
             "anchor_sha256": state.get("anchor_file_hashes", {}).get(extract_anchor_id(sc.get("anchor", "") or "")),
             "parent_p1_task_hash": t_dict.get("parent_p1_task_hash") if pass_num == 2 else None,
             "created_at": round(created_ts, 3), "created_iso": iso, "vault_rel_mp4": vault_rel_mp4, "vault_rel_strip": vault_rel_strip,
-            "file_path": f"work/renders_v3/{vault_rel_mp4}", "strip_path": f"work/renders_v3/{vault_rel_strip}" if vault_rel_strip else None,
+            "file_path": f"{r_rel}/{vault_rel_mp4}", "strip_path": f"{r_rel}/{vault_rel_strip}" if vault_rel_strip else None,
             "render_start": t_dict.get("render_start", float(sc.get("start", 0))), "render_end": t_dict.get("render_end", float(sc.get("end", 0))),
             "frames": t_dict.get("video_length", 0), "elapsed_s": round(float(elapsed), 1),
             "size_bytes": out_mp4.stat().st_size if out_mp4.exists() else 0, "resolution": str(t_dict.get("resolution", "")), "model_id": def_res,
             "model_type": str(t_dict.get("model_type", "")), "backend": str(t_dict.get("_backend") or t_dict.get("backend") or "local"),
             "fal_endpoint": str((t_dict.get("_fal_spec") or {}).get("endpoint") or t_dict.get("fal_endpoint") or ""),
-            "scene_snapshot": copy.deepcopy(sc),
+            "scene_snapshot": copy.deepcopy(sc), "label": f"Take {len(existing) + 1}",
             "render_settings": {k: v for k, v in t_dict.items() if k not in ("audio_path", "image_start", "image_end") and not str(k).startswith("_")},
-            "label": f"Take {len(existing) + 1}",
         }
         idx = next((i for i, t in enumerate(existing) if t.get("take_id") == take_id and t.get("out_name") == out_name), None)
         if idx is not None: existing[idx] = take_entry
         else: existing.append(take_entry)
-        sc_entry.setdefault("active_takes", {})[pkey] = take_id
-        sc_entry["active_take_id"] = take_id
+        if keep_prev:
+            if prev_act.get("out_name") != out_name and out_mp4.resolve() != vault_mp4.resolve(): safe_link_or_copy(vault_mp4, out_mp4)
+            restore_active_files_after_vault(ctx.project_dir, renders_dir, sid, prev_act, sc_entry, existing, created_ts, sc, extract_anchor_id, safe_link_or_copy, _adjust_promote_mtime, _active_strip_path)
+        else:
+            if out_mp4.resolve() != vault_mp4.resolve(): safe_link_or_copy(vault_mp4, out_mp4)
+            active_map[pkey] = take_id
+            if pass_num != 1 or not active_map.get("p2"): sc_entry["active_take_id"] = take_id
         save_takes_manifest(ctx.project_dir, manifest)
-        return take_entry
+        return {**take_entry, "_activated": not keep_prev}
 
 
-def _adjust_promote_mtime(renders_dir: Path, active_mp4: Path, out_name: str, pass_num, this_take: dict, sc_entry: dict, takes: list, safe_mtime: float) -> None:
+def _adjust_promote_mtime(renders_dir: Path, active_mp4: Path, out_name: str, pass_num, this_take: dict, sc_entry: dict, takes: list, safe_mtime: float, min_mtime: float = 0.0) -> None:
+    safe_mtime = max(safe_mtime, min_mtime)
     if pass_num == 2 and "_Pass2" in out_name:
         p1_mp4 = renders_dir / f"{out_name.replace('_Pass2_Final', '_Pass1_Left')}.mp4"
         if p1_mp4.is_file(): safe_mtime = max(safe_mtime, p1_mp4.stat().st_mtime + 2.0)
@@ -404,7 +397,12 @@ def _adjust_promote_mtime(renders_dir: Path, active_mp4: Path, out_name: str, pa
         p2_tk = next((x for x in takes if x.get("take_id") == sc_entry.get("active_takes", {}).get("p2")), None)
         if p2_mp4.is_file() and p2_tk and float(p2_tk.get("created_at") or 0) >= float(this_take.get("created_at") or 0):
             if not p2_tk.get("parent_p1_task_hash") or p2_tk.get("parent_p1_task_hash") == this_take.get("task_hash"):
-                safe_mtime = min(safe_mtime, p2_mp4.stat().st_mtime - 2.0)
+                p2_mt = p2_mp4.stat().st_mtime
+                if min_mtime and p2_mt < min_mtime + 2.0:
+                    p2_mt = max(safe_mtime + 2.0, min_mtime + 2.0)
+                    try: os.utime(str(p2_mp4), (p2_mt, p2_mt))
+                    except OSError: pass
+                safe_mtime = max(min_mtime, min(safe_mtime, p2_mt - 2.0))
     try: os.utime(str(active_mp4), (safe_mtime, safe_mtime))
     except OSError: pass
 
@@ -418,7 +416,8 @@ def try_auto_promote_vault_hit(proj_dir: Path, *args, **kwargs) -> bool:
         config_file, sid = Path(args[0]), str(args[1]) if len(args) > 1 else kwargs.get("sid", "")
         pass_num = args[2] if len(args) > 2 else kwargs.get("pass_num")
         h0 = args[3] if len(args) > 3 else kwargs.get("cur_task_hash", "")
-        valid_hashes = {h0} if h0 else set()
+        ch_kw = kwargs.get("curr_hashes")
+        valid_hashes = set(ch_kw) if ch_kw else ({h0} if h0 else set())
         out_name = sc_start = sc_end = cur_anchor_hash = None
     else:
         config_file = None
@@ -435,7 +434,8 @@ def try_auto_promote_vault_hit(proj_dir: Path, *args, **kwargs) -> bool:
     if not takes:
         return False
 
-    renders_dir, state_file, state = proj_dir / "work" / "renders_v3", get_state_hashes_file(proj_dir), {}
+    pdirs = resolve_project_dirs(proj_dir, config_file=config_file)
+    renders_dir, state_file, state = pdirs["renders"], get_state_hashes_file(proj_dir), {}
     if state_file.is_file():
         try: state = json.loads(state_file.read_text(encoding="utf-8"))
         except Exception: pass
@@ -443,8 +443,8 @@ def try_auto_promote_vault_hit(proj_dir: Path, *args, **kwargs) -> bool:
     for t in reversed(takes):
         if out_name and t.get("out_name") != out_name: continue
         if valid_hashes and t.get("task_hash") not in valid_hashes: continue
-        v_path = renders_dir / (t.get("vault_rel_mp4") or "")
-        if not v_path.is_file() or v_path.stat().st_size < 50000: continue
+        v_path = resolve_vault_media_path(proj_dir, renders_dir, t)
+        if not v_path or not v_path.is_file() or v_path.stat().st_size < 50000: continue
         if sc_start is not None and sc_end is not None:
             r_start, r_end, snap = float(t.get("render_start", 0)), float(t.get("render_end", 0)), (t.get("scene_snapshot") or {})
             allow_pad = bool(snap.get("hold_last_frame") or snap.get("pad_tail") or snap.get("allow_tail_pad") or kwargs.get("allow_tail_pad"))
@@ -454,8 +454,8 @@ def try_auto_promote_vault_hit(proj_dir: Path, *args, **kwargs) -> bool:
         target_out_name = t.get("out_name") or out_name or f"{sid}_solo"
         active_mp4 = renders_dir / f"{target_out_name}.mp4"
         safe_link_or_copy(v_path, active_mp4)
-        v_strip = renders_dir / (t.get("vault_rel_strip") or "")
-        if v_strip.is_file(): safe_link_or_copy(v_strip, _active_strip_path(proj_dir, sid))
+        v_strip = resolve_vault_media_path(proj_dir, renders_dir, t, path_key="strip_path", rel_key="vault_rel_strip")
+        if v_strip and v_strip.is_file(): safe_link_or_copy(v_strip, _active_strip_path(proj_dir, sid))
 
         safe_mtime = max(time.time(), v_path.stat().st_mtime + 2.0)
         aid = t.get("scene_snapshot", {}).get("anchor")
@@ -465,9 +465,10 @@ def try_auto_promote_vault_hit(proj_dir: Path, *args, **kwargs) -> bool:
                 if sc_found: aid = sc_found.get("anchor")
             except Exception: pass
         if aid:
-            anchors_dir = proj_dir / "work" / "anchors_v3"
-            for f in (anchors_dir / f"{aid}.png", *anchors_dir.glob(f"{aid}*")):
-                if f.is_file(): safe_mtime = max(safe_mtime, f.stat().st_mtime + 2.0); break
+            anchors_dir = pdirs["anchors"]
+            if anchors_dir.is_dir():
+                for f in (anchors_dir / f"{aid}.png", *anchors_dir.glob(f"{aid}*")):
+                    if f.is_file(): safe_mtime = max(safe_mtime, f.stat().st_mtime + 2.0); break
         _adjust_promote_mtime(renders_dir, active_mp4, target_out_name, pass_num, t, sc_entry, takes, safe_mtime)
 
         state.setdefault("task_hashes", {})[target_out_name] = t["task_hash"]
@@ -509,74 +510,80 @@ def promote_take_to_active(
     target_take = next((t for t in takes if t.get("take_id") == take_id and t.get("pass_num") == pass_num), None) if pass_num is not None else None
     if not target_take: target_take = next((t for t in takes if t.get("take_id") == take_id), None)
     if not target_take: raise ValueError(f"Take {take_id} not found for scene {sid}")
-    renders_dir, out_name = proj_dir / "work" / "renders_v3", target_take["out_name"]
-    vault_mp4, active_mp4 = renders_dir / target_take["vault_rel_mp4"], renders_dir / f"{out_name}.mp4"
-    if not vault_mp4.is_file(): raise FileNotFoundError(f"Vault video file missing: {vault_mp4}")
+    pdirs = resolve_project_dirs(proj_dir, config_file=config_file)
+    renders_dir = pdirs["renders"]
+
+    eff_pass = target_take.get("pass_num") if pass_num is None else pass_num
+    active_p1_id = sc_entry.get("active_takes", {}).get("p1")
+    comp_p1 = find_companion_pass1_take(proj_dir, renders_dir, takes, target_take, active_p1_id) if eff_pass == 2 else None
+    p1_cur_act = next((t for t in takes if t.get("take_id") == active_p1_id), None) if active_p1_id else None
+
+    link_pairs: list[tuple[Path, Path, dict, int | None]] = []
+    for tk, tk_pass in ([(comp_p1, 1), (target_take, eff_pass)] if comp_p1 else [(target_take, eff_pass)]):
+        tk_out = tk["out_name"]
+        v_mp4 = resolve_vault_media_path(proj_dir, renders_dir, tk) or (renders_dir / tk["vault_rel_mp4"])
+        if not v_mp4.is_file():
+            raise FileNotFoundError(f"Vault video file missing: {v_mp4}")
+        link_pairs.append((v_mp4, renders_dir / f"{tk_out}.mp4", tk, tk_pass))
+
     # 1. Update project.json scene settings
     proj_data = json.loads(config_file.read_text(encoding="utf-8"))
     target_sc = next((s for s in proj_data.get("scenes", []) if s.get("id") == sid), None)
     if not target_sc: raise ValueError(f"Scene {sid} not found in project")
 
-    snap = target_take.get("scene_snapshot", {})
-    was_locked = target_sc.get("locked")
-    if pass_num in (1, 2):
-        sync_keys = _P1_SYNC_KEYS if pass_num == 1 else _P2_SYNC_KEYS
-        keep_req = ("prompt_m", "seed_m", "stem_m", "anchor", "split_x", "mode") if pass_num == 1 else ("prompt_f", "seed_f", "stem_f", "split_x", "mode")
-        for k in sync_keys:
-            if k in snap and snap[k] is not None: target_sc[k] = copy.deepcopy(snap[k])
-            elif k not in keep_req: target_sc.pop(k, None)
-    elif snap:
-        cur_id = target_sc.get("id") or sid
-        keep_timing = {} if restore_timing else {k: target_sc[k] for k in ("start", "end") if k in target_sc}
-        target_sc.clear()
-        target_sc.update(copy.deepcopy(snap))
-        target_sc["id"] = cur_id
-        target_sc.update(keep_timing)
-    res_fix = _resolve_take_target_resolution(proj_data, target_sc, target_take)
-    if res_fix is not None:
-        target_sc["resolution"] = res_fix
-    if was_locked is not None:
-        target_sc["locked"] = was_locked
+    sync_restored_scene_fields(
+        proj_data, target_sc, sid, target_take, pass_num, restore_timing,
+        comp_p1=comp_p1, p1_backend_source=p1_cur_act,
+    )
 
-    if restore_timing and "start" in snap and "end" in snap:
-        target_sc["start"], target_sc["end"] = snap["start"], snap["end"]
-
+    for v_mp4, a_mp4, _, _ in link_pairs:
+        safe_link_or_copy(v_mp4, a_mp4)
     config_file.write_text(json.dumps(proj_data, indent=2), encoding="utf-8")
-    safe_link_or_copy(vault_mp4, active_mp4)
 
     active_strip = _active_strip_path(proj_dir, sid)
-    vault_strip = renders_dir / (target_take.get("vault_rel_strip") or "")
+    vault_strip = resolve_vault_media_path(proj_dir, renders_dir, target_take, path_key="strip_path", rel_key="vault_rel_strip") or (renders_dir / (target_take.get("vault_rel_strip") or ""))
     if vault_strip.is_file(): safe_link_or_copy(vault_strip, active_strip)
     for stale in active_strip.parent.glob(f"{sid}_strip_*f.jpg"): stale.unlink(missing_ok=True)
 
-    safe_mtime = max(time.time(), vault_mp4.stat().st_mtime + 2.0)
+    anchor_floor = 0.0
     for a_ref in (target_sc.get("anchor"), target_sc.get("anchor_end")):
-        if a_ref:
-            for f in (proj_dir / "work" / "anchors_v3").glob(f"{extract_anchor_id(a_ref)}*"):
-                if f.is_file(): safe_mtime = max(safe_mtime, f.stat().st_mtime + 2.0); break
-    eff_pass = target_take.get("pass_num") if pass_num is None else pass_num
-    _adjust_promote_mtime(renders_dir, active_mp4, out_name, eff_pass, target_take, sc_entry, takes, safe_mtime)
+        if a_ref and pdirs["anchors"].is_dir():
+            for f in pdirs["anchors"].glob(f"{extract_anchor_id(a_ref)}*"):
+                if f.is_file(): anchor_floor = max(anchor_floor, f.stat().st_mtime + 2.0); break
 
     state_file, state_data = get_state_hashes_file(proj_dir), {}
     if state_file.is_file():
         try: state_data = json.loads(state_file.read_text(encoding="utf-8"))
         except Exception: pass
-    t_hash = target_take.get("task_hash") or ""
-    for hk in ("task_hashes", "tasks"):
-        if t_hash: state_data.setdefault(hk, {})[out_name] = t_hash
-        else: state_data.get(hk, {}).pop(out_name, None)
-    if target_take.get("render_settings"): state_data.setdefault("settings_store", {})[out_name] = target_take["render_settings"]
-    state_data.setdefault("scene_renders", {})[out_name] = {
-        "render_start": target_take.get("render_start"), "render_end": target_take.get("render_end"),
-        "frames": target_take.get("frames"), "elapsed": target_take.get("elapsed_s"), "completed_at": target_take.get("created_at"),
-    }
-    save_state_hashes_data(proj_dir, state_data)
 
-    pkey = _pass_key(target_take.get("pass_num") if pass_num is None else pass_num)
-    sc_entry.setdefault("active_takes", {})[pkey] = take_id
-    sc_entry["active_take_id"] = take_id
+    sync_p1 = p1_cur_act if (eff_pass == 2 and not comp_p1 and p1_cur_act and p1_cur_act.get("out_name")) else None
+    p1_v = resolve_vault_media_path(proj_dir, renders_dir, sync_p1) if sync_p1 else None
+    sync_pairs = [*link_pairs, *(([(p1_v, renders_dir / f"{sync_p1['out_name']}.mp4", sync_p1, 1)] if (p1_v and p1_v.is_file()) else []))]
+    active_map, promoted_passes = sc_entry.setdefault("active_takes", {}), []
+    for _, _, tk, tk_pass in link_pairs: active_map[_pass_key(tk_pass)] = tk["take_id"]
+    for v_mp4, a_mp4, tk, tk_pass in sync_pairs:
+        tk_out = tk["out_name"]
+        promoted_passes.append(tk_pass)
+        safe_mtime = max(time.time(), v_mp4.stat().st_mtime + 2.0, anchor_floor)
+        _adjust_promote_mtime(renders_dir, a_mp4, tk_out, tk_pass, tk, sc_entry, takes, safe_mtime, min_mtime=anchor_floor)
+        t_hash = tk.get("task_hash") or ""
+        for hk in ("task_hashes", "tasks"):
+            if t_hash: state_data.setdefault(hk, {})[tk_out] = t_hash
+            else: state_data.get(hk, {}).pop(tk_out, None)
+        if tk.get("render_settings"): state_data.setdefault("settings_store", {})[tk_out] = tk["render_settings"]
+        state_data.setdefault("scene_renders", {})[tk_out] = {
+            "render_start": tk.get("render_start"), "render_end": tk.get("render_end"),
+            "frames": tk.get("frames"), "elapsed": tk.get("elapsed_s"), "completed_at": tk.get("created_at"),
+        }
+
+    save_state_hashes_data(proj_dir, state_data)
+    sc_entry["active_take_id"] = target_take["take_id"]
     save_takes_manifest(proj_dir, manifest)
-    return {"success": True, "active_take_id": take_id, "restored_params": copy.deepcopy(target_sc), "scene": target_sc, "take": target_take}
+    return {
+        "success": True, "active_take_id": target_take["take_id"],
+        "restored_params": copy.deepcopy(target_sc), "scene": target_sc, "take": target_take,
+        "companion_p1_take": comp_p1, "promoted_passes": tuple(promoted_passes),
+    }
 
 
 def delete_scene_take(proj_dir: Path, config_file: Path | None, sid: str, take_id: str) -> dict:
@@ -589,7 +596,7 @@ def delete_scene_take(proj_dir: Path, config_file: Path | None, sid: str, take_i
     if idx is None:
         return {"success": False, "error": f"Take {take_id} not found for scene {sid}"}
 
-    renders_dir = proj_dir / "work" / "renders_v3"
+    renders_dir = resolve_project_dirs(proj_dir, config_file=config_file)["renders"]
     target = takes.pop(idx)
     v_rel, s_rel = target.get("vault_rel_mp4"), target.get("vault_rel_strip")
     all_remaining = [t for s in manifest.get("scenes", {}).values() for t in s.get("takes", [])]
@@ -731,24 +738,26 @@ def rollback_project_checkpoint(proj_dir: Path, config_file: Path | str | None =
     if ckpt_state.is_file():
         try: save_state_hashes_data(proj_dir, json.loads(ckpt_state.read_text(encoding="utf-8")))
         except Exception:
-            for st in (proj_dir / "work" / "state_hashes.json", proj_dir / "work" / "jobs_v3" / "state_hashes.json"):
+            for st in resolve_state_hashes_paths(proj_dir):
                 if st.parent.is_dir(): shutil.copy2(str(ckpt_state), str(st))
 
     active_map_file, restored_count = ckpt_dir / "active_takes.json", 0
     if active_map_file.is_file():
         try:
             active_map = json.loads(active_map_file.read_text(encoding="utf-8"))
-            manifest, renders_dir = load_takes_manifest(proj_dir), proj_dir / "work" / "renders_v3"
+            manifest, renders_dir = load_takes_manifest(proj_dir), resolve_project_dirs(proj_dir, config_file=config_file)["renders"]
+            from .scene_purge import restore_archived_takes_for_checkpoint; restore_archived_takes_for_checkpoint(proj_dir, manifest, active_map, renders_dir)
             for sid, pmap in active_map.items():
                 sc_entry = manifest.get("scenes", {}).get(sid, {})
                 takes = sc_entry.get("takes", [])
                 for pkey, tid in pmap.items():
                     t_obj = next((t for t in takes if t.get("take_id") == tid), None)
                     if not t_obj: continue
-                    v_mp4, a_mp4 = renders_dir / t_obj["vault_rel_mp4"], renders_dir / f"{t_obj['out_name']}.mp4"
-                    if v_mp4.is_file(): safe_link_or_copy(v_mp4, a_mp4); restored_count += 1
-                    v_strip = renders_dir / (t_obj.get("vault_rel_strip") or "")
-                    if v_strip.is_file(): safe_link_or_copy(v_strip, _active_strip_path(proj_dir, t_obj.get("scene_id", "")))
+                    v_mp4 = resolve_vault_media_path(proj_dir, renders_dir, t_obj)
+                    a_mp4 = renders_dir / f"{t_obj['out_name']}.mp4"
+                    if v_mp4 and v_mp4.is_file(): safe_link_or_copy(v_mp4, a_mp4); restored_count += 1
+                    v_strip = resolve_vault_media_path(proj_dir, renders_dir, t_obj, path_key="strip_path", rel_key="vault_rel_strip")
+                    if v_strip and v_strip.is_file(): safe_link_or_copy(v_strip, _active_strip_path(proj_dir, t_obj.get("scene_id", "")))
                     sc_entry.setdefault("active_takes", {})[pkey] = tid
                     sc_entry["active_take_id"] = tid
             save_takes_manifest(proj_dir, manifest)
@@ -757,7 +766,7 @@ def rollback_project_checkpoint(proj_dir: Path, config_file: Path | str | None =
 
 
 def get_vault_stats(proj_dir: Path) -> dict:
-    vault_dir = Path(proj_dir) / "work" / "renders_v3" / "takes"
+    vault_dir = resolve_project_dirs(proj_dir)["renders"] / "takes"
     total_bytes, take_files = 0, 0
     if vault_dir.is_dir():
         for f in vault_dir.rglob("*.mp4"):
@@ -781,26 +790,20 @@ def handle_takes_api(handler, action: str, path: str = "", body: dict | None = N
     if action == "get_takes":
         parts = path[len("/api/takes/"):].strip("/").split("/")
         if len(parts) < 2: handler.send_error_json("Invalid takes path", status=HTTPStatus.BAD_REQUEST); return
-        p_slug, sid = parts[0], parts[1]
-        pdir, cfile = _resolve_proj(p_slug)
+        pdir, cfile = _resolve_proj(parts[0])
         if not pdir: handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND); return
         manifest = ensure_baseline_takes_seeded(pdir, cfile) if (cfile and cfile.is_file()) else load_takes_manifest(pdir)
-        sc_data = manifest.get("scenes", {}).get(sid, {})
-        handler.send_json({
-            "success": True, "scene_id": sid, "active_take_id": sc_data.get("active_take_id"),
-            "active_takes": sc_data.get("active_takes", {}), "takes": sc_data.get("takes", []),
-        }); return
-
+        cfg_sids = {str(s.get("id") or "").strip().upper() for s in json.loads(cfile.read_text(encoding="utf-8")).get("scenes", []) if isinstance(s, dict)} if (cfile and cfile.is_file()) else None
+        sc_data = {} if (cfg_sids is not None and parts[1].strip().upper() not in cfg_sids) else manifest.get("scenes", {}).get(parts[1], {})
+        handler.send_json({"success": True, "scene_id": parts[1], "active_take_id": sc_data.get("active_take_id"), "active_takes": sc_data.get("active_takes", {}), "takes": sc_data.get("takes", [])}); return
     if action == "get_checkpoints":
         pdir, _ = _resolve_proj(path[len("/api/checkpoints/"):].strip("/"))
         if not pdir: handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND); return
         handler.send_json({"success": True, "checkpoints": list_project_checkpoints(pdir), "vault_stats": get_vault_stats(pdir)}); return
-
     if action == "get_vault_stats":
         pdir, _ = _resolve_proj(path[len("/api/vault/stats/"):].strip("/"))
         if not pdir: handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND); return
         handler.send_json({"success": True, **get_vault_stats(pdir)}); return
-
     body = body or {}
     if action in ("activate", "delete_take"):
         p_slug, sid, tid = body.get("project") or body.get("slug"), body.get("scene_id"), body.get("take_id")
@@ -810,11 +813,16 @@ def handle_takes_api(handler, action: str, path: str = "", body: dict | None = N
         try:
             res = promote_take_to_active(pdir, cfile, sid, tid, restore_timing=bool(body.get("restore_timing"))) if action == "activate" else delete_scene_take(pdir, cfile, sid, tid)
             if not res.get("success", True): handler.send_error_json(res.get("error", "Failed"), status=HTTPStatus.NOT_FOUND); return
+            if action == "activate":
+                try: from ui.server_queue_history import clear_scene_queue_curation
+                except ImportError:
+                    try: from work.ui.server_queue_history import clear_scene_queue_curation
+                    except ImportError: clear_scene_queue_curation = None
+                if clear_scene_queue_curation: clear_scene_queue_curation(srv, pdir, sid, passes=tuple(res.get("promoted_passes") or (1, 2, None)))
             if srv and hasattr(srv, "compute_fast_project_queue"): srv.compute_fast_project_queue(p_slug, force_recheck=True)
             handler.send_json({"success": True, **res})
         except Exception as e: handler.send_error_json(str(e))
         return
-
     if action == "create":
         p_slug = body.get("project") or body.get("slug")
         name, comment = body.get("name", "").strip() or "Manual Checkpoint", body.get("comment", "").strip()
@@ -824,7 +832,6 @@ def handle_takes_api(handler, action: str, path: str = "", body: dict | None = N
         try: handler.send_json({"success": True, "checkpoint": create_project_checkpoint(pdir, cfile, name=name, trigger="manual", comment=comment)})
         except Exception as e: handler.send_error_json(str(e))
         return
-
     if action == "rollback":
         p_slug, cid = body.get("project") or body.get("slug"), body.get("checkpoint_id")
         if not p_slug or not cid: handler.send_error_json("project and checkpoint_id are required"); return
@@ -836,5 +843,4 @@ def handle_takes_api(handler, action: str, path: str = "", body: dict | None = N
             handler.send_json({"success": True, **res})
         except Exception as e: handler.send_error_json(str(e))
         return
-
     handler.send_error_json(f"Unknown takes API action: {action}")

@@ -37,30 +37,42 @@ function getDefaultPass2Prompt(mode) {
 
 function setSelectValueSafely(selectEl, value, defaultValue) {
   if (!selectEl) return;
-  const targetVal = value || defaultValue;
+  Array.from(selectEl.options || []).forEach((o) => { if (o.dataset?.tempFallback) o.remove(); });
+  const targetVal = value || (typeof pickDefaultStem === "function" ? pickDefaultStem(defaultValue) : defaultValue);
   if (!targetVal) return;
-  const exists = Array.from(selectEl.options).some((opt) => opt.value === targetVal || opt.value.toLowerCase() === targetVal.toLowerCase());
-  if (!exists) selectEl.appendChild(new Option(`${targetVal} (custom)`, targetVal));
+  if (!Array.from(selectEl.options).some((o) => o.value === targetVal || o.value.toLowerCase() === targetVal.toLowerCase())) {
+    const opt = new Option(`${targetVal} (missing audio file)`, targetVal);
+    if (opt.dataset) { opt.dataset.tempFallback = "1"; opt.dataset.missing = "1"; }
+    selectEl.appendChild(opt);
+  }
   selectEl.value = targetVal;
 }
 
-function populateSceneVideoRenderer(sc) {
-  const sel = document.getElementById("sceneVideoRenderer");
+function fillRendererSelect(sel, defaultLabel, curVal) {
   if (!sel) return;
   sel.innerHTML = "";
-  const defaultId = String(state.projectData?.models?.default_video_renderer || 1);
-  const vModels = state.models?.video_renderers || {}, fModels = state.models?.fal_video_renderers || {}, mmModels = state.models?.minimax_video_renderers || {};
-  sel.add(new Option(`Default (Project: [#${defaultId}] ${(vModels[defaultId] || fModels[defaultId] || mmModels[defaultId])?.name || `Model #${defaultId}`})`, ""));
-  [["🖥️ Local (Wan2GP)", vModels, false], ["☁️ Cloud (fal.ai)", fModels, true], ["🎥 Cloud (MiniMax API)", mmModels, true]].forEach(([lbl, map, isCloud]) => {
+  const mkOpt = (val, txt) => { const o = document.createElement("option"); o.value = val; o.textContent = txt; return o; };
+  sel.appendChild(mkOpt("", defaultLabel));
+  const mRoot = state.models || {};
+  [["🖥️ Local (Wan2GP)", mRoot.video_renderers, false], ["☁️ Cloud (fal.ai)", mRoot.fal_video_renderers, true], ["🎥 Cloud (MiniMax API)", mRoot.minimax_video_renderers, true]].forEach(([lbl, map, isCloud]) => {
     const keys = Object.keys(map || {});
     if (!keys.length) return;
     const grp = document.createElement("optgroup");
     grp.label = lbl;
-    keys.forEach((k) => { const m = map[k], isRef = m?.supports_image_refs || String(m?.frames_formula || "").includes("ref2va"); grp.appendChild(new Option(isCloud ? `${m.name || m.model_type}${isRef ? " [Ref2V]" : ""}` : `[#${k}] ${m.name || m.model_type}${isRef ? " [Ref2VA]" : ""}`, k)); });
+    keys.forEach((k) => { const m = map[k], tag = window.formatVideoModelBadge ? window.formatVideoModelBadge(m, isCloud) : ((m?.supports_image_refs || String(m?.frames_formula || "").includes("ref2va")) ? (isCloud ? " [Ref2V]" : " [Ref2VA]") : ""); grp.appendChild(mkOpt(k, isCloud ? `${m.name || m.model_type}${tag}` : `[#${k}] ${m.name || m.model_type}${tag}`)); });
     sel.appendChild(grp);
   });
+  sel.value = curVal !== null && curVal !== undefined ? String(curVal) : "";
+}
+window.fillRendererSelect = fillRendererSelect;
+
+function populateSceneVideoRenderer(sc) {
+  const sel = document.getElementById("sceneVideoRenderer");
+  if (!sel) return;
+  const defId = String(state.projectData?.models?.default_video_renderer || 1), mRoot = state.models || {};
+  const defName = (mRoot.video_renderers?.[defId] || mRoot.fal_video_renderers?.[defId] || mRoot.minimax_video_renderers?.[defId])?.name || `Model #${defId}`;
   const curVal = sc.renderer !== null && sc.renderer !== undefined ? String(sc.renderer) : "";
-  sel.value = curVal;
+  fillRendererSelect(sel, `Default (Project: [#${defId}] ${defName})`, curVal);
   const badge = document.getElementById("sceneRendererBadge");
   if (badge) badge.style.display = curVal ? "inline-block" : "none";
   window.syncSceneBackendUI?.(sc);
@@ -110,6 +122,7 @@ function handleSceneModeChange(sc, newMode) {
   const wasTwoPass = isTwoPassMode(oldMode);
   const isTwoPass = isTwoPassMode(newMode);
   const isStereo = isStereoDuetMode(newMode);
+  const defStem = (p) => (typeof pickDefaultStem === "function" ? pickDefaultStem(p) : p);
 
   // 1. Single-Pass -> Two-Pass (e.g. male_solo -> gva_male_left_silent_right or duet_method_b)
   if (!wasTwoPass && isTwoPass) {
@@ -118,42 +131,37 @@ function handleSceneModeChange(sc, newMode) {
     if (sc.seed_m === undefined) sc.seed_m = sc.seed !== undefined ? sc.seed : 8201;
     if (sc.seed_f === undefined) sc.seed_f = sc.seed !== undefined ? sc.seed + 100 : 8301;
     if (sc.split_x === undefined) sc.split_x = 0.48;
-    sc.stem_m = "male";
-    sc.stem_f = (newMode === "gva_male_left_silent_right") ? "silent" : "female";
+    sc.stem_m = defStem("male");
+    sc.stem_f = (newMode === "gva_male_left_silent_right") ? "silent" : defStem("female");
     delete sc.prompt; delete sc.seed; delete sc.stem;
   }
   // 2. Two-Pass -> Single-Pass (e.g. duet_method_b -> male_solo or duet_method_a)
   else if (wasTwoPass && !isTwoPass) {
     if (!sc.prompt || !sc.prompt.trim()) {
-      if (newMode === "female_solo") sc.prompt = sc.prompt_f || sc.prompt_m || getDefaultSinglePrompt(newMode);
-      else if (newMode === "silent_locked" && oldMode === "gva_male_left_silent_right") sc.prompt = sc.prompt_f || sc.prompt_m || getDefaultSinglePrompt(newMode);
-      else sc.prompt = sc.prompt_m || sc.prompt_f || getDefaultSinglePrompt(newMode);
+      const alt = (newMode === "female_solo" || (newMode === "silent_locked" && oldMode === "gva_male_left_silent_right")) ? sc.prompt_f : sc.prompt_m;
+      sc.prompt = alt || sc.prompt_m || sc.prompt_f || getDefaultSinglePrompt(newMode);
     }
     if (sc.seed === undefined) sc.seed = (newMode === "female_solo" ? sc.seed_f : sc.seed_m) || 8201;
     if (isStereo) {
-      sc.stem_m = sc.stem_m || "male";
-      sc.stem_f = sc.stem_f || "female";
+      sc.stem_m = sc.stem_m || defStem("male");
+      sc.stem_f = sc.stem_f || defStem("female");
     } else {
-      if (newMode === "male_solo") sc.stem = "male";
-      else if (newMode === "female_solo") sc.stem = "female";
-      else if (newMode === "silent_locked") sc.stem = "silent";
-      else if (newMode === "solo") sc.stem = "lead_vocal";
-      else sc.stem = "silent";
+      sc.stem = newMode === "male_solo" ? defStem("male") : newMode === "female_solo" ? defStem("female") : newMode === "solo" ? defStem("lead_vocal") : "silent";
       delete sc.stem_m; delete sc.stem_f;
     }
-    delete sc.prompt_m; delete sc.prompt_f; delete sc.seed_m; delete sc.seed_f; delete sc.split_x;
+    delete sc.prompt_m; delete sc.prompt_f; delete sc.seed_m; delete sc.seed_f; delete sc.split_x; delete sc.renderer_m; delete sc.renderer_f; delete sc.backend_m; delete sc.backend_f; delete sc.pass2_roi_mode; delete sc.pass2_roi_side; delete sc.pass2_roi_box;
   }
   // 3. Single-Pass -> Single-Pass (e.g. solo -> duet_method_a or silent_locked)
   else if (!wasTwoPass && !isTwoPass) {
     if (isStereo) {
-      sc.stem_m = sc.stem_m || (sc.stem === "female" ? "female" : "male");
-      sc.stem_f = sc.stem_f || (sc.stem === "female" ? "male" : "female");
+      sc.stem_m = sc.stem_m || defStem(sc.stem === "female" ? "female" : "male");
+      sc.stem_f = sc.stem_f || defStem(sc.stem === "female" ? "male" : "female");
       delete sc.stem;
     } else {
       if (newMode === "silent_locked") sc.stem = "silent";
-      else if (newMode === "male_solo") { if (sc.stem === "silent" || sc.stem === "female") sc.stem = "male"; }
-      else if (newMode === "female_solo") { if (sc.stem === "silent" || sc.stem === "male") sc.stem = "female"; }
-      else if (newMode === "solo") { if (sc.stem === "silent") sc.stem = "lead_vocal"; }
+      else if (newMode === "male_solo" && (!sc.stem || sc.stem === "silent" || sc.stem === "female")) sc.stem = defStem("male");
+      else if (newMode === "female_solo" && (!sc.stem || sc.stem === "silent" || sc.stem === "male")) sc.stem = defStem("female");
+      else if (newMode === "solo" && (!sc.stem || sc.stem === "silent")) sc.stem = defStem("lead_vocal");
       delete sc.stem_m; delete sc.stem_f;
     }
     if (!sc.prompt || !sc.prompt.trim()) sc.prompt = getDefaultSinglePrompt(newMode);
@@ -161,23 +169,14 @@ function handleSceneModeChange(sc, newMode) {
   // 4. Two-Pass -> Two-Pass (e.g. gva_male_left_silent_right <-> duet_method_b)
   else if (wasTwoPass && isTwoPass) {
     if (newMode === "duet_method_b") {
-      sc.stem_f = "female";
+      sc.stem_f = defStem("female");
       if (sc.prompt_f && sc.prompt_f.includes("keeps her mouth completely closed")) {
-        sc.prompt_f = sc.prompt_f.replace(
-          "keeps her mouth completely closed and listens quietly",
-          "sings her harmony vocal part with synchronized lip movements"
-        ).replace(
-          "keeps her mouth completely closed",
-          "sings with synchronized lip movements"
-        );
+        sc.prompt_f = sc.prompt_f.replace("keeps her mouth completely closed and listens quietly", "sings her harmony vocal part with synchronized lip movements").replace("keeps her mouth completely closed", "sings with synchronized lip movements");
       }
     } else if (newMode === "gva_male_left_silent_right") {
       sc.stem_f = "silent";
       if (sc.prompt_f && (sc.prompt_f.includes("sings with synchronized") || sc.prompt_f.includes("sings her harmony"))) {
-        sc.prompt_f = sc.prompt_f.replace(
-          /sings (her harmony vocal part with |)synchronized lip movements/g,
-          "keeps her mouth completely closed and listens quietly"
-        );
+        sc.prompt_f = sc.prompt_f.replace(/sings (her harmony vocal part with |)synchronized lip movements/g, "keeps her mouth completely closed and listens quietly");
       }
     }
   }
@@ -317,11 +316,10 @@ function updateSceneClipPreview(sc) {
 
   if (!videoPlayer) return;
 
-  // Check matching clip in assets (prefer canonical active clip entry over alphabetical prefix scan)
   const clips = state.assets?.clips || {};
-  const canon = clips[sc.id] || clips[sc.id?.toUpperCase()] || clips[sc.id?.toLowerCase()];
-  const matchedKey = (canon?.filename && clips[canon.filename]) ? canon.filename : (canon ? sc.id : Object.keys(clips).find((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`));
-  const qItems = (state.renderQueue || []).filter((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
+  const canon = sc._freshSceneTakes ? null : (clips[sc.id] || clips[sc.id?.toUpperCase()] || clips[sc.id?.toLowerCase()]);
+  const matchedKey = sc._freshSceneTakes ? "" : ((canon?.filename && clips[canon.filename]) ? canon.filename : (canon ? sc.id : Object.keys(clips).find((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`)));
+  const qItems = sc._freshSceneTakes ? [] : (state.renderQueue || []).filter((t) => (t.scene_id || "").toUpperCase() === (sc.id || "").toUpperCase());
   const renTask = qItems.find((t) => t.status === "rendering");
   const queuedTask = qItems.find((t) => t.status === "queued" || t.needs_render);
   const isRendering = Boolean(renTask);
@@ -424,6 +422,7 @@ function updateSceneAnchorPreview(anchorVal) {
   document.querySelectorAll("#anchorDropdownMenu .anchor-dropdown-item").forEach((item) => {
     item.classList.toggle("selected", item.dataset.value === anchorVal || (info?.aid && item.dataset.aid === info.aid));
   });
+  window.syncInspectorAnchorSourcesBadge?.(anchorVal);
 }
 
 function updateSceneEndAnchorPreview(anchorVal) {
@@ -620,7 +619,7 @@ Object.entries(selectLabels).forEach(([id, label]) => {
         sc.renderer = val ? (/^\d+$/.test(val) ? parseInt(val, 10) : val) : null;
         const badge = document.getElementById("sceneRendererBadge");
         if (badge) badge.style.display = sc.renderer ? "inline-block" : "none";
-        window.syncSceneBackendUI?.(sc); updateInspectorSceneHeader(sc);
+        window.syncSceneBackendUI?.(sc); window.updatePromptReferenceTray?.(sc); updateInspectorSceneHeader(sc);
       } else if (id === "sceneResolution") {
         if (val) sc.resolution = /^\d+$/.test(val) ? parseInt(val, 10) : val; else delete sc.resolution;
         window.populateSceneResolutionAndUpsampling?.(sc); updateInspectorSceneHeader(sc);
@@ -711,32 +710,23 @@ document.getElementById("btnPlaySceneAudio")?.addEventListener("click", () => {
 
 // Add Scene Button
 document.getElementById("btnAddScene")?.addEventListener("click", () => {
-  const scenes = state.projectData.scenes || [];
-  const last = scenes[scenes.length - 1];
-  const start = last ? last.end : 0;
-  const end = start + 5.0;
-  const idNum = scenes.length + 1;
+  const scenes = state.projectData.scenes || [], last = scenes[scenes.length - 1];
+  const start = last ? last.end : 0, end = start + 5.0;
+  const usedIds = new Set(scenes.map((s) => String(s?.id || "").trim().toUpperCase()).filter(Boolean));
+  let idNum = scenes.length + 1;
+  while (usedIds.has(`S${String(idNum).padStart(2, "0")}`)) idNum += 1;
   const id = `S${String(idNum).padStart(2, "0")}`;
 
   const newScene = {
-    id: id,
-    renderer: null,
-    start: start,
-    end: end,
-    mode: "male_solo",
-    stem: "male",
-    anchor: (state.projectData.anchors?.[0]?.filename) || "",
-    seed: 1000 + idNum,
+    id, _freshSceneTakes: true, renderer: null, start, end, mode: "male_solo", stem: "male",
+    anchor: (state.projectData.anchors?.[0]?.filename) || "", seed: 1000 + idNum,
     prompt: "For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>.",
   };
 
+  window.invalidateSceneTakesCache?.(id);
   scenes.push(newScene);
-  markProjectDirty();
-  redrawTimeline();
-  selectScene(scenes.length - 1);
-  if (typeof window.recordHistorySnapshot === "function") {
-    window.recordHistorySnapshot(`Add Scene ${id}`);
-  }
+  markProjectDirty(); redrawTimeline(); selectScene(scenes.length - 1);
+  if (typeof window.recordHistorySnapshot === "function") window.recordHistorySnapshot(`Add Scene ${id}`);
   showToast(`Added ${id} (${start.toFixed(1)}s - ${end.toFixed(1)}s)`);
 });
 
@@ -757,7 +747,7 @@ function deleteScene(idx) {
       else if (sc && sc.end > lastScene.start) lastScene.end = parseFloat(Number(sc.end).toFixed(2));
     }
   }
-  markProjectDirty(); redrawTimeline();
+  window.invalidateSceneTakesCache?.(sc.id); markProjectDirty(); redrawTimeline();
   window.recordHistorySnapshot?.(`Delete Scene ${sc.id}`);
   if (scenes.length === 0) {
     state.selectedSceneIdx = null;
@@ -797,8 +787,9 @@ function commitSplitScene(idx, splitTime) {
   delete scene1.anchor_end;
   ["render_pad_end", "pad_end", "tail_overlap", "render_overlap"].forEach((k) => delete scene1[k]);
   ["render_pad_start", "pad_start", "head_overlap", "render_overlap"].forEach((k) => delete scene2[k]);
-  scene1.id = id1; scene1.start = start; scene1.end = splitTime;
-  scene2.id = id2; scene2.start = splitTime; scene2.end = end;
+  scene1.id = id1; if (id1 !== sc.id) scene1._freshSceneTakes = true; scene1.start = start; scene1.end = splitTime;
+  scene2.id = id2; if (id2 !== sc.id) scene2._freshSceneTakes = true; scene2.start = splitTime; scene2.end = end;
+  window.invalidateSceneTakesCache?.(id1); window.invalidateSceneTakesCache?.(id2); window.invalidateSceneTakesCache?.(sc.id);
   if (sc.title) { scene1.title = `${sc.title} (Part 1)`; scene2.title = `${sc.title} (Part 2)`; }
   if (sc.output_name) {
     scene1.output_name = sc.output_name.startsWith(sc.id) ? id1 + sc.output_name.slice(sc.id.length) : `${sc.output_name}_${id1}`;
@@ -807,7 +798,7 @@ function commitSplitScene(idx, splitTime) {
   ["seed", "seed_m", "seed_f"].forEach((k) => { if (typeof scene2[k] === "number") scene2[k] += 1; });
 
   scenes.splice(idx, 1, scene1, scene2);
-  markProjectDirty(); redrawTimeline(); selectScene(idx + 1);
+  window.invalidateSceneTakesCache?.(sc.id); markProjectDirty(); redrawTimeline(); selectScene(idx + 1);
   if (document.getElementById("tab-scenes")?.classList.contains("active")) window.renderSceneList?.(true);
   window.recordHistorySnapshot?.(`Split Scene ${sc.id} into ${id1} & ${id2}`);
   showToast(`✂️ Split Scene ${sc.id} into ${id1} (${start.toFixed(2)}s-${splitTime.toFixed(2)}s) and ${id2} (${splitTime.toFixed(2)}s-${end.toFixed(2)}s)`);

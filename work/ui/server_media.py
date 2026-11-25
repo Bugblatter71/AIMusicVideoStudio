@@ -26,10 +26,31 @@ def _srv():
         return server
 
 
+def _stream_file_slice(file_path: Path, wfile, start: int, length: int) -> None:
+    """Streams byte range in short open/read/close bursts so paused video players don't lock files on Windows."""
+    pos, remaining = start, length
+    read_block, write_chunk = 512 * 1024, 64 * 1024
+    try:
+        while remaining > 0:
+            with open(file_path, "rb") as f:
+                f.seek(pos)
+                buf = f.read(min(read_block, remaining))
+            if not buf:
+                break
+            mv = memoryview(buf)
+            for off in range(0, len(mv), write_chunk):
+                wfile.write(mv[off: off + write_chunk])
+            pos += len(buf)
+            remaining -= len(buf)
+    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, FileNotFoundError, OSError):
+        pass
+
+
 def stream_file_with_range(handler, file_path: Path):
     """Streams a file over HTTP supporting 206 Partial Content range requests."""
     file_size = file_path.stat().st_size
-    mime_type, _ = mimetypes.guess_type(str(file_path))
+    _EXT_MIME = {".flac": "audio/flac", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".mp4": "video/mp4", ".webm": "video/webm", ".webp": "image/webp"}
+    mime_type = _EXT_MIME.get(file_path.suffix.lower()) or mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     mime_type = mime_type or "application/octet-stream"
 
     range_header = handler.headers.get("Range")
@@ -50,19 +71,7 @@ def stream_file_with_range(handler, file_path: Path):
             handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
             handler.end_headers()
 
-            try:
-                with open(file_path, "rb") as f:
-                    f.seek(start)
-                    bytes_remaining = length
-                    chunk_size = 64 * 1024
-                    while bytes_remaining > 0:
-                        chunk = f.read(min(chunk_size, bytes_remaining))
-                        if not chunk:
-                            break
-                        handler.wfile.write(chunk)
-                        bytes_remaining -= len(chunk)
-            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
-                pass
+            _stream_file_slice(file_path, handler.wfile, start, length)
             return
 
     # Normal full file transfer
@@ -74,11 +83,7 @@ def stream_file_with_range(handler, file_path: Path):
     handler.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
     handler.end_headers()
 
-    try:
-        with open(file_path, "rb") as f:
-            shutil.copyfileobj(f, handler.wfile, length=64 * 1024)
-    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
-        pass
+    _stream_file_slice(file_path, handler.wfile, 0, file_size)
 
 
 try:
@@ -109,8 +114,13 @@ def resolve_active_take_clip_path(proj_dir: Path, sid: str, manifest_data: dict 
     t_obj = next((t for t in sd.get("takes", []) if t.get("take_id") == aid), None)
     if not t_obj:
         return None, None
-    act_rel = f"work/renders_v3/{t_obj['out_name']}.mp4" if t_obj.get("out_name") else ""
-    v_rel = f"work/renders_v3/{t_obj['vault_rel_mp4']}" if t_obj.get("vault_rel_mp4") else ""
+    try:
+        from pipeline.project_paths import resolve_project_dirs
+        _rrel = resolve_project_dirs(proj_dir).get("renders_rel", "work/renders")
+    except Exception:
+        _rrel = "work/renders"
+    act_rel = f"{_rrel}/{t_obj['out_name']}.mp4" if t_obj.get("out_name") else ""
+    v_rel = f"{_rrel}/{t_obj['vault_rel_mp4']}" if t_obj.get("vault_rel_mp4") else ""
     for rp in (t_obj.get("file_path") or "", v_rel, act_rel):
         if rp and (Path(proj_dir) / rp).is_file():
             return Path(proj_dir) / rp, t_obj
@@ -155,37 +165,40 @@ def handle_media_stream(handler, subpath: str):
 
     target_file: Path | None = None
     category = parts[1]
+    try:
+        from pipeline.project_paths import resolve_project_dirs, resolve_vault_media_path
+    except ImportError:
+        from work.pipeline.project_paths import resolve_project_dirs, resolve_vault_media_path
+    pdirs_media = resolve_project_dirs(proj_dir)
 
     parsed_url = urlparse(getattr(handler, "path", ""))
     qs = parse_qs(parsed_url.query)
     req_take_id = qs.get("take", [None])[0]
 
     if req_take_id and category in ("clip", "strip"):
+        rdir_cfg = pdirs_media["renders"]
         manifest_file = proj_dir / "work" / "takes_manifest.json"
         if manifest_file.is_file():
             try:
                 m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+                pk, rk = ("file_path", "vault_rel_mp4") if category == "clip" else ("strip_path", "vault_rel_strip")
                 for s_data in m_data.get("scenes", {}).values():
                     for t in s_data.get("takes", []):
                         if t.get("take_id") == req_take_id:
-                            rel_val = t.get("file_path" if category == "clip" else "strip_path")
-                            if rel_val:
-                                cand = proj_dir / rel_val
-                                if cand.is_file():
-                                    target_file = cand
-                                    break
-                            v_rel = t.get("vault_rel_mp4" if category == "clip" else "vault_rel_strip")
-                            if v_rel:
-                                cand = proj_dir / "work" / "renders_v3" / v_rel
-                                if cand.is_file():
-                                    target_file = cand
-                                    break
+                            cand = resolve_vault_media_path(proj_dir, rdir_cfg, t, path_key=pk, rel_key=rk) if resolve_vault_media_path else None
+                            if cand is None:
+                                rel_val = t.get(rk)
+                                if rel_val and (rdir_cfg / rel_val).is_file():
+                                    cand = rdir_cfg / rel_val
+                            if cand is not None and cand.is_file():
+                                target_file = cand
+                                break
                     if target_file is not None:
                         break
             except Exception:
                 pass
         if target_file is None:
-            takes_root = proj_dir / "work" / "renders_v3" / "takes"
+            takes_root = rdir_cfg / "takes"
             if takes_root.is_dir():
                 cand_name = f"{req_take_id}.mp4" if category == "clip" else f"{req_take_id}_strip.jpg"
                 for cand in takes_root.rglob(cand_name):
@@ -226,22 +239,11 @@ def handle_media_stream(handler, subpath: str):
         filename = Path(raw_target).name
         aid = srv.extract_anchor_id(filename)
 
-        cfg_anchors_dir = None
-        jsons = sorted(proj_dir.glob("*.json"))
-        if jsons:
-            try:
-                pcfg = json.loads(jsons[-1].read_text(encoding="utf-8")).get("project", {})
-                dpath = pcfg.get("directories", {}).get("anchors")
-                if dpath:
-                    cfg_anchors_dir = proj_dir / dpath
-            except Exception:
-                pass
-
-        primary_anchor_dirs = [d for d in [cfg_anchors_dir, proj_dir / "work" / "anchors_v3", proj_dir / "work" / "anchors"] if d and d.is_dir()]
+        primary_anchor_dirs = [d for d in [pdirs_media["anchors"]] if d.is_dir()]
         ref_dirs = [d for d in [proj_dir / "references", proj_dir / "work" / "ref_sheets"] if d and d.is_dir()]
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
 
-        if aid:
+        if target_file is None and aid:
             for cdir in primary_anchor_dirs:
                 for img in sorted(cdir.iterdir()):
                     if img.is_file() and any(img.name.lower().endswith(ext) for ext in image_exts):
@@ -263,8 +265,7 @@ def handle_media_stream(handler, subpath: str):
 
         if target_file is None:
             candidate_dirs = [
-                proj_dir / "work" / "anchors_v3",
-                proj_dir / "work" / "anchors",
+                pdirs_media["anchors"],
                 proj_dir / "references",
                 proj_dir / "work" / "ref_sheets",
                 proj_dir,
@@ -283,7 +284,7 @@ def handle_media_stream(handler, subpath: str):
                     break
 
         if target_file is None and aid:
-            for cand_dir in [proj_dir / "work" / "anchors_v3", proj_dir / "work" / "anchors"]:
+            for cand_dir in [pdirs_media["anchors"], proj_dir / "references", proj_dir / "work" / "ref_sheets"]:
                 for ext in image_exts:
                     c = cand_dir / f"{aid}{ext}"
                     if c.is_file():
@@ -295,29 +296,7 @@ def handle_media_stream(handler, subpath: str):
         clip_name = Path("/".join(parts[2:])).name
         target_stem = Path(clip_name).stem
 
-        cfg_trimmed_dir = None
-        cfg_renders_dir = None
-        jsons = sorted(proj_dir.glob("*.json"))
-        if jsons:
-            try:
-                pcfg = json.loads(jsons[-1].read_text(encoding="utf-8")).get("project", {})
-                dirs = pcfg.get("directories", {})
-                if dirs.get("trimmed"):
-                    cfg_trimmed_dir = proj_dir / dirs["trimmed"]
-                if dirs.get("renders"):
-                    cfg_renders_dir = proj_dir / dirs["renders"]
-            except Exception:
-                pass
-
-        candidate_dirs = [
-            cfg_trimmed_dir,
-            cfg_renders_dir,
-            proj_dir / "work" / "trimmed_v3",
-            proj_dir / "work" / "renders_v3",
-            proj_dir / "work" / "trimmed",
-            proj_dir / "work" / "renders",
-        ]
-        candidate_dirs = [d for d in candidate_dirs if d and d.is_dir()]
+        candidate_dirs = [d for d in (pdirs_media["trimmed"], pdirs_media["renders"]) if d and d.is_dir()]
 
         for cdir in candidate_dirs:
             cand = cdir / clip_name
@@ -386,32 +365,11 @@ def handle_media_stream(handler, subpath: str):
         raw_target = "/".join(parts[2:])
         raw_sid = Path(raw_target).stem.replace("_strip", "")
 
-        cfg_strips_dir = None
-        jsons = sorted(proj_dir.glob("*.json"))
-        if jsons:
-            try:
-                pcfg = json.loads(jsons[-1].read_text(encoding="utf-8")).get("project", {})
-                dpath = pcfg.get("directories", {}).get("review_strips")
-                if dpath:
-                    cfg_strips_dir = proj_dir / dpath
-            except Exception:
-                pass
-
-        strips_dirs = [
-            d for d in [
-                cfg_strips_dir,
-                proj_dir / "work" / "frames_v3",
-                proj_dir / "work" / "frames",
-                proj_dir / "work" / "strips_v3",
-                proj_dir / "work" / "strips",
-            ] if d and d.is_dir()
-        ]
+        strips_dirs = [d for d in [pdirs_media["strips"], proj_dir / "work" / "strips"] if d.is_dir()]
         if not strips_dirs:
-            strips_dir = proj_dir / "work" / "frames_v3"
-            strips_dir.mkdir(parents=True, exist_ok=True)
-            strips_dirs = [strips_dir]
-        else:
-            strips_dir = strips_dirs[0]
+            pdirs_media["strips"].mkdir(parents=True, exist_ok=True)
+            strips_dirs = [pdirs_media["strips"]]
+        strips_dir = strips_dirs[0]
 
         # 1. Search for existing strip file
         strip_file = None
@@ -429,12 +387,7 @@ def handle_media_stream(handler, subpath: str):
 
         # 2. Find best rendered clip for this scene
         candidate_clips = []
-        for cdir in [
-            proj_dir / "work" / "trimmed_v3",
-            proj_dir / "work" / "trimmed",
-            proj_dir / "work" / "renders_v3",
-            proj_dir / "work" / "renders",
-        ]:
+        for cdir in [pdirs_media["trimmed"], pdirs_media["renders"]]:
             if cdir.is_dir():
                 for c in cdir.glob("*.mp4"):
                     if c.name.endswith(".tmp.mp4"):

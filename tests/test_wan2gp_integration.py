@@ -218,10 +218,10 @@ class TestStudioWan2GPIntegrationAdapter(unittest.TestCase):
         self.json_path = self.proj_dir / "test_project.json"
 
         # Remove any stale queue/cancel/status files from the copied template directory so test is fully isolated
-        jobs_v3_dir = self.proj_dir / "work" / "jobs_v3"
-        if jobs_v3_dir.is_dir():
+        jobs_dir = self.proj_dir / "work" / "jobs"
+        if jobs_dir.is_dir():
             for pat in ("v3_queue.json", "cancel_request*.json", "engine_status*.json"):
-                for stale_f in jobs_v3_dir.glob(pat):
+                for stale_f in jobs_dir.glob(pat):
                     try:
                         stale_f.unlink()
                     except OSError:
@@ -873,6 +873,11 @@ class TestLiveWan2GPValidationNoGPU(unittest.TestCase):
         try:
             wgp_api_file.read_bytes()[:16]
             (self.ctx.wgp_root / "shared" / "__init__.py").read_bytes()[:16]
+            orig_cwd = os.getcwd()
+            try:
+                os.chdir(self.ctx.wgp_root)
+            finally:
+                os.chdir(orig_cwd)
         except PermissionError:
             self.skipTest(f"Wan2GP directory at {self.ctx.wgp_root} is outside current process sandbox permissions")
 

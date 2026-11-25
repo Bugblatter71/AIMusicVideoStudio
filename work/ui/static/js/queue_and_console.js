@@ -60,12 +60,14 @@ function formatQueueReason(reason) {
 
 async function loadProjectQueue(slug = state.currentSlug) {
   if (!slug) return;
+  const qSeq = (state._queueLoadSeq = (state._queueLoadSeq || 0) + 1);
   try {
     const [qRes, stRes] = await Promise.all([
       fetch(`/api/project/${encodeURIComponent(slug)}/queue`),
       fetch("/api/render/status").catch(() => null),
     ]);
     const json = await qRes.json();
+    if (qSeq !== state._queueLoadSeq) return;
     const st = stRes ? await stRes.json().catch(() => null) : null;
     const engStatus = (st && st.engine_status) || json.engine_status || null;
     const isRunning = Boolean((st && st.running) || (engStatus && engStatus.state === "rendering"));
@@ -88,7 +90,8 @@ async function loadProjectQueue(slug = state.currentSlug) {
       // Reconcile queue rows against active per-engine statuses and SSE stream
       window.reconcileQueueStatuses?.(json.queue, st, engStatus, isRunning);
 
-      if (window.applyQueueApiResponse) window.applyQueueApiResponse(json); else state.renderQueue = json.queue;
+      if (slug !== state.currentSlug || (json?.slug && json.slug !== state.currentSlug)) return;
+    if (window.applyQueueApiResponse) window.applyQueueApiResponse(json, slug); else state.renderQueue = json.queue;
       state.calibrationAlphaByRes = {};
       json.queue.forEach((t) => {
         const resKey = String(t.effective_resolution || t.resolution || "").toLowerCase();
@@ -237,7 +240,7 @@ function renderQueueUI() {
   allUnits.forEach((u) => {
     if (u.length > 1) u.sort((a, b) => (getPassNum(a) || 0) - (getPassNum(b) || 0));
     if (u.length === 2) {
-      if (u[1].status === "rendering" && u[0].status === "queued") u[0].status = "completed";
+      if (u[1].status === "rendering" && (u[0].status === "queued" || u[0].status === "rendering")) { u[0].status = "completed"; delete u[0].estimated_remaining_str; delete u[0].estimated_remaining_seconds; }
       else if ((u[0].status === "queued" || u[0].status === "rendering") && u[1].status !== "queued" && u[1].status !== "rendering") {
         window.preserveDoneQueueItems?.([u[1]]);
         u[1].status = "queued";
@@ -303,10 +306,10 @@ function renderQueueUI() {
   if (thead) {
     thead.innerHTML = `<tr>
       <th style="padding: 6px 0; width: 28px; text-align: center; color: var(--text-muted);" title="Drag row to reorder queue">⠿</th>
-      <th style="padding: 6px 10px; width: ${fnColWidth}px; color: var(--text-muted);">File to Render</th>
-      <th style="padding: 6px 8px; width: 118px; color: var(--text-muted);">Engine</th>
+      <th data-sort="scene" style="padding: 6px 10px; width: ${fnColWidth}px; color: var(--text-muted);" title="Click to sort by scene order in video">File to Render<span class="qsort-ind"></span></th>
+      <th data-sort="engine" style="padding: 6px 8px; width: 118px; color: var(--text-muted);" title="Click to sort by engine">Engine<span class="qsort-ind"></span></th>
       <th style="padding: 6px 8px; width: ${modelColWidth}px; color: var(--text-muted);">Model</th>
-      <th style="padding: 6px 10px; width: ${lenColWidth}px; color: var(--text-muted);">Length</th>
+      <th data-sort="length" style="padding: 6px 10px; width: ${lenColWidth}px; color: var(--text-muted);" title="Click to sort by clip duration">Length<span class="qsort-ind"></span></th>
       ${!isDoneFilter ? `<th style="padding: 6px 8px; width: ${estColWidth}px; color: var(--text-muted);">Est / Cost</th>` : ''}
       <th style="padding: 6px 10px; width: 95px; color: var(--text-muted);">Status</th>
       ${isDoneFilter ? '<th style="padding: 6px 10px; width: 140px; color: var(--text-muted);">Completed</th><th style="padding: 6px 10px; width: 85px; color: var(--text-muted);">Time Taken</th>' : ''}
@@ -315,6 +318,7 @@ function renderQueueUI() {
       <th style="width: auto;"></th>
     </tr>`;
   }
+  window.syncQueueSortUI?.();
 
   if (filtered.length === 0) {
     const filterLabel = (filter === "queued" && !isEngineRunning) ? "pending" : filter;
@@ -335,7 +339,7 @@ function renderQueueUI() {
       const rowStyle = isRendering ? "background: rgba(56, 189, 248, 0.1); border-left: 3px solid #38bdf8;" : "border-bottom: 1px solid rgba(255, 255, 255, 0.04);";
       const scMatch = state.projectData?.scenes?.find((s) => s.id === t.scene_id);
       const durSec = t.duration != null ? Number(t.duration) : (scMatch ? Number(scMatch.end - scMatch.start) : 0);
-      const lenStr = durSec > 0 ? `${durSec.toFixed(1)}s` : "—";
+      const lenStr = t.stage === "anchor" ? "1 img" : (durSec > 0 ? `${durSec.toFixed(1)}s` : "—");
       const estStr = !isDoneFilter && !isCompleted ? (isRendering ? (t.estimated_remaining_str || t.estimated_str || "") : (t.estimated_str || "")) : "";
       const cloudTitle = escapeHtml((t.fal_endpoint || "fal.ai") + (Array.isArray(t.fal_notes) && t.fal_notes.length ? " — " + t.fal_notes.join("; ") : ""));
       const estBadge = (!isDoneFilter && !isCompleted)
@@ -374,8 +378,8 @@ function renderQueueUI() {
       const reasonCol = showReason ? `<td style="padding: 6px 10px; width: ${reasonColWidth}px; color: var(--text-muted); font-size: 10px; white-space: nowrap;"><span title="${shortReason}">${shortReason}</span></td>` : "";
       const actionsCol = showActions ? `<td style="padding: 6px 10px; width: 90px; text-align: center; white-space: nowrap;">${actionsHtml}</td>` : "";
 
-      const escModel = escapeHtml(getModelStr(t));
-      return `<tr data-id="${targetId}" data-unit-sid="${escapeHtml((t.scene_id || '').toUpperCase())}" data-is-queued="${isQueued ? '1' : '0'}" data-is-rendering="${isRendering ? '1' : '0'}" draggable="${canDrag ? 'true' : 'false'}" style="${rowStyle}; user-select: none;">
+      const escModel = escapeHtml(getModelStr(t)), unitSid = t.stage === "anchor" ? (t.output_filename || t.scene_id || "") : (t.scene_id || "");
+      return `<tr data-id="${targetId}" data-unit-sid="${escapeHtml(String(unitSid).toUpperCase())}" data-is-queued="${isQueued ? '1' : '0'}" data-is-rendering="${isRendering ? '1' : '0'}" draggable="${canDrag ? 'true' : 'false'}" style="${rowStyle}; user-select: none;">
         ${gripCol}
         <td style="padding: 6px 10px; width: ${fnColWidth}px; font-weight: 500;"><div style="color: ${isRendering ? "#38bdf8" : isCompleted ? "#10b981" : "var(--text-main)"}; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${escFn}">${escFn}</div></td>
         ${window.renderQueueEngineCell ? window.renderQueueEngineCell(t) : `<td style="padding: 6px 8px; width: 118px;">${escapeHtml(t.backend || "local")}</td>`}
@@ -389,7 +393,7 @@ function renderQueueUI() {
     .join("");
 }
 
-function handleQueueSSEEvent(line) {
+function handleQueueSSEEvent(line, evSlug = "") { if (window.isQueueEventForCurrentProject && !window.isQueueEventForCurrentProject(evSlug)) return;
   try {
     const spaceIdx = line.indexOf(" ");
     if (spaceIdx === -1) return;
@@ -426,6 +430,7 @@ function handleQueueSSEEvent(line) {
         match.reason = payload.reason || match.reason;
         state.activeRenderTask.idx = match.idx;
         state.activeRenderTask.total = state.renderQueue.length;
+        window.reconcileSseActiveTask?.(match, evBackend);
       }
       window.handleMultiEngineSSEEvent?.(tag, payload);
       renderQueueUI();
@@ -474,12 +479,8 @@ function handleQueueSSEEvent(line) {
       if (stemKey) state.sseTaskStatuses.set(stemKey, { status: "completed", elapsed: payload.elapsed });
 
       const match = findQueueItem();
-      if (match) {
-        match.status = "completed";
-        match.needs_render = false;
-        match.elapsed = payload.elapsed;
-        match.completed_at = payload.completed_at || Math.floor(Date.now() / 1000);
-      }
+      if (match) Object.assign(match, { status: "completed", needs_render: false, elapsed: payload.elapsed, completed_at: payload.completed_at || Math.floor(Date.now() / 1000), ...(payload.take_id ? { take_id: payload.take_id, take_number: payload.take_number } : {}) });
+      if (payload.activated === false) showToast?.(`🎬 Take ${payload.take_number || ""} saved to Vault (kept existing "Use" take active)`);
       window.recordDoneQueueItem?.(match || { filename: fnKey, output_filename: stemKey }, payload);
       window.handleMultiEngineSSEEvent?.(tag, payload);
       if (state.activeRenderTask && (!fnKey || state.activeRenderTask.filename === fnKey)) {
@@ -568,7 +569,7 @@ async function updateRenderTimer(skipPoll = false) {
     try {
       const res = await fetch("/api/render/status");
       const json = await res.json();
-      window.syncMultiEngineStatusUI?.(json);
+      window.syncMultiEngineStatusUI?.(json); window.syncRenderStatusWithQueue?.(json);
       if (json && json.engine_status && (json.engine_status.state === "rendering" || json.engine_status.state === "cancelling")) {
         const eng = json.engine_status;
         if (syncRenderStartTime(eng, state.activeRenderTask?.filename || "")) renderClockAndEta();
@@ -610,7 +611,7 @@ function initLogStream() {
         }
         const queueIdx = data.text.indexOf("[QUEUE_");
         if (queueIdx !== -1) {
-          handleQueueSSEEvent(data.text.slice(queueIdx));
+          handleQueueSSEEvent(data.text.slice(queueIdx), data.slug || "");
           const prefix = data.text.slice(0, queueIdx).trim();
           if (prefix) { const line = document.createElement("div"); line.textContent = prefix; term.appendChild(line); term.scrollTop = term.scrollHeight; }
           return;
@@ -647,21 +648,19 @@ async function triggerRender(args = []) {
   }
   const wasRunning = Boolean(state.isEngineRunning || (state.renderQueue || []).some((t) => t.status === "rendering"));
   const term = document.getElementById("terminalOutput");
-  if (term) term.innerHTML = "";
   if (!wasRunning) {
+    if (term) term.innerHTML = "";
     state.sseTaskStatuses?.clear();
     window.resetMultiEngineUI?.();
+    state.activeRenderTask = null;
+    state._authoritativeStartFilename = null;
+    state.renderStartTime = Date.now();
   }
   state.isEngineRunning = true;
-
-  // Clear previous task state so stale tasks (e.g. S22) never linger
-  state.activeRenderTask = null;
-  state._authoritativeStartFilename = null;
-  state.renderStartTime = Date.now();
   if (!state.renderTimerInterval && typeof setInterval === "function") {
     state.renderTimerInterval = setInterval(updateRenderTimer, 1000);
   }
-  if (args && args.length > 0) {
+  if (!wasRunning && args && args.length > 0) {
     const targetSid = String(args[0]).trim().toUpperCase();
     const targetBase = targetSid.split(":")[0];
     const match = state.renderQueue?.find(
@@ -757,6 +756,7 @@ document.getElementById("queueTableBody")?.addEventListener("click", async (e) =
       const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const data = await res.json();
       if (data.queue) {
+        if (endpoint.includes("move")) window.clearQueueSortState?.();
         if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI();
         if (endpoint.includes("remove")) showToast("Removed from queue");
         if (endpoint.includes("enqueue")) showToast("Added to queue (will render automatically)");
@@ -805,7 +805,7 @@ if (qTbody && !qTbody.dataset.dndBound) {
     try {
       const res = await fetch("/api/queue/reorder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: state.currentSlug || "all_or_nothing", id: srcId, target_id: targetId, position: isBefore ? "before" : "after" }) });
       const data = await res.json();
-      if (data.queue) { if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI(); showToast(`↕️ Reordered ${sid || "scene"} in queue`); }
+      if (data.queue) { window.clearQueueSortState?.(); if (window.applyQueueApiResponse) window.applyQueueApiResponse(data); else state.renderQueue = data.queue; renderQueueUI(); showToast(`↕️ Reordered ${sid || "scene"} in queue`); }
       else if (data.error) showToast(`Reorder failed: ${data.error}`);
     } catch (err) { console.error("Reorder error:", err); }
   });

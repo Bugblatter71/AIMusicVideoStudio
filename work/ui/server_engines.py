@@ -16,8 +16,8 @@ try:
         clamp_parallel,
         clean_task_stem,
         cleanup_after_kill,
-        count_eligible_items,
-        effective_item_backend,
+        collect_active_rendering_map,
+        count_eligible_items, dedupe_rendering_queue_items, effective_item_backend,
         emit_process_line,
         execute_slot_task_with_oom_retry,
         extract_backend_overrides,
@@ -26,6 +26,8 @@ try:
         mark_task_completed_status,
         mark_task_failed_status,
         read_task_failure_summary,
+        _jobs_dirs,
+        _q_file,
         norm_engine,
         pick_next_eligible_item,
         read_project_engine_statuses,
@@ -47,8 +49,8 @@ except ImportError:
         clamp_parallel,
         clean_task_stem,
         cleanup_after_kill,
-        count_eligible_items,
-        effective_item_backend,
+        collect_active_rendering_map,
+        count_eligible_items, dedupe_rendering_queue_items, effective_item_backend,
         emit_process_line,
         execute_slot_task_with_oom_retry,
         extract_backend_overrides,
@@ -57,6 +59,8 @@ except ImportError:
         mark_task_completed_status,
         mark_task_failed_status,
         read_task_failure_summary,
+        _jobs_dirs,
+        _q_file,
         norm_engine,
         pick_next_eligible_item,
         read_project_engine_statuses,
@@ -70,10 +74,10 @@ except ImportError:
         write_queue_json_locked,
         write_starting_slot_status,
     )
-try: from .server_queue_history import record_done_items
+try: from .server_queue_history import record_done_items, resolve_completion_meta
 except ImportError:
-    try: from work.ui.server_queue_history import record_done_items
-    except ImportError: from server_queue_history import record_done_items
+    try: from work.ui.server_queue_history import record_done_items, resolve_completion_meta
+    except ImportError: from server_queue_history import record_done_items, resolve_completion_meta
 
 
 def ensure_engine_state(srv) -> None:
@@ -242,6 +246,7 @@ def get_multi_engine_render_status(srv=None) -> dict:
     st["engines"] = engines_view
     st["stitch_in_progress"] = bool(getattr(srv, "stitch_in_progress", False))
     st["stitch_progress"] = getattr(srv, "stitch_progress", None)
+    st["stitch_error"] = getattr(srv, "stitch_error", None)
     return st
 
 
@@ -267,31 +272,9 @@ def active_rendering_map(srv, slug: str, legacy_eng: dict | None = None) -> tupl
         proc_active = bool(srv.active_process is not None and srv.active_process.poll() is None and curr_proj in (None, slug))
         q_active = bool(q_active_raw and curr_proj in (None, slug))
 
-    active_map: dict[str, dict] = {}
     running_stems = {clean_task_stem(s.get("output_filename") or s.get("filename")) for _, s in (slots_for_slug + legacy_w_for_slug)}
-    for (b, t_stem), st in per_tasks.items():
-        if isinstance(st, dict) and st.get("state") == "rendering" and is_fresh_render_status(st):
-            if (not q_active) or (t_stem in running_stems):
-                fn = str(st.get("filename") or f"{t_stem}.mp4")
-                active_map[fn] = st
-                active_map[Path(fn).stem] = st
-    for b, st in per_eng.items():
-        if isinstance(st, dict) and st.get("state") == "rendering" and is_fresh_render_status(st):
-            fn = str(st.get("filename") or "")
-            if fn and ((not q_active) or (clean_task_stem(fn) in running_stems)) and fn not in active_map:
-                active_map[fn] = st
-                active_map[Path(fn).stem] = st
-    if isinstance(legacy_eng, dict) and legacy_eng.get("state") == "rendering" and is_fresh_render_status(legacy_eng):
-        fn = str(legacy_eng.get("filename") or "")
-        if fn and ((not q_active) or (clean_task_stem(fn) in running_stems)) and fn not in active_map:
-            active_map[fn] = legacy_eng
-            active_map[Path(fn).stem] = legacy_eng
-    for b, slot in slots_for_slug + legacy_w_for_slug:
-        fn = str(slot.get("filename") or "")
-        if fn and fn not in active_map:
-            st_stub = {"state": "rendering", "backend": b, "filename": fn, "started_at": slot.get("started_at")}
-            active_map[fn] = st_stub
-            active_map[Path(fn).stem] = st_stub
+    local_slots = [x for x in (clean_task_stem(s.get("output_filename") or s.get("filename")) for b, s in (slots_for_slug + legacy_w_for_slug) if b == "local") if x]
+    active_map = collect_active_rendering_map(running_stems, local_slots, q_active, per_tasks, per_eng, legacy_eng, slots_for_slug + legacy_w_for_slug)
     is_any = bool(proc_active or q_active or slots_for_slug or legacy_w_for_slug or active_map)
     return is_any, active_map
 
@@ -304,7 +287,7 @@ def kill_engine_render(srv, target_slug: str | None = None, backend: str | None 
     killed_stems: list[tuple[str, str]] = []
 
     with srv.render_lock:
-        active_proj = srv.render_status.get("current_project") or target_slug
+        active_proj = target_slug or srv.render_status.get("current_project")
         if target_stem and target_b is None:
             for b in ENGINES:
                 if any(clean_task_stem(s.get("output_filename") or s.get("filename")) == target_stem for s in srv.engine_slots[b].values()) or clean_task_stem(srv.engine_workers[b].get("output_filename") or srv.engine_workers[b].get("filename")) == target_stem:
@@ -358,8 +341,7 @@ def kill_engine_render(srv, target_slug: str | None = None, backend: str | None 
     live_procs = [p for p in procs_to_kill if p.poll() is None]
     cancel_files: list[Path] = []
     if active_proj and live_procs:
-        for jobs_sub in ("work/jobs_v3", "work/jobs"):
-            jdir = srv.PROJECTS_DIR / active_proj / jobs_sub
+        for jdir in _jobs_dirs(srv.PROJECTS_DIR / active_proj):
             if not jdir.is_dir():
                 continue
             names: list[str] = []
@@ -478,8 +460,8 @@ def _coordinator_maybe_finish(srv, project_slug: str, session_id: int, config_pa
 
     if rendered_any:
         srv.broadcast_log("[Studio UI Queue] All enabled queued passes completed! Restitching master video...")
-        srv.run_stitch_worker(config_path, project_slug)
-        srv.broadcast_log("[Studio UI Queue] Queue finished. Master video updated.")
+        ok_stitch = bool(srv.run_stitch_worker(config_path, project_slug))
+        srv.broadcast_log("[Studio UI Queue] Queue finished. Master video updated." if ok_stitch else "[Studio UI Queue] Queue finished, but master restitch failed (see logs above).")
 
     with srv.render_lock:
         if srv.current_worker_id != session_id or not getattr(srv, "queue_worker_active", False):
@@ -511,6 +493,11 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
     ensure_engine_state(srv)
     b = norm_engine(backend)
     with srv.render_lock:
+        if not getattr(srv, "queue_worker_active", False) or srv.current_worker_id != session_id:
+            return
+        cur_running = sum(1 for s in srv.engine_slots[b].values() if s.get("running") and s.get("project") == project_slug)
+        if cur_running >= clamp_parallel(b, srv.max_parallel.get(b, 1)):
+            return
         srv._slot_seq = int(getattr(srv, "_slot_seq", 0)) + 1
         seq = srv._slot_seq
         slot_id = f"{b}#{seq}"
@@ -529,7 +516,7 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
 
     def _loop():
         proj_dir = srv.PROJECTS_DIR / project_slug
-        queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+        queue_file = _q_file(proj_dir, for_write=True)
         try:
             while getattr(srv, "queue_worker_active", False) and srv.current_worker_id == session_id:
                 with srv.render_lock:
@@ -565,13 +552,15 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
                     next_task["target_arg"] = target_arg
                     next_task["scene_id"] = next_task.get("scene_id") or srv.derive_scene_id(out_fn)
                     items[next_idx]["status"] = "rendering"
+                    dedupe_rendering_queue_items(items, keep_stem=out_fn)
                     if hasattr(srv, "normalize_queue_units"):
                         try: srv.normalize_queue_units(items, srv)
                         except Exception: pass
                     write_queue_json_locked(srv, queue_file, items)
 
+                is_anchor = next_task.get("stage") == "anchor" or str(target_arg or "").upper().startswith(("CHAR:", "ANCHOR:"))
                 with srv.render_lock:
-                    slot["filename"] = f"{out_fn}.mp4" if out_fn else None
+                    slot["filename"] = next_task.get("filename") or (f"{out_fn}.mp4" if out_fn else None)
                     slot["output_filename"] = out_fn
                     slot["scene_id"] = next_task.get("scene_id")
                     slot["target_arg"] = target_arg
@@ -580,9 +569,9 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
 
                 ovr = str(next_task.get("backend_override") or "").strip().lower()
                 srv.broadcast_log(f"[Studio UI Queue] [{ENGINE_LABELS[b]}] >>> Starting render ({slot_id}): {out_fn} ({target_arg})" + (f" [override={ovr}]" if ovr else ""))
-                write_starting_slot_status(proj_dir, b, out_fn, slot["started_at"], reason=str(next_task.get("reason") or ""), model=str(next_task.get("model_type") or ""), frames=int(next_task.get("video_length") or 0), resolution=str(next_task.get("resolution") or ""))
+                write_starting_slot_status(proj_dir, b, out_fn, slot["started_at"], reason=str(next_task.get("reason") or ""), model=str(next_task.get("model_type") or ""), frames=int(next_task.get("video_length") or next_task.get("frames") or 0), resolution=str(next_task.get("resolution") or ""))
                 t0 = time.time()
-                cmd_args = [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
+                cmd_args = [config_path, "--anchors-only", target_arg, "--no-stitch", "--no-queue-sync"] if is_anchor else [config_path, target_arg, "--skip-anchors", "--no-stitch", "--no-queue-sync"]
                 if ovr in ENGINES:
                     cmd_args.extend(["--backend", ovr])
                 code = execute_slot_task_with_oom_retry(srv, _call_execute, cmd_args, project_slug, b, slot_id, out_fn, proj_dir, session_id, slot, my_slot_id, next_task.get("scene_id"))
@@ -597,7 +586,7 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
                     for it in cur_items:
                         if it.get("output_filename") == out_fn:
                             if code == 0:
-                                it.update({"status": "completed", "needs_render": False, "reason": "COMPLETED", "completed_at": t_done, "elapsed": t_elapsed})
+                                it.update({"status": "completed", "needs_render": False, "reason": "COMPLETED", **resolve_completion_meta(proj_dir, out_fn, t0, t_done, t_elapsed)})
                                 it.pop("user_skipped_hash", None)
                                 it.pop("error", None)
                                 try: record_done_items(srv, proj_dir, [it], only_completed=True)
@@ -625,11 +614,20 @@ def _spawn_engine_slot(srv, project_slug: str, backend: str, session_id: int, co
                 if code == 0:
                     mark_task_completed_status(proj_dir, b, out_fn, t_elapsed)
                     with srv.render_lock:
-                        srv._session_rendered_any = True
+                        if slot["worker_id"] == my_slot_id:
+                            for _k in ("filename", "output_filename", "scene_id", "target_arg", "started_at"):
+                                slot[_k] = None
+                            _sync_engine_worker_summary(srv, b, force_sync=True)
+                        if not is_anchor:
+                            srv._session_rendered_any = True
                         if hasattr(srv, "_session_completed_hashes"):
                             srv._session_completed_hashes.add((out_fn, str(next_task.get("task_hash") or "")))
+                    if is_anchor:
+                        try: srv.compute_fast_project_queue(project_slug, force_recheck=False)
+                        except Exception: pass
+                        srv.broadcast_log("[ANCHORS_UPDATED]")
                     wake_enabled_engine_workers(srv, project_slug)
-                    if "_Pass1_Left" not in out_fn:
+                    if not is_anchor and "_Pass1_Left" not in out_fn:
                         _schedule_stitch(srv, config_path, project_slug)
                 else:
                     with srv.render_lock:
@@ -682,7 +680,7 @@ def _fill_engine_slots(srv, project_slug: str, backend: str, session_id: int, co
     if needed <= 0:
         return 0
     if avail_hint is None:
-        q_file = srv.PROJECTS_DIR / project_slug / "work" / "jobs_v3" / "v3_queue.json"
+        q_file = _q_file(srv.PROJECTS_DIR / project_slug)
         avail_hint = count_eligible_items(read_queue_json_locked(srv, q_file), b, srv)
     to_spawn = min(needed, max(0, int(avail_hint)))
     for _ in range(to_spawn):
@@ -709,7 +707,7 @@ def wake_enabled_engine_workers(srv, project_slug: str | None = None) -> None:
     if not jsons:
         return
     config_path = str(jsons[-1])
-    items = read_queue_json_locked(srv, proj_dir / "work" / "jobs_v3" / "v3_queue.json")
+    items = read_queue_json_locked(srv, _q_file(proj_dir))
     for b in ENGINES:
         if enabled_copy.get(b, True) and b not in failed_engs:
             avail = count_eligible_items(items, b, srv)
@@ -783,7 +781,7 @@ def run_multi_engine_queue_worker(srv, project_slug: str, force_restart: bool = 
                 srv.render_status["running"] = False
         return
     config_path = str(jsons[-1])
-    q_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+    q_file = _q_file(proj_dir)
     items = read_queue_json_locked(srv, q_file)
     if not items:
         items = srv.compute_fast_project_queue(project_slug)

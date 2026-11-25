@@ -288,6 +288,8 @@ def parse_cli_and_config(argv: list[str]):
             force_anchors.append("ALL")
         elif tu in ("--ALL-SCENES", "ALL-SCENES", "--ALL", "ALL"):
             force_scenes.append("ALL")
+        elif tu.startswith("CHAR:"):
+            force_anchors.append(t)
         elif any(match_anchor_id(tu, sp.get("filename") or sp.get("id") or "") for sp in ctx.anchors):
             force_anchors.append(tu)
         elif any(_scene_id_matches(tu.split(":", 1)[0], sc_id) for sc_id in valid_scene_ids):
@@ -405,10 +407,7 @@ def init_new_project(target_name: str, force: bool = False):
     template_data["project"]["project_dir"] = "."
     template_data["project"]["master_output"] = f"{safe_name}_Master_{{resolution}}_{{fps}}fps.mp4"
     template_data["project"]["master_audio"] = "audio/master_audio.mp3"
-    template_data["project"]["stems"] = {
-        "lead_vocal": "audio/lead_vocal.mp3",
-        "backing_track": "audio/backing_track.mp3",
-    }
+    template_data["project"]["stems"] = {}
     template_data["project"]["directories"] = {
         "anchors": "work/anchors",
         "audio_slices": "work/audio",
@@ -555,73 +554,43 @@ def main():
     if stitch_only:
         print("\n[Stitch] Immediate master restitch requested. Skipping anchor and audio prep...", flush=True)
         timeline_file = ctx.jobs_dir / "v3_timeline.json"
-        scene_meta = None
+        existing_meta_by_id: dict[str, dict] = {}
         if timeline_file.is_file():
             try:
-                scene_meta = json.loads(timeline_file.read_text(encoding="utf-8"))
+                loaded_meta = json.loads(timeline_file.read_text(encoding="utf-8"))
+                if isinstance(loaded_meta, list):
+                    existing_meta_by_id = {str(e.get("id")): e for e in loaded_meta if isinstance(e, dict) and e.get("id")}
             except Exception:
                 pass
-        if scene_meta:
-            project_scenes_by_id = {s["id"]: s for s in ctx.scenes if isinstance(s, dict) and "id" in s}
-            scene_renders = state.setdefault("scene_renders", {})
-            from .upscale import resolve_scene_canonical_stem
-            for entry in scene_meta:
-                sid = entry.get("id")
-                curr_sc = project_scenes_by_id.get(sid)
-                if curr_sc:
-                    entry["start"] = float(curr_sc.get("start", entry.get("start", 0.0)))
-                    entry["end"] = float(curr_sc.get("end", entry.get("end", 0.0)))
-                    entry["dur"] = round(entry["end"] - entry["start"], 3)
-                    if "anchor" in curr_sc:
-                        entry["anchor"] = curr_sc["anchor"]
-                    _, vrspec = ctx.resolve_video_renderer(curr_sc)
-                    res_str = ctx.resolve_scene_resolution(curr_sc, vrspec)
-                    c_stem, _, _ = resolve_scene_canonical_stem(curr_sc, ctx.renders_dir, res_str)
-                    cand_mp4 = f"{c_stem}.mp4"
-                    if (ctx.renders_dir / cand_mp4).exists() or not (ctx.renders_dir / str(entry.get("clip", ""))).exists():
-                        entry["clip"] = cand_mp4
-                stem = Path(entry.get("clip", "")).stem
-                r_info = scene_renders.get(stem)
-                if r_info and "render_start" in r_info:
-                    entry["render_start"] = float(r_info["render_start"])
-                    entry["render_end"] = float(r_info.get("render_end", entry["end"]))
-            try:
-                timeline_file.write_text(json.dumps(scene_meta, indent=2), encoding="utf-8")
-            except Exception:
-                pass
-        else:
-            scene_meta = []
-            scene_renders = state.setdefault("scene_renders", {})
-            for sc in ctx.scenes:
-                sid = sc["id"]
-                start = float(sc["start"])
-                end = float(sc["end"])
-                edit_dur = round(end - start, 3)
-                mode = sc["mode"]
-                _, vrspec = ctx.resolve_video_renderer(sc)
-                res_str = ctx.resolve_scene_resolution(sc, vrspec)
-                if mode in ("duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"):
-                    out_clip = f"{sid}_Pass2_Final_{res_str}.mp4"
-                elif mode in ("duet_method_a", "duet_a"):
-                    cand = next((c for c in (f"{sid}_duet_a", f"{sid}_duet_method_a", f"{sid}_duet_stereo") if (ctx.renders_dir / f"{c}_{res_str}.mp4").exists()), None)
-                    out_clip = f"{cand or f'{sid}_duet_a'}_{res_str}.mp4"
-                elif mode == "female_solo":
-                    out_clip = f"{sid}_female_solo_{res_str}.mp4"
-                elif mode in ("silent_locked", "silent", "ambient"):
-                    out_clip = f"{sid}_silent_{res_str}.mp4"
-                elif mode == "solo":
-                    out_clip = f"{sid}_solo_{res_str}.mp4"
-                else:
-                    out_clip = f"{sid}_male_solo_{res_str}.mp4"
-                stem = Path(out_clip).stem
-                r_info = scene_renders.get(stem)
-                r_start = float(r_info["render_start"]) if (r_info and "render_start" in r_info) else start
-                r_end = float(r_info["render_end"]) if (r_info and "render_end" in r_info) else end
-                scene_meta.append({
-                    "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
-                    "clip": out_clip, "render_start": r_start, "render_end": r_end,
-                    "anchor": sc.get("anchor"),
-                })
+        scene_meta = []
+        scene_renders = state.setdefault("scene_renders", {})
+        from .upscale import resolve_scene_canonical_stem
+        for sc in ctx.scenes:
+            sid = sc["id"]
+            prev_entry = existing_meta_by_id.get(sid, {})
+            start = float(sc["start"])
+            end = float(sc["end"])
+            edit_dur = round(end - start, 3)
+            mode = sc.get("mode", "solo")
+            _, vrspec = ctx.resolve_video_renderer(sc)
+            res_str = ctx.resolve_scene_resolution(sc, vrspec)
+            c_stem, _, _ = resolve_scene_canonical_stem(sc, ctx.renders_dir, res_str)
+            cand_mp4 = f"{c_stem}.mp4"
+            prev_clip = str(prev_entry.get("clip", "") or "")
+            out_clip = cand_mp4 if ((ctx.renders_dir / cand_mp4).exists() or not (prev_clip and (ctx.renders_dir / prev_clip).exists())) else prev_clip
+            r_info = scene_renders.get(Path(out_clip).stem)
+            r_start = float(r_info["render_start"]) if (r_info and "render_start" in r_info) else float(prev_entry.get("render_start", start))
+            r_end = float(r_info["render_end"]) if (r_info and "render_end" in r_info) else float(prev_entry.get("render_end", end))
+            scene_meta.append({
+                **prev_entry,
+                "id": sid, "start": start, "end": end, "dur": edit_dur, "mode": mode,
+                "clip": out_clip, "render_start": r_start, "render_end": r_end,
+                "anchor": sc.get("anchor", prev_entry.get("anchor")),
+            })
+        try:
+            timeline_file.write_text(json.dumps(scene_meta, indent=2), encoding="utf-8")
+        except Exception:
+            pass
         ok = run_stage3_assemble_master(ctx, scene_meta)
         if not ok:
             print("\n[Stitch Error] Failed to update master video (file locked or assembly failed).", flush=True)
@@ -634,11 +603,19 @@ def main():
         if cli_import_dir:
             imported_anchors = import_anchors_from_dir(ctx, cli_import_dir, state)
 
-        if skip_anchors or (force_scenes and not force_anchors):
-            print("\n[Anchors] Skipping Stage 1 anchor checks (single-scene render mode).", flush=True)
+        char_ref_tokens = [tok[5:] for tok in force_anchors if tok.upper().startswith("CHAR:")]
+        stage1_force = [tok for tok in force_anchors if not tok.upper().startswith("CHAR:")]
+        if char_ref_tokens:
+            from .anchor_takes import run_character_ref_generation
+            for cr_tok in char_ref_tokens:
+                run_character_ref_generation(ctx, lazy_session, cr_tok, dummy_render=dummy_render)
+
+        if skip_anchors or (force_scenes and not stage1_force) or (char_ref_tokens and not stage1_force):
+            if not char_ref_tokens:
+                print("\n[Anchors] Skipping Stage 1 anchor checks (single-scene render mode).", flush=True)
             regen_anchors = set(imported_anchors)
         else:
-            regen_anchors = run_stage1_anchors(ctx, lazy_session, state, force_anchors, dummy_render=dummy_render).union(imported_anchors)
+            regen_anchors = run_stage1_anchors(ctx, lazy_session, state, stage1_force, dummy_render=dummy_render).union(imported_anchors)
 
         if anchors_only:
             write_engine_status(ctx, {"state": "idle"}, backend=getattr(ctx, "cli_backend", "") or None)

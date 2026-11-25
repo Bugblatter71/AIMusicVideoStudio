@@ -178,9 +178,9 @@ class _MockFalClient:
 def _build_temp_project(root: Path, models_extra: dict | None = None, scenes: list[dict] | None = None, anchors: list[dict] | None = None) -> Path:
     proj_dir = root / "proj"
     (proj_dir / "audio").mkdir(parents=True, exist_ok=True)
-    (proj_dir / "work" / "anchors_v3").mkdir(parents=True, exist_ok=True)
-    (proj_dir / "work" / "renders_v3").mkdir(parents=True, exist_ok=True)
-    (proj_dir / "work" / "jobs_v3").mkdir(parents=True, exist_ok=True)
+    (proj_dir / "work" / "anchors").mkdir(parents=True, exist_ok=True)
+    (proj_dir / "work" / "renders").mkdir(parents=True, exist_ok=True)
+    (proj_dir / "work" / "jobs").mkdir(parents=True, exist_ok=True)
 
     # Seed empty local_config.json inside temp proj so tests never read/modify workspace root local_config.json
     (proj_dir / "local_config.json").write_text("{}", encoding="utf-8")
@@ -192,7 +192,7 @@ def _build_temp_project(root: Path, models_extra: dict | None = None, scenes: li
     _make_ffmpeg_test_wav(ff, proj_dir / "audio" / "male_vocal.wav", dur=12.0)
     _make_ffmpeg_test_wav(ff, proj_dir / "audio" / "female_vocal.wav", dur=12.0)
 
-    a1_p = proj_dir / "work" / "anchors_v3" / "A01_test.jpg"
+    a1_p = proj_dir / "work" / "anchors" / "A01_test.jpg"
     _make_dummy_jpg(a1_p, ff)
 
     models_cfg = {
@@ -215,9 +215,9 @@ def _build_temp_project(root: Path, models_extra: dict | None = None, scenes: li
             "stems": {"male": "audio/male_vocal.wav", "female": "audio/female_vocal.wav"},
             "render_overlap_seconds": 0.0,
             "directories": {
-                "anchors": "work/anchors_v3",
-                "renders": "work/renders_v3",
-                "jobs": "work/jobs_v3",
+                "anchors": "work/anchors",
+                "renders": "work/renders",
+                "jobs": "work/jobs",
             },
         },
         "models": models_cfg,
@@ -369,7 +369,7 @@ class TestFalIntegration(unittest.TestCase):
             anchors=[{"id": "A02", "filename": "A02_cloud.jpg", "prompt": "Singer <Picture 1> on stage", "seed": 22}],
         )
         # Put an anchor ref file for stage 1 + use existing A01_test for stage 2
-        ref_img = self.root / "proj" / "work" / "anchors_v3" / "A01_test.jpg"
+        ref_img = self.root / "proj" / "work" / "anchors" / "A01_test.jpg"
         ctx = ProjectContext(cfg_path)
         ctx.anchor_refs = [str(ref_img)]
         fake_client = _MockFalClient(self.ffmpeg)
@@ -1897,6 +1897,88 @@ console.log("NODE_MULTI_SLOT_OK");
                 trimmed_dur = probe_video_duration(self.ffmpeg, mp4_175)
                 self.assertIsNotNone(trimmed_dur)
                 self.assertAlmostEqual(trimmed_dur, 158 / 24.0, delta=0.06)
+
+    def test_12_cloud_keys_shared_across_all_projects(self):
+        """Saving fal.ai & MiniMax keys under one project must share them across all projects."""
+        import shutil
+        from pipeline.fal_catalog import resolve_minimax_key, _shared_secret_config_target
+
+        stage_tmp = self.root / "_stage"
+        stage_tmp.mkdir(parents=True, exist_ok=True)
+        _build_temp_project(stage_tmp / "a")
+        _build_temp_project(stage_tmp / "b")
+        dir_a = self.root / "proj_a"
+        dir_b = self.root / "proj_b"
+        shutil.move(str(stage_tmp / "a" / "proj"), str(dir_a))
+        shutil.move(str(stage_tmp / "b" / "proj"), str(dir_b))
+        shutil.rmtree(stage_tmp, ignore_errors=True)
+        for d in (dir_a, dir_b):
+            (d / "local_config.json").unlink(missing_ok=True)
+        # Unrelated per-project local_config without secrets inside dir_b must never block shared keys
+        (dir_b / "local_config.json").write_text(json.dumps({"queue_max_parallel": {"fal": 2}}), encoding="utf-8")
+
+        with mock.patch.object(server, "PROJECTS_DIR", self.root):
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("FAL_KEY", None)
+                os.environ.pop("MINIMAX_API_KEY", None)
+                os.environ.pop("MINIMAX_KEY", None)
+
+                # Save both keys while proj_b (even with its own non-secret local_config) is active
+                h_post = _DummyHandler("/api/fal/config")
+                self.assertTrue(server_fal.handle_fal_post(h_post, "/api/fal/config", {
+                    "slug": "proj_b",
+                    "fal_key": "shared_fal_id:shared_secret_4455",
+                    "minimax_key": "shared_mm_secret_8899",
+                }))
+                self.assertTrue(h_post.payload["success"])
+                self.assertEqual(h_post.payload["keys_scope"], "shared")
+                self.assertEqual(h_post.payload["hint"], "…4455")
+                self.assertEqual(h_post.payload["minimax"]["hint"], "…8899")
+                self.assertTrue((self.root / "local_config.json").is_file())
+                self.assertNotIn("fal_key_dpapi", (dir_b / "local_config.json").read_text(encoding="utf-8"))
+
+                # Switch to proj_a -> status, direct key resolvers & connection tests inherit both keys
+                h_get_a = _DummyHandler("/api/fal/status?slug=proj_a")
+                self.assertTrue(server_fal.handle_fal_get(h_get_a, "/api/fal/status", urlparse(h_get_a.path)))
+                self.assertTrue(h_get_a.payload["configured"])
+                self.assertEqual(h_get_a.payload["hint"], "…4455")
+                self.assertTrue(h_get_a.payload["minimax"]["configured"])
+                self.assertEqual(h_get_a.payload["minimax"]["hint"], "…8899")
+                self.assertEqual(h_get_a.payload["keys_scope"], "shared")
+                self.assertEqual(resolve_fal_key(dir_a), ("shared_fal_id:shared_secret_4455", "dpapi"))
+                self.assertEqual(resolve_fal_key(dir_b), ("shared_fal_id:shared_secret_4455", "dpapi"))
+                self.assertEqual(resolve_minimax_key(dir_a), ("shared_mm_secret_8899", "dpapi"))
+                self.assertEqual(resolve_minimax_key(dir_b), ("shared_mm_secret_8899", "dpapi"))
+
+                with mock.patch.object(server_fal, "_probe_fal_connection", return_value=(True, 200, "OK")) as m_fal, \
+                     mock.patch.object(server_fal, "_probe_minimax_connection", return_value=(True, 200, "OK")) as m_mm:
+                    h_tf = _DummyHandler("/api/fal/test")
+                    server_fal.handle_fal_post(h_tf, "/api/fal/test", {"slug": "proj_a"})
+                    self.assertTrue(h_tf.payload["success"])
+                    m_fal.assert_called_once_with("shared_fal_id:shared_secret_4455")
+
+                    h_tm = _DummyHandler("/api/minimax/test")
+                    server_fal.handle_fal_post(h_tm, "/api/minimax/test", {"slug": "proj_a"})
+                    self.assertTrue(h_tm.payload["success"])
+                    m_mm.assert_called_once_with("shared_mm_secret_8899")
+
+                # Clearing MiniMax key from proj_a removes it for proj_b too
+                h_clr = _DummyHandler("/api/fal/config")
+                server_fal.handle_fal_post(h_clr, "/api/fal/config", {"slug": "proj_a", "minimax_key": ""})
+                h_get_b = _DummyHandler("/api/fal/status?slug=proj_b")
+                server_fal.handle_fal_get(h_get_b, "/api/fal/status", urlparse(h_get_b.path))
+                self.assertTrue(h_get_b.payload["configured"])
+                self.assertFalse(h_get_b.payload["minimax"]["configured"])
+
+        # Workspace projects (all_or_nothing / not_there_yet) always share keys at WORKSPACE_ROOT/local_config.json
+        ws_a = WORKSPACE_ROOT / "projects" / "all_or_nothing"
+        ws_b = WORKSPACE_ROOT / "projects" / "not_there_yet"
+        self.assertEqual(resolve_fal_key(ws_a), resolve_fal_key(ws_b))
+        self.assertEqual(resolve_minimax_key(ws_a), resolve_minimax_key(ws_b))
+        self.assertEqual(_shared_secret_config_target(ws_a), _shared_secret_config_target(ws_b))
+
+        fal_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "fal_settings.js").read_text(encoding="utf-8")
+        self.assertIn("Shared Across", fal_js)
 
 
 if __name__ == "__main__":

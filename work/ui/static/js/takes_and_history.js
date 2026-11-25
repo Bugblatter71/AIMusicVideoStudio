@@ -179,7 +179,7 @@
       // Re-render UI
       if (typeof window.redrawTimeline === "function") window.redrawTimeline();
       if (typeof window.renderSceneList === "function") window.renderSceneList();
-      if (typeof window.updateProjectSettingsUI === "function") window.updateProjectSettingsUI();
+      if (typeof window.updateProjectSettingsUI === "function") window.updateProjectSettingsUI(); window.updateAnchorStudioUI?.();
       if (typeof window.renderCharactersTab === "function" && document.getElementById("tab-characters")?.classList.contains("active")) {
         window.renderCharactersTab();
       }
@@ -237,7 +237,7 @@
       // Re-render UI
       if (typeof window.redrawTimeline === "function") window.redrawTimeline();
       if (typeof window.renderSceneList === "function") window.renderSceneList();
-      if (typeof window.updateProjectSettingsUI === "function") window.updateProjectSettingsUI();
+      if (typeof window.updateProjectSettingsUI === "function") window.updateProjectSettingsUI(); window.updateAnchorStudioUI?.();
       if (typeof window.renderCharactersTab === "function" && document.getElementById("tab-characters")?.classList.contains("active")) {
         window.renderCharactersTab();
       }
@@ -292,7 +292,7 @@
 
       if (typeof window.redrawTimeline === "function") window.redrawTimeline();
       if (typeof window.renderSceneList === "function") window.renderSceneList();
-      if (typeof window.updateProjectSettingsUI === "function") window.updateProjectSettingsUI();
+      if (typeof window.updateProjectSettingsUI === "function") window.updateProjectSettingsUI(); window.updateAnchorStudioUI?.();
       if (typeof window.renderCharactersTab === "function" && document.getElementById("tab-characters")?.classList.contains("active")) {
         window.renderCharactersTab();
       }
@@ -319,22 +319,9 @@
     if (!isCtrlOrMeta) return;
 
     const key = e.key.toLowerCase();
-    if (key === "z") {
-      e.preventDefault();
-      if (e.shiftKey) {
-        performRedo();
-      } else {
-        performUndo();
-      }
-    } else if (key === "y") {
-      e.preventDefault();
-      performRedo();
-    } else if (key === "s") {
-      e.preventDefault();
-      if (typeof window.saveProjectData === "function") {
-        window.saveProjectData(true);
-      }
-    }
+    if (key === "z") { e.preventDefault(); if (e.shiftKey) performRedo(); else performUndo(); }
+    else if (key === "y") { e.preventDefault(); performRedo(); }
+    else if (key === "s") { e.preventDefault(); if (typeof window.saveProjectData === "function") window.saveProjectData(true); }
   });
 
   // Expose global methods
@@ -361,6 +348,7 @@
   let currentTakesData = null;
   let activeTakeObject = null;
   let currentTakesSceneId = null;
+  let takesFetchSeq = 0;
 
   function formatTakeDate(take) {
     const iso = take?.created_iso || (typeof take?.created_at === "string" ? take.created_at : "");
@@ -395,7 +383,7 @@
         ["Anchor", ["anchor", "anchor_end"]],
         ["Seed", ["seed", "seed_m", "seed_f"]],
         ["Stem/Split", ["stem", "stem_m", "stem_f", "split_x"]],
-        ["Model", ["backend", "backend_m", "backend_f", "pass2_roi_mode", "pass2_roi_side", "pass2_roi_box", "video_renderer", "renderer", "renderer_m", "renderer_f"]],
+        ["Model", ["backend", "backend_m", "backend_f", "pass2_roi_mode", "pass2_roi_side", "pass2_roi_box"]],
         ["Upscale", ["spatial_upsampling"]],
         ["Filters", ["filters"]],
         ["Pad", ["render_pad_start", "render_pad_end"]],
@@ -403,6 +391,13 @@
       groups.forEach(([label, keys]) => {
         if (keys.some((k) => canonicalFieldVal(scene[k]) !== canonicalFieldVal(snap[k]))) diffs.push(label);
       });
+      const mFn = window.resolveSceneModelType;
+      if (mFn && !diffs.includes("Model")) {
+        const md = (!take.pass_num && (scene.renderer_m || scene.renderer_f || snap.renderer_m || snap.renderer_f))
+          ? (mFn(scene, 1) !== mFn(snap, 1) || mFn(scene, 2) !== mFn(snap, 2))
+          : (mFn(scene, take.pass_num) !== mFn(snap, take.pass_num, take));
+        if (md) diffs.push("Model");
+      }
       const pd = window.state?.projectData || {};
       const rm = pd.models || {};
       const rMap = { "1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1088" };
@@ -462,6 +457,11 @@
     syncDirtyWithSavedState(); updateHistoryButtons();
   }
   window.patchSavedSceneLockBaseline = patchSavedSceneLockBaseline;
+  window.patchSavedScenesArrayBaseline = (mutator) => {
+    if (!window.state?.projectData || typeof mutator !== "function") return;
+    if (lastSavedJson) { try { const obj = JSON.parse(lastSavedJson); if (Array.isArray(obj.scenes)) { mutator(obj.scenes); lastSavedJson = JSON.stringify(obj); } } catch (e) {} }
+    committedJson = JSON.stringify(window.state.projectData); syncDirtyWithSavedState(); updateHistoryButtons();
+  };
 
   function updateRevertHeaderBtn(scene) {
     const btn = document.getElementById("btnRevertSceneToRendered");
@@ -484,34 +484,42 @@
     if (!scene || !chosenTake || !window.state?.currentSlug) return;
     if (scene.locked) { window.showToast?.("🔒 Scene is locked — unlock it first"); return; }
     const { hasTimingDiff } = computeSceneTakeDiffs(scene, chosenTake);
-    let restoreTiming = false;
-    if (hasTimingDiff && chosenTake.scene_snapshot?.start !== undefined) {
-      const s0 = Number(chosenTake.scene_snapshot.start), e0 = Number(chosenTake.scene_snapshot.end);
-      const overlap = (window.state.projectData?.scenes || []).find((s) => s.id !== scene.id && Number(s.start) < e0 - 0.02 && Number(s.end) > s0 + 0.02);
-      restoreTiming = overlap ? confirm(`Restoring rendered timing (${s0}s–${e0}s) overlaps ${overlap.id}.\n\nRevert Start/End timing too?`) : true;
+    let restoreTiming = false, timingNote = "";
+    if (hasTimingDiff && chosenTake.scene_snapshot?.start !== undefined && chosenTake.scene_snapshot?.end !== undefined) {
+      const s0 = Number(chosenTake.scene_snapshot.start), e0 = Number(chosenTake.scene_snapshot.end), curS = Number(scene.start), curE = Number(scene.end);
+      const scenes = window.state.projectData?.scenes || [];
+      const idx = scenes.findIndex((s) => s === scene || (scene.id && s.id === scene.id));
+      const prev = idx > 0 ? scenes[idx - 1] : null, next = idx >= 0 && idx + 1 < scenes.length ? scenes[idx + 1] : null;
+      const ovlp = (a, b) => scenes.some((s) => s.id !== scene.id && Number(s.start) < b - 0.02 && Number(s.end) > a + 0.02);
+      const fits = (a, b) => !ovlp(a, b) && (prev ? Math.abs(a - Number(prev.end)) <= 0.02 : (Math.abs(a) <= 0.02 || Math.abs(a - curS) <= 0.02)) && (!next || Math.abs(Number(next.start) - b) <= 0.02);
+      if (!fits(s0, e0)) timingNote = ` (kept ${curS}s–${curE}s for sync)`;
+      else restoreTiming = (fits(curS, curE) && !next) ? confirm(`Revert final scene end time from ${curE}s to ${e0}s?`) : true;
     }
     const origText = btnEl ? btnEl.textContent : "";
     if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Reverting..."; }
     try {
+      if (window.unloadClipVideoPlayer?.()) await new Promise((r) => setTimeout(r, 40));
       const resp = await fetch("/api/takes/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ project: window.state.currentSlug, scene_id: scene.id, take_id: chosenTake.take_id, restore_timing: restoreTiming }),
       });
       const actData = await resp.json();
-      if (!actData.success) { alert("Failed to revert scene: " + (actData.error || "Unknown error")); return; }
+      if (!actData.success) { alert("Failed to revert scene: " + (actData.error || "Unknown error")); window.updateSceneClipPreview?.(scene); return; }
       const restored = actData.restored_params || {};
       Object.keys(scene).forEach((k) => { delete scene[k]; });
       Object.assign(scene, JSON.parse(JSON.stringify(restored)));
       recordHistorySnapshot(`Revert ${scene.id} to Take ${chosenTake.take_number}`);
       patchSavedSceneBaseline(scene);
+      await window.refreshProjectAssets?.(true);
       window.redrawTimeline?.();
       window.renderSceneList?.();
       if (typeof window.selectScene === "function" && window.state.selectedSceneIdx !== null) window.selectScene(window.state.selectedSceneIdx);
       window.loadProjectQueue?.();
-      window.showToast?.(`↺ Reverted ${scene.id} to Take ${chosenTake.take_number} (using clip on disk)`);
+      window.showToast?.(`↺ Reverted ${scene.id} to Take ${chosenTake.take_number}${timingNote || " (using clip on disk)"}`);
     } catch (err) {
       alert("Error reverting scene: " + err.message);
+      window.updateSceneClipPreview?.(scene);
     } finally {
       if (btnEl) { btnEl.disabled = false; btnEl.textContent = origText; }
     }
@@ -519,7 +527,7 @@
   window.restoreSceneToTake = restoreSceneToTake;
   window.revertSceneToActiveTake = async (sceneId, btnEl) => {
     const sc = (window.state?.projectData?.scenes || []).find((s) => s.id === sceneId);
-    if (!sc || !window.state?.currentSlug) return;
+    if (!sc || sc._freshSceneTakes || !window.state?.currentSlug) return;
     const r = await fetch(`/api/takes/${encodeURIComponent(window.state.currentSlug)}/${encodeURIComponent(sceneId)}`);
     const d = r.ok ? await r.json() : null;
     const take = d?.takes?.find((t) => t.take_id === d.active_take_id) || d?.takes?.[d?.takes?.length - 1];
@@ -533,17 +541,23 @@
     const selectEl = document.getElementById("sceneTakeSelect");
     const btnRestore = document.getElementById("btnRestoreTake");
 
-    if (!tray || !selectEl || !scene || !window.state || !window.state.currentSlug) {
+    if (!tray || !selectEl || !scene || scene._freshSceneTakes || !window.state || !window.state.currentSlug) {
       currentTakesData = null; activeTakeObject = null; currentTakesSceneId = null;
       updateRevertHeaderBtn(null);
+      const repBtn = document.getElementById("btnToggleLipSyncRepair");
+      if (repBtn && scene?._freshSceneTakes) { repBtn.dataset.forceDisabled = "1"; repBtn.disabled = true; }
       if (tray) tray.style.display = "none";
       return;
     }
 
+    const reqSeq = ++takesFetchSeq;
+    const reqSlug = window.state.currentSlug;
     try {
-      const resp = await fetch(`/api/takes/${encodeURIComponent(window.state.currentSlug)}/${encodeURIComponent(scene.id)}`);
+      const resp = await fetch(`/api/takes/${encodeURIComponent(reqSlug)}/${encodeURIComponent(scene.id)}`);
+      if (reqSeq !== takesFetchSeq || window.state?.currentSlug !== reqSlug) return;
       if (!resp.ok) { currentTakesData = null; activeTakeObject = null; currentTakesSceneId = null; updateRevertHeaderBtn(null); tray.style.display = "none"; return; }
       const data = await resp.json();
+      if (reqSeq !== takesFetchSeq || window.state?.currentSlug !== reqSlug) return;
       currentTakesData = data; currentTakesSceneId = scene.id;
 
       if (!data.success || !data.takes || data.takes.length === 0) {

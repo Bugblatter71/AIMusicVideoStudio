@@ -21,6 +21,8 @@ from pipeline.context import ProjectContext
 from pipeline.fal_bridge import FalSession
 from pipeline.fal_catalog import FAL_VIDEO_PROFILES, estimate_fal_cost_usd, resolve_fal_route
 from pipeline.media_utils import probe_video_dimensions, probe_video_fps
+from pipeline.prompts import adapt_ref_tags, align_anchor_resolution
+from pipeline.stage1_anchors import compile_anchor_prompt_and_refs
 from pipeline.takes import load_takes_manifest
 import server
 import server_routes
@@ -77,14 +79,14 @@ class TestClipImportAndProfiles(unittest.TestCase):
     def _build_proj(self, slug: str = "demo_proj") -> tuple[Path, Path]:
         pdir = self.root / slug
         (pdir / "audio").mkdir(parents=True, exist_ok=True)
-        (pdir / "work" / "anchors_v3").mkdir(parents=True, exist_ok=True)
-        (pdir / "work" / "renders_v3").mkdir(parents=True, exist_ok=True)
-        (pdir / "work" / "jobs_v3").mkdir(parents=True, exist_ok=True)
+        (pdir / "work" / "anchors").mkdir(parents=True, exist_ok=True)
+        (pdir / "work" / "renders").mkdir(parents=True, exist_ok=True)
+        (pdir / "work" / "jobs").mkdir(parents=True, exist_ok=True)
         (pdir / "local_config.json").write_text("{}", encoding="utf-8")
 
         _make_wav(self.ffmpeg, pdir / "audio" / "master.wav", dur=10.0)
         _make_wav(self.ffmpeg, pdir / "audio" / "male.wav", dur=10.0)
-        _make_jpg(self.ffmpeg, pdir / "work" / "anchors_v3" / "A01_hero.jpg")
+        _make_jpg(self.ffmpeg, pdir / "work" / "anchors" / "A01_hero.jpg")
 
         profiles = json.loads((WORKSPACE_ROOT / "model_profiles.json").read_text(encoding="utf-8"))
         cfg = {
@@ -94,7 +96,7 @@ class TestClipImportAndProfiles(unittest.TestCase):
                 "master_audio": "audio/master.wav",
                 "stems": {"male": "audio/male.wav"},
                 "render_overlap_seconds": 0.0,
-                "directories": {"anchors": "work/anchors_v3", "renders": "work/renders_v3", "jobs": "work/jobs_v3"},
+                "directories": {"anchors": "work/anchors", "renders": "work/renders", "jobs": "work/jobs"},
             },
             "models": {
                 "default_anchor_renderer": 3,
@@ -205,7 +207,7 @@ class TestClipImportAndProfiles(unittest.TestCase):
         _make_mp4(self.ffmpeg, ext2_mp4, dur=4.3, w=640, h=480, fps=30)
 
         # Seed an existing FORCED item in v3_queue.json to confirm import clears stale forced queue state
-        (pdir / "work" / "jobs_v3" / "v3_queue.json").write_text(
+        (pdir / "work" / "jobs" / "v3_queue.json").write_text(
             json.dumps([{"scene_id": "S01", "output_filename": "S01_solo_832x480", "status": "queued", "reason": "FORCED", "needs_render": True}]),
             encoding="utf-8",
         )
@@ -282,6 +284,81 @@ class TestClipImportAndProfiles(unittest.TestCase):
                 "text/plain",
             )
             self.assertEqual(res_bad["status"], 400)
+
+    def test_05_minimax_h3_image_profiles_and_capabilities(self):
+        profiles = json.loads((WORKSPACE_ROOT / "model_profiles.json").read_text(encoding="utf-8"))
+        ar = profiles["anchor_renderers"]
+        for rid, expected_mt, expected_refs, expected_steps in (
+            ("17", "minimax_h3_image_pruned", 16, 6),
+            ("18", "minimax_h3_image", 16, 6),
+            ("19", "minimax_p_h3_image", 8, 8),
+        ):
+            self.assertIn(rid, ar)
+            spec = ar[rid]
+            self.assertEqual(spec["model_type"], expected_mt)
+            self.assertEqual(spec["ref_tag_style"], "<Picture N>")
+            self.assertEqual(spec["max_image_refs"], expected_refs)
+            self.assertEqual(spec["num_inference_steps"], expected_steps)
+            self.assertEqual(spec["guidance_phases"], 1)
+            self.assertEqual(spec["guidance_scale"], 1.0)
+            self.assertEqual(spec["sample_solver"], "euler")
+            self.assertTrue(spec["no_negative_prompt"])
+            self.assertGreaterEqual(len(spec["resolutions"]), 8)
+
+        # Prompt tag translation works through <image16> (not limited to 1..9)
+        self.assertEqual(
+            adapt_ref_tags("Combine <image1>, <image9>, and <image16>", "<Picture N>"),
+            "Combine <Picture 1>, <Picture 9>, and <Picture 16>",
+        )
+        self.assertEqual(align_anchor_resolution("1920x1080", "minimax_h3_image_pruned"), "1920x1088")
+        self.assertEqual(align_anchor_resolution("5472x3072", "minimax_h3_image_pruned"), "5472x3072")
+
+        pdir, cfg_path = self._build_proj("h3_img_proj")
+        ref_rels = []
+        for idx in range(1, 13):
+            rel = f"references/ref_{idx:02d}.jpg"
+            _make_jpg(self.ffmpeg, pdir / rel)
+            ref_rels.append(rel)
+
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        cfg["models"]["anchor_renderers"] = ar
+        cfg["models"]["anchor_shared_settings"] = {"resolution": "1920x1080", "negative_prompt": "blurry, artifact"}
+        cfg["anchors"] = [
+            {"filename": "A01_H3Pruned.jpg", "renderer": 17, "prompt": "Compose <image1> with <image10> and <image12>", "image_refs": ref_rels, "seed": 11},
+            {"filename": "A02_PH3.jpg", "renderer": 19, "resolution": "3872x2176", "prompt": "Edit <image1> using <image8> and <image10>", "image_refs": ref_rels, "seed": 22},
+            {"filename": "A03_Klein.jpg", "renderer": 3, "prompt": "Port <image1> and <image5>", "image_refs": ref_rels, "seed": 33},
+        ]
+        cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+        ctx = ProjectContext(cfg_path)
+        _, r17 = ctx.resolve_anchor_renderer(ctx.anchors[0])
+        _, adapted17, refs17 = compile_anchor_prompt_and_refs(ctx, ctx.anchors[0], r17)
+        self.assertEqual(len(refs17), 12)
+        self.assertEqual(adapted17, "Compose <Picture 1> with <Picture 10> and <Picture 12>")
+        t17 = ctx.make_anchor_task(None, r17, "A01_H3Pruned", adapted17, seed=11, sp=ctx.anchors[0], image_refs=refs17)
+        self.assertEqual(t17["model_type"], "minimax_h3_image_pruned")
+        self.assertEqual(t17["resolution"], "1920x1088")
+        self.assertEqual(t17["guidance_phases"], 1)
+        self.assertEqual(t17["sample_solver"], "euler")
+        self.assertEqual(t17["video_prompt_type"], "I")
+        self.assertEqual(len(t17["image_refs"]), 12)
+        self.assertEqual(t17["negative_prompt"], "")
+
+        _, r19 = ctx.resolve_anchor_renderer(ctx.anchors[1])
+        _, adapted19, refs19 = compile_anchor_prompt_and_refs(ctx, ctx.anchors[1], r19)
+        self.assertEqual(len(refs19), 8)
+        self.assertEqual(adapted19, "Edit <Picture 1> using <Picture 8> and <Picture 10>")
+        t19 = ctx.make_anchor_task(None, r19, "A02_PH3", adapted19, seed=22, sp=ctx.anchors[1], image_refs=[])
+        self.assertEqual(t19["resolution"], "3872x2176")
+        self.assertEqual(t19["flow_shift"], 12.0)
+        self.assertEqual(t19["switch_threshold"], 0.7)
+        self.assertEqual(t19["num_inference_steps2"], 3)
+        self.assertEqual(t19["video_prompt_type"], "")
+        self.assertIsNone(t19["image_refs"])
+
+        _, r3 = ctx.resolve_anchor_renderer(ctx.anchors[2])
+        _, _, refs3 = compile_anchor_prompt_and_refs(ctx, ctx.anchors[2], r3)
+        self.assertEqual(len(refs3), 4)
 
 
 if __name__ == "__main__":

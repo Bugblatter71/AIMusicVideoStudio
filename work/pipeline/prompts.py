@@ -86,22 +86,66 @@ def resolve_marker_prompt(prompt_text: str, scene_start: float, markers: list[di
 
 
 def adapt_ref_tags(prompt: str, ref_tag_style: str) -> str:
-    """Translates <image1>..<image4> tags to match the selected renderer's reference syntax."""
+    """Translates <image1>..<image16> tags to match the selected renderer's reference syntax."""
     style = (ref_tag_style or "<imageN>").strip()
-    if style == "<imageN>":
+    if style == "<imageN>" or not prompt:
         return prompt
-    out = prompt
-    for i in range(1, 10):
-        src = f"<image{i}>"
-        if src not in out:
-            continue
-        if style == "<ref_image_N0>":
-            out = out.replace(src, f"<ref_image_{i - 1}>")
-        elif style == "Image N":
-            out = out.replace(src, f"Image {i}")
-        elif style == "image N":
-            out = out.replace(src, f"image {i}")
-    return out
+    fmt_map = {
+        "<ref_image_N0>": lambda n: f"<ref_image_{n - 1}>",
+        "<Picture N>": lambda n: f"<Picture {n}>",
+        "Image N": lambda n: f"Image {n}",
+        "image N": lambda n: f"image {n}",
+    }
+    fn = fmt_map.get(style)
+    if fn is None:
+        return prompt
+    return re.sub(r"<image(\d+)>", lambda m: fn(int(m.group(1))), prompt, flags=re.IGNORECASE)
+
+
+def align_anchor_resolution(res_val: str, model_type: str) -> str:
+    """Aligns anchor dimensions to model block requirements (32px for H3-Image, 16px for Flux3)."""
+    res_str = str(res_val or "1920x1080").strip()
+    if "x" not in res_str.lower():
+        return res_str
+    mt_l = str(model_type or "").lower()
+    block = 32 if "h3_image" in mt_l else (16 if "flux3" in mt_l else 0)
+    if not block:
+        return res_str
+    try:
+        rw, rh = [int(x) for x in res_str.lower().split("x", 1)]
+        if rw % block != 0 or rh % block != 0:
+            half = block // 2
+            rw = max(block * 4, ((rw + half) // block) * block)
+            rh = max(block * 4, ((rh + half) // block) * block)
+            return f"{rw}x{rh}"
+    except ValueError:
+        pass
+    return res_str
+
+
+def finalize_anchor_task_cfg(cfg: dict, rspec: dict, sp: dict, shared_cfg: dict) -> dict:
+    """Applies model/anchor parameter overrides (steps, phases, LoRAs, custom settings, negative prompt)."""
+    opt_keys = (
+        "num_inference_steps", "num_inference_steps2", "guidance_scale", "embedded_guidance_scale",
+        "guidance_phases", "flow_shift", "switch_threshold", "custom_sigmas", "sample_solver",
+        "multi_prompts_gen_type", "activated_loras", "loras_multipliers", "merge_loras",
+    )
+    for opt_key in opt_keys:
+        if opt_key in rspec:
+            cfg[opt_key] = rspec[opt_key]
+        if opt_key in sp:
+            cfg[opt_key] = sp[opt_key]
+    merged_custom = dict(cfg.get("custom_settings") or {})
+    for src_cfg in (shared_cfg, rspec, sp):
+        if isinstance(src_cfg.get("custom_settings"), dict):
+            merged_custom.update(src_cfg["custom_settings"])
+    cfg["custom_settings"] = merged_custom
+    neg_p = sp.get("negative_prompt") if sp.get("negative_prompt") is not None else shared_cfg.get("negative_prompt")
+    if rspec.get("no_negative_prompt"):
+        cfg["negative_prompt"] = ""
+    elif str(neg_p or "").strip():
+        cfg["negative_prompt"] = str(neg_p).strip()
+    return cfg
 
 
 def find_ref_tags(prompt: str) -> list[int]:

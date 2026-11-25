@@ -20,6 +20,8 @@ if (!window.state) {
     "js/characters_studio.js",
     "js/markers_and_prompts.js",
     "js/anchors_and_settings.js",
+    "js/anchors_studio.js",
+    "js/anchor_and_char_takes.js",
     "js/fal_settings.js",
     "js/duet_repair.js",
     "js/queue_engines.js",
@@ -29,6 +31,7 @@ if (!window.state) {
     "js/fal_settings.js",
     "js/duet_repair.js",
     "js/clip_import.js",
+    "js/scene_duplicate.js",
     "js/split_resizer.js",
   ];
   scripts.forEach((src) => {

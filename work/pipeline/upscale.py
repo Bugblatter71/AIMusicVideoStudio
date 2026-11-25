@@ -17,6 +17,7 @@ from typing import Any
 
 from .fal_catalog import resolve_upscale_backend
 from .media_utils import probe_video_dimensions, probe_video_frames, resolve_rendered_clip_path
+from .project_paths import path_rel_str
 from .takes import (
     _find_strip,
     _pass_key,
@@ -548,6 +549,7 @@ def upscale_scene_clip(
         eff_re = (src_take.get("render_end") if (src_take and src_take.get("render_end") is not None) else sr_old.get("render_end", float(sc.get("end", 0))))
         eff_fr = (src_take.get("frames") if (src_take and src_take.get("frames") is not None) else sr_old.get("frames", probe_video_frames(ctx.ffmpeg, tmp_out) or 0))
         existing_takes = sc_entry.setdefault("takes", [])
+        r_rel = path_rel_str(ctx.project_dir, ctx.renders_dir, "work/renders")
         take_entry = {
             "take_id": new_take_id,
             "take_number": len(existing_takes) + 1,
@@ -566,8 +568,8 @@ def upscale_scene_clip(
             "created_iso": datetime.datetime.fromtimestamp(created_ts, datetime.timezone.utc).isoformat(),
             "vault_rel_mp4": vault_rel,
             "vault_rel_strip": vault_rel_strip,
-            "file_path": f"work/renders_v3/{vault_rel}",
-            "strip_path": f"work/renders_v3/{vault_rel_strip}" if vault_rel_strip else None,
+            "file_path": f"{r_rel}/{vault_rel}",
+            "strip_path": f"{r_rel}/{vault_rel_strip}" if vault_rel_strip else None,
             "elapsed_s": elapsed,
             "size_bytes": vault_mp4.stat().st_size,
             "resolution": res_str,

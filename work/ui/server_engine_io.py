@@ -10,12 +10,16 @@ from pathlib import Path
 
 try:
     from pipeline.media_utils import atomic_write_json, locked_file_op
+    from pipeline.project_paths import resolve_project_dirs, resolve_queue_file
 except ImportError:
     try:
         from work.pipeline.media_utils import atomic_write_json, locked_file_op
+        from work.pipeline.project_paths import resolve_project_dirs, resolve_queue_file
     except ImportError:
         atomic_write_json = None
         locked_file_op = None
+        resolve_project_dirs = None
+        resolve_queue_file = None
 
 ENGINES: tuple[str, ...] = ("local", "fal", "minimax")
 ENGINE_LABELS: dict[str, str] = {"local": "Local", "fal": "fal.ai", "minimax": "MiniMax"}
@@ -100,13 +104,26 @@ def _read_json_dict(path: Path) -> dict | None:
         return None
 
 
+def _jobs_dirs(proj_dir: Path) -> list[Path]:
+    jdir = resolve_project_dirs(proj_dir)["jobs"] if resolve_project_dirs else (proj_dir / "work" / "jobs")
+    return [jdir]
+
+
+def _q_file(proj_dir: Path, for_write: bool = False) -> Path:
+    if resolve_queue_file:
+        return resolve_queue_file(proj_dir, for_write=for_write)
+    p = proj_dir / "work" / "jobs" / "v3_queue.json"
+    if for_write:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def read_project_engine_statuses(srv, slug: str | None) -> dict[str, dict | None]:
     res: dict[str, dict | None] = {b: None for b in ENGINES}
     if not slug:
         return res
     proj_dir = srv.PROJECTS_DIR / slug
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        jdir = proj_dir / jobs_sub
+    for jdir in _jobs_dirs(proj_dir):
         if not jdir.is_dir():
             continue
         for b in ENGINES:
@@ -126,8 +143,7 @@ def read_project_task_statuses(srv, slug: str | None) -> dict[tuple[str, str], d
     if not slug:
         return res
     proj_dir = srv.PROJECTS_DIR / slug
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        jdir = proj_dir / jobs_sub
+    for jdir in _jobs_dirs(proj_dir):
         if not jdir.is_dir():
             continue
         for sf in jdir.glob("engine_status_*__*.json"):
@@ -306,7 +322,7 @@ def cleanup_after_kill(srv, active_proj: str, targets: tuple[str, ...], target_b
         except ImportError: import server_workers as _sw
     try:
         p_dir = srv.PROJECTS_DIR / active_proj
-        q_file = p_dir / "work" / "jobs_v3" / "v3_queue.json"
+        q_file = _q_file(p_dir)
         if q_file.is_file():
             with srv.queue_file_lock:
                 q_items = read_queue_json_locked(srv, q_file)
@@ -322,10 +338,9 @@ def cleanup_after_kill(srv, active_proj: str, targets: tuple[str, ...], target_b
                             q_it["status"] = "queued" if q_it.get("needs_render") else "skipped"
                             q_it["reason"] = "STOPPED BY USER"
                         _sw._restore_if_unlinked(p_dir, q_it.get("output_filename") or q_it.get("filename"), q_it.get("scene_id"))
-                write_queue_json_locked(srv, q_file, q_items)
+                write_queue_json_locked(srv, _q_file(p_dir, for_write=True), q_items)
         now_ts = round(time.time(), 3)
-        for jobs_sub in ("work/jobs_v3", "work/jobs"):
-            jdir = p_dir / jobs_sub
+        for jdir in _jobs_dirs(p_dir):
             if not jdir.is_dir():
                 continue
             cand_files = [jdir / f"engine_status_{b}__{s}.json" for b, s in killed_stems]
@@ -360,8 +375,7 @@ def read_task_failure_summary(proj_dir: Path, b: str, out_fn: str, code: int) ->
     out_stem = clean_task_stem(out_fn)
     b = norm_engine(b)
     err_txt = ""
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        jdir = proj_dir / jobs_sub
+    for jdir in _jobs_dirs(proj_dir):
         if not jdir.is_dir():
             continue
         cands = ((jdir / f"engine_status_{b}__{out_stem}.json",) if out_stem else ()) + (jdir / f"engine_status_{b}.json",)
@@ -393,8 +407,7 @@ def mark_task_failed_status(srv, proj_dir: Path, b: str, out_fn: str, code: int)
     out_stem = clean_task_stem(out_fn)
     if not out_stem:
         return
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        jdir = proj_dir / jobs_sub
+    for jdir in _jobs_dirs(proj_dir):
         if not jdir.is_dir():
             continue
         for sf in (jdir / f"engine_status_{b}__{out_stem}.json", jdir / f"engine_status_{b}.json", jdir / "engine_status.json"):
@@ -429,10 +442,11 @@ def set_queue_item_backend_override(srv, slug: str, item_id: str, backend_overri
     if raw_b and raw_b not in ENGINES:
         raise ValueError(f"Unsupported engine '{backend_override}'. Must be '', 'local', 'fal', or 'minimax'.")
     proj_dir = srv.PROJECTS_DIR / slug
-    q_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+    q_file = _q_file(proj_dir)
     with srv.queue_file_lock:
         if not q_file.is_file():
             srv.compute_fast_project_queue(slug)
+            q_file = _q_file(proj_dir)
         items = read_queue_json_locked(srv, q_file)
         clean_id = str(item_id).replace(".mp4", "")
         found = next((x for x in items if x.get("output_filename") in (item_id, clean_id) or x.get("filename") in (item_id, clean_id) or x.get("id") in (item_id, clean_id)), None)
@@ -447,7 +461,7 @@ def set_queue_item_backend_override(srv, slug: str, item_id: str, backend_overri
         if hasattr(srv, "_session_completed_hashes") and isinstance(srv._session_completed_hashes, set):
             fn_rm = str(found.get("output_filename") or "")
             srv._session_completed_hashes = {k for k in srv._session_completed_hashes if k[0] != fn_rm}
-        write_queue_json_locked(srv, q_file, items)
+        write_queue_json_locked(srv, _q_file(proj_dir, for_write=True), items)
         items = srv.compute_fast_project_queue(slug, force_recheck=False)
     return items
 
@@ -469,7 +483,8 @@ def reset_session_blocks_for_items(srv, items: list[dict] | None, *, clear_faile
 
 def requeue_failed_items(srv, slug: str, enabled_map: dict | None = None) -> list[dict]:
     """Resets failed queue entries on enabled engines back to queued before retrying."""
-    q_file = srv.PROJECTS_DIR / slug / "work" / "jobs_v3" / "v3_queue.json"
+    p_dir = srv.PROJECTS_DIR / slug
+    q_file = _q_file(p_dir)
     if not q_file.is_file():
         return []
     with srv.queue_file_lock:
@@ -485,7 +500,7 @@ def requeue_failed_items(srv, slug: str, enabled_map: dict | None = None) -> lis
             retried.append(it)
         if retried:
             reset_session_blocks_for_items(srv, retried, clear_failed=True)
-            write_queue_json_locked(srv, q_file, items)
+            write_queue_json_locked(srv, _q_file(p_dir, for_write=True), items)
         return items
 
 
@@ -496,8 +511,7 @@ def is_oom_failure(srv, proj_dir: Path, backend: str, out_fn: str, attempt_t0: f
     """Checks task/engine status files (and recent log tail) for a CUDA out-of-memory error."""
     b = norm_engine(backend)
     stem = clean_task_stem(out_fn)
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        jdir = proj_dir / jobs_sub
+    for jdir in _jobs_dirs(proj_dir):
         if not jdir.is_dir():
             continue
         for sf in ((jdir / f"engine_status_{b}__{stem}.json",) if stem else ()) + (jdir / f"engine_status_{b}.json",):
@@ -607,7 +621,7 @@ def write_starting_slot_status(proj_dir: Path, backend: str, out_fn: str, starte
         "window_index": None, "window_count": None, "started_at": round(float(started_at), 3),
         "updated_at": round(time.time(), 3), "error": None,
     }
-    jdir = proj_dir / "work" / "jobs_v3"
+    jdir = resolve_project_dirs(proj_dir)["jobs"] if resolve_project_dirs else (proj_dir / "work" / "jobs")
     jdir.mkdir(parents=True, exist_ok=True)
     targets = [jdir / f"engine_status_{b}.json", jdir / "engine_status.json"]
     if stem:
@@ -625,8 +639,7 @@ def mark_task_completed_status(proj_dir: Path, b: str, out_fn: str, elapsed: flo
     now_ts, out_stem = round(time.time(), 3), clean_task_stem(out_fn)
     if not out_stem:
         return
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        jdir = proj_dir / jobs_sub
+    for jdir in _jobs_dirs(proj_dir):
         if not jdir.is_dir():
             continue
         for sf in (jdir / f"engine_status_{b}__{out_stem}.json", jdir / f"engine_status_{b}.json", jdir / "engine_status.json"):
@@ -638,3 +651,99 @@ def mark_task_completed_status(proj_dir: Path, b: str, out_fn: str, elapsed: flo
                     else: sf.write_text(json.dumps(sd, indent=2), encoding="utf-8")
                 except Exception:
                     pass
+
+
+_TRANSIENT_RENDER_KEYS = (
+    "pct", "phase", "raw_phase", "status_text", "step", "total_steps",
+    "window_index", "window_count", "window_pct", "started_at",
+    "estimated_remaining_seconds", "estimated_remaining_str",
+)
+
+
+def dedupe_rendering_queue_items(items: list[dict], active_eng_map: dict | None = None, live_eng: dict | None = None, keep_stem: str | None = None) -> None:
+    """Ensures at most one task per single-slot engine (local) renders at once and Pass 1 never stays 'rendering' when Pass 2 is rendering."""
+    if not isinstance(items, list) or not items:
+        return
+    p2_ren_sids = {
+        str(it.get("scene_id") or clean_task_stem(it.get("output_filename") or "").split("_")[0]).upper()
+        for it in items if isinstance(it, dict) and it.get("pass") == 2 and it.get("status") == "rendering"
+    }
+    local_ren: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict) or it.get("status") != "rendering":
+            continue
+        sid_k = str(it.get("scene_id") or clean_task_stem(it.get("output_filename") or "").split("_")[0]).upper()
+        if it.get("pass") == 1 and sid_k in p2_ren_sids:
+            it["status"] = "completed"
+            it["needs_render"] = False
+            for k in _TRANSIENT_RENDER_KEYS:
+                it.pop(k, None)
+            continue
+        if effective_item_backend(it) == "local":
+            local_ren.append(it)
+    if len(local_ren) <= 1:
+        return
+    k_stem = clean_task_stem(keep_stem) if keep_stem else ""
+    if not k_stem and isinstance(active_eng_map, dict):
+        for b_st in active_eng_map.values():
+            if isinstance(b_st, dict) and norm_engine(b_st.get("backend")) == "local":
+                cand = clean_task_stem(b_st.get("output_filename") or b_st.get("filename"))
+                if cand and any(clean_task_stem(x.get("output_filename") or x.get("filename")) == cand for x in local_ren):
+                    k_stem = cand
+                    break
+    if not k_stem and isinstance(live_eng, dict) and norm_engine(live_eng.get("backend")) == "local":
+        k_stem = clean_task_stem(live_eng.get("output_filename") or live_eng.get("filename"))
+    keeper = next((x for x in local_ren if k_stem and clean_task_stem(x.get("output_filename") or x.get("filename")) == k_stem), None)
+    if keeper is None:
+        keeper = max(local_ren, key=lambda x: (float(x.get("started_at") or 0), int(x.get("pass") or 0), int(x.get("idx") or 0)))
+    for x in local_ren:
+        if x is not keeper:
+            x["status"] = "completed" if x.get("needs_render") is False else "queued"
+            for k in _TRANSIENT_RENDER_KEYS:
+                x.pop(k, None)
+
+
+def collect_active_rendering_map(running_stems: set[str], local_slots: list[str], q_active: bool, per_tasks: dict, per_eng: dict, legacy_eng: dict | None, slots_items: list[tuple[str, dict]]) -> dict[str, dict]:
+    """Builds the deduplicated active rendering map, allowing at most one live task on single-slot local GPU."""
+    active_map: dict[str, dict] = {}
+    best_local_t: tuple[float, str, dict] | None = None
+    for (b, t_stem), st in (per_tasks or {}).items():
+        if not (isinstance(st, dict) and st.get("state") == "rendering" and is_fresh_render_status(st)):
+            continue
+        if q_active and t_stem not in running_stems:
+            continue
+        if b == "local":
+            if local_slots and t_stem not in local_slots:
+                continue
+            ts = float(st.get("updated_at") or st.get("started_at") or 0.0)
+            if best_local_t is None or ts >= best_local_t[0]:
+                best_local_t = (ts, t_stem, st)
+            continue
+        fn = str(st.get("filename") or f"{t_stem}.mp4")
+        active_map[fn] = active_map[Path(fn).stem] = st
+    if best_local_t is not None:
+        _, l_stem, l_st = best_local_t
+        l_fn = str(l_st.get("filename") or f"{l_stem}.mp4")
+        active_map[l_fn] = active_map[Path(l_fn).stem] = l_st
+    has_local = lambda: any(norm_engine(v.get("backend")) == "local" for v in active_map.values())
+    for b, st in (per_eng or {}).items():
+        if isinstance(st, dict) and st.get("state") == "rendering" and is_fresh_render_status(st):
+            fn = str(st.get("filename") or "")
+            if not (b == "local" and has_local()) and fn and ((not q_active) or (clean_task_stem(fn) in running_stems)) and fn not in active_map:
+                active_map[fn] = active_map[Path(fn).stem] = st
+    if isinstance(legacy_eng, dict) and legacy_eng.get("state") == "rendering" and is_fresh_render_status(legacy_eng):
+        fn = str(legacy_eng.get("filename") or "")
+        if not (norm_engine(legacy_eng.get("backend")) == "local" and has_local()) and fn and ((not q_active) or (clean_task_stem(fn) in running_stems)) and fn not in active_map:
+            active_map[fn] = active_map[Path(fn).stem] = legacy_eng
+    for b, slot in slots_items:
+        fn = str(slot.get("filename") or "")
+        if fn and fn not in active_map:
+            t_stem = clean_task_stem(fn)
+            cand_st = next((d for d in ((per_tasks or {}).get((b, t_stem)), (per_eng or {}).get(b)) if isinstance(d, dict) and clean_task_stem(d.get("output_filename") or d.get("filename")) in ("", t_stem)), None)
+            if isinstance(cand_st, dict) and cand_st.get("state") in ("completed", "failed", "cancelled"):
+                st_ts = float(cand_st.get("updated_at") or cand_st.get("completed_at") or cand_st.get("started_at") or 0.0)
+                if st_ts >= float(slot.get("started_at") or 0.0) - 1.5:
+                    continue
+            st_stub = {"state": "rendering", "backend": b, "filename": fn, "started_at": slot.get("started_at")}
+            active_map[fn] = active_map[Path(fn).stem] = st_stub
+    return active_map

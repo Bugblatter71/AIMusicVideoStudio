@@ -25,13 +25,16 @@ def _srv():
 
 try:
     from pipeline.media_utils import prepend_unique_env_path
+    from pipeline.project_paths import resolve_project_dirs
     from pipeline.takes import create_project_checkpoint
 except ImportError:
     try:
         from work.pipeline.media_utils import prepend_unique_env_path
+        from work.pipeline.project_paths import resolve_project_dirs
         from work.pipeline.takes import create_project_checkpoint
     except ImportError:
         prepend_unique_env_path = None
+        resolve_project_dirs = None
         create_project_checkpoint = None
 
 
@@ -86,7 +89,8 @@ def _restore_if_unlinked(p_dir: Path, out_name: str | None, sid: str | None = No
     if clean_name and s_id:
         try:
             from pipeline.takes import restore_previous_active_take_if_missing
-            restore_previous_active_take_if_missing(p_dir, s_id, clean_name, p_dir / "work" / "renders_v3" / f"{clean_name}.mp4")
+            rdir = resolve_project_dirs(p_dir)["renders"] if resolve_project_dirs else (p_dir / "work" / "renders")
+            restore_previous_active_take_if_missing(p_dir, s_id, clean_name, rdir / f"{clean_name}.mp4")
         except Exception:
             pass
 
@@ -115,20 +119,21 @@ def execute_single_render(cmd_args: list[str], project_slug: str, engine_tag: st
     if project_slug:
         with srv.render_lock:
             stopping_global = any(s.get("stop_requested") for em in srv.engine_slots.values() for s in em.values())
-        for jobs_sub in ("work/jobs_v3", "work/jobs"):
-            if b_tag and t_stem:
-                names = [f"cancel_request_{b_tag}__{t_stem}.json"] + ([f"cancel_request_{b_tag}.json"] if siblings_active == 0 else [])
-            elif b_tag:
-                names = [f"cancel_request_{b_tag}.json"]
-            else:
-                names = ["cancel_request.json", "cancel_request_local.json", "cancel_request_fal.json", "cancel_request_minimax.json"]
-            if b_tag and not stopping_global and siblings_active == 0:
-                names.append("cancel_request.json")
-            for nm in names:
-                cf = srv.PROJECTS_DIR / project_slug / jobs_sub / nm
-                if cf.exists():
-                    try: cf.unlink()
-                    except Exception: pass
+        p_dir = srv.PROJECTS_DIR / project_slug
+        jdir = resolve_project_dirs(p_dir)["jobs"] if resolve_project_dirs else (p_dir / "work" / "jobs")
+        if b_tag and t_stem:
+            names = [f"cancel_request_{b_tag}__{t_stem}.json"] + ([f"cancel_request_{b_tag}.json"] if siblings_active == 0 else [])
+        elif b_tag:
+            names = [f"cancel_request_{b_tag}.json"]
+        else:
+            names = ["cancel_request.json", "cancel_request_local.json", "cancel_request_fal.json", "cancel_request_minimax.json"]
+        if b_tag and not stopping_global and siblings_active == 0:
+            names.append("cancel_request.json")
+        for nm in names:
+            cf = jdir / nm
+            if cf.exists():
+                try: cf.unlink()
+                except Exception: pass
 
         if create_project_checkpoint:
             with checkpoint_lock:
@@ -262,7 +267,7 @@ def run_anchor_worker(config_path: str, project_slug: str, anchor_args: list[str
                 pass
 
 
-def run_stitch_worker(config_path: str, project_slug: str):
+def run_stitch_worker(config_path: str, project_slug: str) -> bool:
     """Executes master video restitching immediately in a separate thread.
     Does not touch GPU models, does not wait for render locks, and can run
     in parallel with active scene renders."""
@@ -275,78 +280,97 @@ def run_stitch_worker(config_path: str, project_slug: str):
             cur_prog = getattr(srv, "stitch_progress", None)
             if cur_prog:
                 srv.broadcast_log(f"[MASTER_STITCH_PROGRESS] {json.dumps(cur_prog)}")
-            return
+            return True
         stitch_in_progress = srv.stitch_in_progress = True
         _stitch_spawning = False
         srv.stitch_pending = False
+        srv.stitch_error = None
         srv.stitch_progress = {"pct": 0, "phase": "Starting stitch worker...", "detail": "Initializing...", "slug": project_slug}
 
-    srv.broadcast_log(f"[MASTER_STITCH_START] {json.dumps({'slug': project_slug})}")
-    srv.broadcast_log("[Studio UI Stitch] >>> Immediate master video restitch initiated...")
     py_exec = srv.resolve_engine_python()
-
     env = _subprocess_env()
     cmd = [py_exec, "-u", str(srv.RUNNER_SCRIPT), config_path, "stitch", "--skip-anchors"]
-
+    final_ok = False
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(srv.WORKSPACE_ROOT),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
-            env=env,
-        )
-        stitch_succeeded = False
-        lock_error_msg = None
         while True:
-            line = proc.stdout.readline()
-            if not line:
-                break
-            clean_line = line.rstrip("\r\n")
-            if clean_line:
-                if clean_line.startswith("[MASTER_STITCH_PROGRESS]"):
+            srv.broadcast_log(f"[MASTER_STITCH_START] {json.dumps({'slug': project_slug})}")
+            srv.broadcast_log("[Studio UI Stitch] >>> Immediate master video restitch initiated...")
+            proc = None
+            stitch_succeeded = False
+            lock_error_msg = None
+            last_stitch_error = None
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(srv.WORKSPACE_ROOT),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    bufsize=1,
+                    env=env,
+                )
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    clean_line = line.rstrip("\r\n")
+                    if clean_line:
+                        if clean_line.startswith("[MASTER_STITCH_PROGRESS]"):
+                            try:
+                                srv.stitch_progress = json.loads(clean_line[24:].strip())
+                            except Exception:
+                                pass
+                            srv.broadcast_log(clean_line)
+                        else:
+                            srv.broadcast_log(f"[Stitch] {clean_line}")
+                            if "is currently open in a player" in clean_line or "MASTER_FILE_LOCKED" in clean_line:
+                                lock_error_msg = clean_line
+                            if "[MASTER_STITCH_FAILED]" in clean_line or "CalledProcessError:" in clean_line or "[Stitch Error]" in clean_line:
+                                last_stitch_error = clean_line
+                            if "[Progressive Master Updated]" in clean_line:
+                                stitch_succeeded = True
+                proc.wait(timeout=120)
+                code = proc.returncode
+                if code == 0 and stitch_succeeded:
+                    srv.stitch_error = None
+                    final_ok = True
+                    srv.broadcast_log("[Studio UI Stitch] ✅ Master video restitched successfully!")
+                    srv.broadcast_log("[MASTER_UPDATED]")
+                elif lock_error_msg:
+                    srv.stitch_error = lock_error_msg
+                    final_ok = False
+                    srv.broadcast_log("[Studio UI Stitch Error] ⚠️ Master video file is locked by a video player or external program. Please close your media player and try again.")
+                    srv.broadcast_log(f"[MASTER_LOCKED] {json.dumps({'error': lock_error_msg})}")
+                else:
+                    err_txt = last_stitch_error or f"Master restitch exited with code {code}"
+                    srv.stitch_error = err_txt
+                    final_ok = False
+                    srv.broadcast_log(f"[Studio UI Stitch] ❌ Master restitch exited with code {code}")
+                    srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'code': code, 'error': err_txt})}")
+            except Exception as e:
+                srv.stitch_error = str(e)
+                final_ok = False
+                srv.broadcast_log(f"[Studio UI Stitch Error] {e}")
+                srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'error': str(e)})}")
+            finally:
+                if proc is not None and proc.stdout:
                     try:
-                        srv.stitch_progress = json.loads(clean_line[24:].strip())
+                        proc.stdout.close()
                     except Exception:
                         pass
-                    srv.broadcast_log(clean_line)
-                else:
-                    srv.broadcast_log(f"[Stitch] {clean_line}")
-                    if "is currently open in a player" in clean_line or "MASTER_FILE_LOCKED" in clean_line:
-                        lock_error_msg = clean_line
-                    if "[Progressive Master Updated]" in clean_line:
-                        stitch_succeeded = True
-        proc.wait(timeout=60)
-        code = proc.returncode
-        if code == 0 and stitch_succeeded:
-            srv.broadcast_log("[Studio UI Stitch] ✅ Master video restitched successfully!")
-            srv.broadcast_log("[MASTER_UPDATED]")
-        elif lock_error_msg:
-            srv.broadcast_log("[Studio UI Stitch Error] ⚠️ Master video file is locked by a video player or external program. Please close your media player and try again.")
-            srv.broadcast_log(f"[MASTER_LOCKED] {json.dumps({'error': lock_error_msg})}")
-        else:
-            srv.broadcast_log(f"[Studio UI Stitch] ❌ Master restitch exited with code {code}")
-            srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'code': code})}")
-    except Exception as e:
-        srv.broadcast_log(f"[Studio UI Stitch Error] {e}")
-        srv.broadcast_log(f"[MASTER_ERROR] {json.dumps({'error': str(e)})}")
+            with stitch_lock:
+                if getattr(srv, "stitch_pending", False):
+                    srv.stitch_pending = False
+                    srv.stitch_progress = {"pct": 0, "phase": "Running follow-up stitch...", "detail": "Latest renders detected...", "slug": project_slug}
+                    continue
+                break
     finally:
-        if 'proc' in locals() and proc is not None and proc.stdout:
-            try:
-                proc.stdout.close()
-            except Exception:
-                pass
         with stitch_lock:
             stitch_in_progress = srv.stitch_in_progress = False
             srv.stitch_progress = None
-            need_again = bool(getattr(srv, "stitch_pending", False))
-            srv.stitch_pending = False
-        if need_again:
-            run_stitch_worker(config_path, project_slug)
+    return final_ok
 
 
 def run_pipeline_worker(cmd_args: list[str], project_slug: str):

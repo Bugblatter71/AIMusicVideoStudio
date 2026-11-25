@@ -18,13 +18,17 @@ from urllib.parse import parse_qs, unquote, urlparse
 try:
     from pipeline.takes import handle_takes_api
     from pipeline.clip_import import handle_import_clip_http
+    from pipeline.project_paths import resolve_project_dirs, resolve_queue_file, scan_project_audio_assets
+    from pipeline.scene_purge import handle_scene_split_post_purge, purge_deleted_scene_artifacts, save_project_json_with_purge
 except ImportError:
     try:
         from work.pipeline.takes import handle_takes_api
         from work.pipeline.clip_import import handle_import_clip_http
+        from work.pipeline.project_paths import resolve_project_dirs, resolve_queue_file, scan_project_audio_assets
+        from work.pipeline.scene_purge import handle_scene_split_post_purge, purge_deleted_scene_artifacts, save_project_json_with_purge
     except ImportError:
-        handle_takes_api = None
-        handle_import_clip_http = None
+        handle_takes_api = handle_import_clip_http = resolve_project_dirs = resolve_queue_file = scan_project_audio_assets = None
+        handle_scene_split_post_purge = purge_deleted_scene_artifacts = save_project_json_with_purge = None
 
 try:
     from server_fal import handle_fal_get, handle_fal_post, patch_models_payload
@@ -210,14 +214,13 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             self.send_json({"success": True, "dummy_render": srv.dummy_render_mode})
             return
 
-        # Characters API Actions
-        if "/characters/" in path:
-            action = path.split("/characters/")[-1]
+        # Characters & Anchors API Actions
+        if "/characters/" in path or path.startswith("/api/anchors/"):
             try:
-                from pipeline.characters import handle_characters_api
+                from pipeline.stage1_anchors import handle_anchors_api; from pipeline.characters import handle_characters_api
             except ImportError:
-                from work.pipeline.characters import handle_characters_api
-            handle_characters_api(self, action, body=body)
+                from work.pipeline.stage1_anchors import handle_anchors_api; from work.pipeline.characters import handle_characters_api
+            handle_anchors_api(self, srv, path, body=body, require_project=_require_project) if path.startswith("/api/anchors/") else handle_characters_api(self, path.split("/characters/")[-1], body=body)
             return
 
         # Takes & Checkpoints & fal.ai Actions
@@ -239,7 +242,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug or not item_id:
                 self.send_error_json("slug and id are required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: q = srv.move_in_project_queue(slug, item_id, direction); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
+            try: q = srv.move_in_project_queue(slug, item_id, direction); self.send_json({"success": True, "slug": slug, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -249,7 +252,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug or (not order and (not item_id or not target_id)):
                 self.send_error_json("slug and (order or (id and target_id)) are required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: q = srv.reorder_in_project_queue(slug, item_id=item_id, target_id=target_id, position=position, order=order); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
+            try: q = srv.reorder_in_project_queue(slug, item_id=item_id, target_id=target_id, position=position, order=order); self.send_json({"success": True, "slug": slug, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -258,7 +261,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug or not item_id:
                 self.send_error_json("slug and id are required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: q = srv.remove_from_project_queue(slug, item_id); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
+            try: q = srv.remove_from_project_queue(slug, item_id); self.send_json({"success": True, "slug": slug, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -270,7 +273,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             try:
                 items = srv.enqueue_in_project_queue(slug, item_id)
                 srv.run_queue_worker(slug, force_restart=False)
-                self.send_json({"success": True, "queue": items, "done_queue": srv.get_done_queue_history(srv, slug, items)})
+                self.send_json({"success": True, "slug": slug, "queue": items, "done_queue": srv.get_done_queue_history(srv, slug, items)})
             except RuntimeError as e: self.send_error_json(str(e), status=HTTPStatus.CONFLICT)
             except Exception as e: self.send_error_json(str(e))
             return
@@ -284,7 +287,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             reset_session_blocks_for_items(srv, [x for x in (queue or []) if x.get("status") == "queued" and x.get("needs_render")], clear_failed=True)
             try: srv.run_queue_worker(slug, force_restart=False)
             except RuntimeError as e: self.send_error_json(str(e), status=HTTPStatus.CONFLICT); return
-            self.send_json({"success": True, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue)})
+            self.send_json({"success": True, "slug": slug, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue)})
             return
 
         if path == "/api/queue/clear":
@@ -292,7 +295,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if not slug:
                 self.send_error_json("slug is required"); return
             if not _require_project(self, srv, slug, need_cfg=False)[0]: return
-            try: q = srv.clear_project_queue(slug); self.send_json({"success": True, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
+            try: q = srv.clear_project_queue(slug); self.send_json({"success": True, "slug": slug, "queue": q, "done_queue": srv.get_done_queue_history(srv, slug, q)})
             except Exception as e: self.send_error_json(str(e))
             return
 
@@ -313,14 +316,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if args == ["stitch"]:
                 threading.Thread(target=srv.run_stitch_worker, args=(str(config_file), slug), daemon=True).start()
                 self.send_json({"success": True, "queued": False, "args": args}); return
-            if args and any(str(a).strip().lower() in ("--anchors-only", "anchors-only", "anchors") for a in args):
-                with srv.render_lock:
-                    busy = bool(getattr(srv, "local_adhoc_busy", False) or srv.engine_workers.get("local", {}).get("running"))
-                if busy:
-                    self.send_error_json("Local GPU is busy with another task", status=HTTPStatus.CONFLICT); return
-                threading.Thread(target=srv.run_anchor_worker, args=(str(config_file), slug, list(args)), daemon=True).start()
-                self.send_json({"success": True, "queued": True, "args": args, "message": f"Anchor generation started ({args})."}); return
-            queue_file = proj_dir / "work" / "jobs_v3" / "v3_queue.json"
+            is_anchor_req = bool(args and any(str(a).strip().lower() in ("--anchors-only", "anchors-only", "anchors") for a in args))
+            queue_file = resolve_queue_file(proj_dir, for_write=True) if resolve_queue_file else (proj_dir / "work" / "jobs" / "v3_queue.json")
             if not queue_file.is_file(): srv.compute_fast_project_queue(slug)
             raw_en, raw_mp = (body or {}).get("enabled_engines"), (body or {}).get("max_parallel")
             enabled_map = max_par_map = None
@@ -341,7 +338,18 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             if isinstance(enabled_map, dict):
                 with srv.render_lock:
                     for b, v in enabled_map.items(): srv.enabled_engines[b] = v
-            if args:
+            with srv.render_lock:
+                if (getattr(srv, "queue_worker_active", False) or (srv.active_process is not None and srv.active_process.poll() is None)) and srv.render_status.get("current_project") not in (None, slug):
+                    self.send_error_json(f"Another project ('{srv.render_status.get('current_project')}') is already rendering", status=HTTPStatus.CONFLICT); return
+            if is_anchor_req:
+                try:
+                    from pipeline.anchor_takes import prepare_targeted_anchor_queue_items
+                except ImportError:
+                    from work.pipeline.anchor_takes import prepare_targeted_anchor_queue_items
+                queued_ancs = prepare_targeted_anchor_queue_items(srv, slug, list(args))
+                if not queued_ancs:
+                    self.send_json({"success": True, "queued": False, "args": args, "message": "All requested anchors are already up-to-date."}); return
+            elif args:
                 target_sid = str(args[0]).strip().upper()
                 try: srv.prepare_targeted_queue_items(slug, target_sid)
                 except Exception as e: srv.broadcast_log(f"[Studio UI Error] Failed preparing queue for scene {target_sid}: {e}")
@@ -400,6 +408,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 updated_data, sc1, sc2 = split_fn(data, scene_id, float(split_time), id1=id1, id2=id2)
                 srv.backup_project_json(config_file, throttle_seconds=0.0)
                 config_file.write_text(json.dumps(updated_data, indent=2), encoding="utf-8")
+                if handle_scene_split_post_purge: handle_scene_split_post_purge(proj_dir, config_file, scene_id, sc1, sc2, updated_data)
                 updated_queue = srv.compute_fast_project_queue(slug, force_recheck=False)
                 srv.broadcast_log(f"[Studio UI] Scene {scene_id} split into {sc1.get('id')} ({sc1.get('start')}s-{sc1.get('end')}s) and {sc2.get('id')} ({sc2.get('start')}s-{sc2.get('end')}s)")
                 self.send_json({
@@ -407,7 +416,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     "scene1": sc1,
                     "scene2": sc2,
                     "scenes": updated_data.get("scenes", []),
-                    "queue": updated_queue, "done_queue": srv.get_done_queue_history(srv, slug, updated_queue),
+                    "slug": slug, "queue": updated_queue, "done_queue": srv.get_done_queue_history(srv, slug, updated_queue),
                 })
             except Exception as e:
                 self.send_error_json(str(e))
@@ -435,16 +444,25 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 updated_data, del_sc = del_fn(data, scene_id, close_gap=bool(close_gap))
                 srv.backup_project_json(config_file, throttle_seconds=0.0)
                 config_file.write_text(json.dumps(updated_data, indent=2), encoding="utf-8")
+                if purge_deleted_scene_artifacts: purge_deleted_scene_artifacts(proj_dir, [del_sc.get("id") or scene_id], config_data=updated_data, config_file=config_file)
                 updated_queue = srv.compute_fast_project_queue(slug, force_recheck=True)
                 srv.broadcast_log(f"[Studio UI] Scene {scene_id} deleted (close_gap={close_gap})")
                 self.send_json({
                     "success": True,
                     "deleted_scene": del_sc,
                     "scenes": updated_data.get("scenes", []),
-                    "queue": updated_queue, "done_queue": srv.get_done_queue_history(srv, slug, updated_queue),
+                    "slug": slug, "queue": updated_queue, "done_queue": srv.get_done_queue_history(srv, slug, updated_queue),
                 })
             except Exception as e:
                 self.send_error_json(str(e))
+            return
+
+        if path == "/api/scene/duplicate" or (path.startswith("/api/project/") and path.endswith("/scene/duplicate")):
+            try:
+                from pipeline.scene_ops import handle_duplicate_scene_api
+            except ImportError:
+                from work.pipeline.scene_ops import handle_duplicate_scene_api
+            handle_duplicate_scene_api(self, srv, body, path=path, require_project=_require_project)
             return
 
         # Persist ONLY scene.locked without saving unrelated unsaved edits
@@ -517,11 +535,8 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 jsons = [j for j in sorted(proj_dir.glob("*.json")) if not j.name.startswith("state_hashes")]
                 target_json = jsons[-1] if jsons else proj_dir / f"{proj_dir.name}.json"
 
-            # Back up before saving (throttled to at most once per 60s per file to avoid backup spam on auto-save)
-            srv.backup_project_json(target_json, throttle_seconds=60.0)
-
             try:
-                target_json.write_text(json.dumps(body, indent=2), encoding="utf-8")
+                purged_ids = save_project_json_with_purge(srv, proj_dir, target_json, slug, body, parse_qs(parsed.query)) if save_project_json_with_purge else []
                 queue = None
                 try:
                     queue = srv.compute_fast_project_queue(slug, force_recheck=False)
@@ -530,7 +545,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         srv.wake_enabled_engine_workers(srv, slug)
                 except Exception:
                     pass
-                self.send_json({"success": True, "saved": str(target_json.name), "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue)})
+                self.send_json({"success": True, "slug": slug, "saved": str(target_json.name), "purged_scene_ids": purged_ids, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue)})
             except Exception as e:
                 self.send_error_json(f"Failed to write file: {e}")
             return
@@ -581,7 +596,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
         queue = srv.compute_fast_project_queue(slug)
         eng_status = srv.read_project_engine_status(slug)
-        self.send_json({"success": True, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue), "engine_status": eng_status})
+        self.send_json({"success": True, "slug": slug, "queue": queue, "done_queue": srv.get_done_queue_history(srv, slug, queue), "engine_status": eng_status})
 
     def handle_get_project(self, slug: str, config_name: str | None = None):
         srv = _srv()
@@ -601,15 +616,14 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
             return
 
         # Scan on-disk status for anchors, renders, master videos
-        anchors_dir = proj_dir / data.get("project", {}).get("directories", {}).get("anchors", "work/anchors")
+        pdirs = resolve_project_dirs(proj_dir, config_data=data) if resolve_project_dirs else None
+        anchors_dir = pdirs["anchors"] if pdirs else (proj_dir / data.get("project", {}).get("directories", {}).get("anchors", "work/anchors"))
 
         # Collect existing anchor images (match by both filename and canonical ID like A01)
         existing_anchors = {}
         image_exts = {".jpg", ".jpeg", ".png", ".webp"}
         anchor_search_dirs = [
             anchors_dir,
-            proj_dir / "work" / "anchors_v3",
-            proj_dir / "work" / "anchors",
             proj_dir / "references",
             proj_dir / "work" / "ref_sheets",
         ]
@@ -626,7 +640,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                         info = {
                             "filename": img.name,
                             "aid": aid,
-                            "is_anchor_dir": sdir in (anchors_dir, proj_dir / "work" / "anchors_v3", proj_dir / "work" / "anchors"),
+                            "is_anchor_dir": sdir == anchors_dir,
                             "size_bytes": img.stat().st_size,
                             "mtime": img.stat().st_mtime,
                         }
@@ -638,7 +652,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
 
         # Collect rendered clips across renders_dir and trimmed_dir
         existing_clips = srv.collect_project_clips(proj_dir, data)
-        strips_dir = proj_dir / data.get("project", {}).get("directories", {}).get("review_strips", "work/frames_v3")
+        strips_dir = pdirs["strips"] if pdirs else (proj_dir / data.get("project", {}).get("directories", {}).get("review_strips", "work/frames"))
         strips_dir.mkdir(parents=True, exist_ok=True)
 
         # Collect existing filmstrip images
@@ -653,30 +667,18 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 for sid_variant in (raw_sid, raw_sid.upper(), raw_sid.lower()):
                     existing_strips[sid_variant] = strip_info
 
-        # Collect master outputs
-        master_videos = []
-        for vid in sorted(proj_dir.glob("*Master*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True):
-            master_videos.append({
-                "filename": vid.name,
-                "size_mb": round(vid.stat().st_size / (1024 * 1024), 2),
-                "mtime": vid.stat().st_mtime,
-            })
-
-        # Scan available audio files
-        audio_dir = proj_dir / "audio"
-        audio_files = []
-        if audio_dir.is_dir():
-            for a in audio_dir.glob("*.*"):
-                if a.suffix.lower() in (".mp3", ".wav", ".flac", ".ogg", ".m4a"):
-                    audio_files.append(a.name)
-
-        # Scan reference images
-        ref_dir = proj_dir / "references"
-        ref_files = []
-        if ref_dir.is_dir():
-            for r in ref_dir.glob("*.*"):
-                if r.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
-                    ref_files.append(r.name)
+        # Collect master outputs and available audio / reference files
+        master_videos = [
+            {"filename": vid.name, "size_mb": round(vid.stat().st_size / (1024 * 1024), 2), "mtime": vid.stat().st_mtime}
+            for vid in sorted(proj_dir.glob("*Master*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True)
+        ]
+        audio_dir, ref_dir = proj_dir / "audio", proj_dir / "references"
+        audio_info = scan_project_audio_assets(proj_dir, data) if scan_project_audio_assets else {
+            "audio_files": [a.name for a in audio_dir.glob("*.*") if a.suffix.lower() in (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")] if audio_dir.is_dir() else []
+        }
+        ref_files = [r.name for r in ref_dir.glob("*.*") if r.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")] if ref_dir.is_dir() else []
+        try: from pipeline.stage1_anchors import collect_anchor_source_files
+        except ImportError: from work.pipeline.stage1_anchors import collect_anchor_source_files
 
         self.send_json({
             "slug": slug,
@@ -687,8 +689,9 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                 "clips": existing_clips,
                 "strips": existing_strips,
                 "master_videos": master_videos,
-                "audio_files": audio_files,
+                **audio_info,
                 "reference_files": ref_files,
+                "anchor_source_files": collect_anchor_source_files(proj_dir),
             },
         })
 
@@ -716,6 +719,7 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         # Send existing log history first
         with srv.render_lock:
             existing = list(srv.log_history)
+            seq_slugs = dict(getattr(srv, "log_seq_slugs", {}))
             run_floor = int(getattr(srv, "_run_log_seq_floor", 0) or 0)
             is_running = srv.render_status["running"] or getattr(srv, "queue_worker_active", False)
             exit_code = srv.render_status["exit_code"]
@@ -723,9 +727,10 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
         last_seen_seq = 0
         for seq, line in existing:
             last_seen_seq = seq
-            if seq <= run_floor and any(tok in line for tok in ("[QUEUE_ACTIVE]", "[QUEUE_PROGRESS]", "[QUEUE_DONE]", "[QUEUE_FAIL]", "[QUEUE_CANCEL]", "[QUEUE_SKIP]")):
+            if (seq <= run_floor and any(tok in line for tok in ("[QUEUE_ACTIVE]", "[QUEUE_PROGRESS]", "[QUEUE_DONE]", "[QUEUE_FAIL]", "[QUEUE_CANCEL]", "[QUEUE_SKIP]"))) or any(tok in line for tok in ("[ANCHORS_UPDATED]", "[MASTER_UPDATED]", "[MASTER_LOCKED]", "[MASTER_ERROR]", "[MASTER_STITCH_", "[UPSCALE_DONE]", "[REPAIR_LIPSYNC_DONE]")):
                 continue
-            payload = json.dumps({"text": line, "done": False})
+            ev_slug = seq_slugs.get(seq)
+            payload = json.dumps({"text": line, "done": False, **({"slug": ev_slug} if ev_slug else {})})
             self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
         self.wfile.flush()
 
@@ -743,11 +748,11 @@ class StudioRequestHandler(BaseHTTPRequestHandler):
                     # If log_history was cleared or reset behind us
                     if srv.log_history and srv.log_history[-1][0] < last_seen_seq:
                         last_seen_seq = 0
-                    new_items = [item for item in srv.log_history if item[0] > last_seen_seq]
+                    new_items = [(s, l, getattr(srv, "log_seq_slugs", {}).get(s)) for s, l in srv.log_history if s > last_seen_seq]
 
                 if new_items:
-                    for seq, line in new_items:
-                        payload = json.dumps({"text": line, "done": False})
+                    for seq, line, ev_slug in new_items:
+                        payload = json.dumps({"text": line, "done": False, **({"slug": ev_slug} if ev_slug else {})})
                         self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
                         last_seen_seq = seq
                     self.wfile.flush()

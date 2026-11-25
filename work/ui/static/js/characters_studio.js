@@ -152,9 +152,11 @@
           .map((rPath, rIdx) => {
             const url = `/media/${slug}/ref/${rPath}`;
             return `
-            <div style="position: relative; width: 72px; height: 90px; border-radius: 4px; overflow: hidden; background: #0f172a; border: 1px solid #334155; flex-shrink: 0;">
-              <img src="${escapeHtml(url)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.src='';">
-              <button class="btn-remove-ref" data-entity="${escapeHtml(eid)}" data-look="${escapeHtml(lid)}" data-idx="${rIdx}" style="position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7); border: none; color: #ef4444; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center;">&times;</button>
+            <div class="char-ref-thumb-wrap" data-ref-path="${escapeHtml(rPath)}">
+              <div class="char-ref-thumb-media">
+                <img class="char-ref-main-img" src="${escapeHtml(url)}" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.src='';">
+                <button class="btn-remove-ref" data-entity="${escapeHtml(eid)}" data-look="${escapeHtml(lid)}" data-idx="${rIdx}" style="position: absolute; top: 2px; right: 2px; background: rgba(0,0,0,0.7); border: none; color: #ef4444; width: 18px; height: 18px; border-radius: 50%; font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center;">&times;</button>
+              </div>
             </div>`;
           })
           .join("");
@@ -389,6 +391,7 @@
         }
       });
     });
+    window.enhanceCharacterLookMasks?.(detailEl);
   }
 
   // ---------------------------------------------------------------------------
@@ -479,13 +482,16 @@
   // 4. Caret-Aware @mention Autocomplete Popover
   // ---------------------------------------------------------------------------
 
+  function bindCharacterMentionAutocomplete(el) {
+    if (!el || el.dataset?.charAcBound) return;
+    if (el.dataset) el.dataset.charAcBound = "1";
+    el.addEventListener("input", () => handleAutocompleteInput(el));
+    el.addEventListener("keydown", (e) => handleAutocompleteKeydown(e, el));
+  }
+  window.bindCharacterMentionAutocomplete = bindCharacterMentionAutocomplete;
+
   function setupPromptAutocomplete() {
-    ["scenePrompt", "scenePromptM", "scenePromptF"].forEach((id) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.addEventListener("input", () => handleAutocompleteInput(el));
-      el.addEventListener("keydown", (e) => handleAutocompleteKeydown(e, el));
-    });
+    ["scenePrompt", "scenePromptM", "scenePromptF"].forEach((id) => bindCharacterMentionAutocomplete(document.getElementById(id)));
 
     document.addEventListener("click", (e) => {
       if (popoverEl && !popoverEl.contains(e.target) && e.target !== activeTextarea) {
@@ -597,26 +603,26 @@
   function updatePromptReferenceTray(sc) {
     if (!sc) return;
     const isTwoPass = isTwoPassScene(sc);
-    const vrid = sc.video_renderer || sc.renderer || state.projectData?.models?.default_video_renderer || 1;
-    const rspec = state.models?.video_renderers?.[String(vrid)] || {};
-    const mtype = String(rspec.model_type || "").toLowerCase();
-    const supportsRefs = Boolean(
-      rspec.supports_image_refs ||
-        mtype.includes("ref2va") ||
-        mtype.includes("fasth3") ||
-        mtype.includes("singularity")
-    );
-
+    const defRid = state.projectData?.models?.default_video_renderer || 1;
+    const resolveRefMeta = (rawR) => {
+      const vrid = String(rawR !== null && rawR !== undefined && rawR !== "" ? rawR : defRid);
+      const rspec = state.models?.video_renderers?.[vrid] || state.models?.fal_video_renderers?.[vrid] || state.models?.minimax_video_renderers?.[vrid] || {};
+      const refMode = window.getVideoRefMode ? window.getVideoRefMode(rspec) : ((rspec.supports_image_refs || String(rspec.model_type || "").toLowerCase().includes("ref2va")) ? "h3_ref2va" : "");
+      return { supportsRefs: Boolean(refMode), refMode, maxRefs: refMode === "ltx2_msr" ? 4 : (refMode === "ltx2_ingredients" ? (Number(rspec.max_image_refs) || 6) : 9) };
+    };
     if (isTwoPass) {
-      renderTrayContainer(document.getElementById("refTrayPass1"), sc.prompt_m || "", supportsRefs, sc, "scenePromptM");
-      renderTrayContainer(document.getElementById("refTrayPass2"), sc.prompt_f || "", supportsRefs, sc, "scenePromptF");
+      renderTrayContainer(document.getElementById("refTrayPass1"), sc.prompt_m || "", resolveRefMeta(sc.renderer_m ?? sc.video_renderer ?? sc.renderer), sc, "scenePromptM");
+      renderTrayContainer(document.getElementById("refTrayPass2"), sc.prompt_f || "", resolveRefMeta(sc.renderer_f ?? sc.video_renderer ?? sc.renderer), sc, "scenePromptF");
     } else {
-      renderTrayContainer(document.getElementById("refTraySingle"), sc.prompt || "", supportsRefs, sc, "scenePrompt");
+      renderTrayContainer(document.getElementById("refTraySingle"), sc.prompt || "", resolveRefMeta(sc.video_renderer ?? sc.renderer), sc, "scenePrompt");
     }
   }
 
-  function renderTrayContainer(container, promptText, supportsRefs, sc, textareaId) {
+  function renderTrayContainer(container, promptText, refMeta, sc, textareaId) {
     if (!container) return;
+    const supportsRefs = typeof refMeta === "object" ? Boolean(refMeta?.supportsRefs) : Boolean(refMeta);
+    const refMode = (typeof refMeta === "object" && refMeta?.refMode) || (supportsRefs ? "h3_ref2va" : "");
+    const maxSlots = (typeof refMeta === "object" && Number(refMeta?.maxRefs)) || 9;
     const chars = state.charactersData || {};
     const matchedTokens = promptText.match(/(@[a-zA-Z0-9_-]+|\{[a-zA-Z0-9_]+\})/gi) || [];
     const distinctEntities = [];
@@ -674,14 +680,12 @@
     let totalImages = 0;
     distinctEntities.forEach((e) => (totalImages += (e.image_refs || []).length));
 
+    const badgeText = refMode === "ltx2_msr"
+      ? `✓ LTX-2.5 MSR Mode (BG + ${Math.min(totalImages, 4)}/4 Subject Slots)`
+      : (refMode === "ltx2_ingredients" ? `✓ LTX-2.5 Ingredients Mode (Auto-composed into 1 Reference Sheet, ${Math.min(totalImages, maxSlots)}/${maxSlots} images)` : `✓ Multimodal Ref2VA Mode (${Math.min(totalImages, 9)}/9 Image Slots)`);
     const headerBadge = supportsRefs
-      ? `<div style="display: flex; align-items: center; gap: 6px; font-size: 11px; margin-bottom: 4px;">
-          <span style="color: #22c55e; font-weight: 600;">✓ Multimodal Ref2VA Mode (${Math.min(totalImages, 9)}/9 Image Slots)</span>
-          ${totalImages > 9 ? '<span style="color: #f59e0b;">⚠️ only first 9 images sent</span>' : ""}
-        </div>`
-      : `<div style="font-size: 11px; color: #38bdf8; margin-bottom: 4px;">
-          ℹ Text-Only Model (Ref Images Bypassed — Expands to Natural Language Description)
-        </div>`;
+      ? `<div style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:4px;"><span style="color:#22c55e;font-weight:600;">${badgeText}</span>${totalImages > maxSlots ? `<span style="color:#f59e0b;">⚠️ only first ${maxSlots} images sent</span>` : ""}</div>`
+      : `<div style="font-size:11px;color:#38bdf8;margin-bottom:4px;">ℹ Text-Only Model (Ref Images Bypassed — Expands to Natural Language Description)</div>`;
 
     const dur = Math.max(0, (sc.end || 0) - (sc.start || 0));
     const pacingTip =
@@ -691,13 +695,13 @@
           </div>`
         : "";
 
-    let picCounter = 2;
+    let picCounter = refMode === "h3_ref2va" ? 2 : 1;
     const chipsHtml = distinctEntities
       .map((e) => {
         const assignedPics = [];
         (e.image_refs || []).forEach(() => {
-          if (picCounter <= 10) {
-            assignedPics.push(`<Picture ${picCounter}>`);
+          if ((refMode === "h3_ref2va" && picCounter <= 10) || (refMode !== "h3_ref2va" && picCounter <= maxSlots)) {
+            assignedPics.push(refMode === "ltx2_msr" ? `Subject ${picCounter}` : (refMode === "ltx2_ingredients" ? `Sheet ${picCounter}` : `<Picture ${picCounter}>`));
             picCounter++;
           }
         });

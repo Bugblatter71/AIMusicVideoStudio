@@ -101,10 +101,9 @@ def make_filmstrip(file_path: Path, output_file: Path | None = None, duration_se
 
     if output_file is None:
         resolved = file_path.resolve()
-        renders_anc = next((p for p in resolved.parents if p.name.lower() in ("renders_v3", "renders")), None)
+        renders_anc = next((p for p in resolved.parents if p.name.lower() == "renders"), None)
         if renders_anc is not None:
-            has_v3 = renders_anc.name.lower() == "renders_v3" or (renders_anc.parent / "frames_v3").is_dir()
-            frames_dir = renders_anc.parent / ("frames_v3" if has_v3 else "frames")
+            frames_dir = renders_anc.parent / "frames"
             output_file = frames_dir / f"{file_path.stem}_strip.jpg"
         else:
             output_file = resolved.parent / f"{file_path.stem}_strip.jpg"

@@ -86,11 +86,11 @@ def _probe_audio_channels(ffmpeg: Path, media_path: Path) -> int:
 
 def _build_temp_project(root: Path, ffmpeg: Path, extra_scene: dict | None = None) -> tuple[ProjectContext, Path]:
     proj_dir = root / "proj"
-    (proj_dir / "work" / "renders_v3").mkdir(parents=True, exist_ok=True)
-    (proj_dir / "work" / "anchors_v3").mkdir(parents=True, exist_ok=True)
+    (proj_dir / "work" / "renders").mkdir(parents=True, exist_ok=True)
+    (proj_dir / "work" / "anchors").mkdir(parents=True, exist_ok=True)
     (proj_dir / "work" / "audio_stems").mkdir(parents=True, exist_ok=True)
-    (proj_dir / "work" / "jobs_v3").mkdir(parents=True, exist_ok=True)
-    anchor_jpg = proj_dir / "work" / "anchors_v3" / "A01.jpg"
+    (proj_dir / "work" / "jobs").mkdir(parents=True, exist_ok=True)
+    anchor_jpg = proj_dir / "work" / "anchors" / "A01.jpg"
     _make_jpg(ffmpeg, anchor_jpg)
     _make_wav(ffmpeg, proj_dir / "work" / "audio_stems" / "male.wav", dur=2.0, freq=330)
     _make_wav(ffmpeg, proj_dir / "work" / "audio_stems" / "female.wav", dur=2.0, freq=660)
@@ -128,12 +128,12 @@ def _build_temp_project(root: Path, ffmpeg: Path, extra_scene: dict | None = Non
                 "female": "work/audio_stems/female.wav",
             },
             "directories": {
-                "renders": "work/renders_v3",
-                "anchors": "work/anchors_v3",
-                "jobs": "work/jobs_v3",
-                "audio_slices": "work/audio_v3",
-                "masks": "work/masks_v3",
-                "trimmed": "work/trimmed_v3",
+                "renders": "work/renders",
+                "anchors": "work/anchors",
+                "jobs": "work/jobs",
+                "audio_slices": "work/audio",
+                "masks": "work/masks",
+                "trimmed": "work/trimmed",
             },
         },
         "models": {
@@ -152,7 +152,7 @@ def _build_temp_project(root: Path, ffmpeg: Path, extra_scene: dict | None = Non
             },
         },
         "characters": {},
-        "anchors": [{"id": "A01", "file": "work/anchors_v3/A01.jpg"}],
+        "anchors": [{"id": "A01", "file": "work/anchors/A01.jpg"}],
         "scenes": [sc],
     }
     cfg_path = proj_dir / "roi_test.json"
@@ -494,7 +494,16 @@ class TestDuetRoiAndLipSyncRepair(unittest.TestCase):
             createElement: mkEl,
           },
           window: {
-            state: { currentSlug: "demo", selectedSceneIdx: 0, projectData: { scenes: [sc], models: { default_backend: "minimax" } }, models: {} },
+            state: {
+              currentSlug: "demo",
+              selectedSceneIdx: 0,
+              projectData: { scenes: [sc], models: { default_backend: "minimax", default_video_renderer: 1 } },
+              models: {
+                video_renderers: { "1": { name: "FL2VA" }, "9": { name: "Ref2VA" } },
+                fal_video_renderers: { fal_kling_26: { name: "Kling 2.6", backend: "fal" } },
+                minimax_video_renderers: {},
+              },
+            },
             resolveEffectiveSceneBackend: () => "minimax",
             getEffectiveProjectBackend: () => "minimax",
             recordHistorySnapshot: () => {},
@@ -509,8 +518,23 @@ class TestDuetRoiAndLipSyncRepair(unittest.TestCase):
         vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
         ctx.window.ensureDuetPassControls(grp);
         ctx.window.syncDuetPassControlsUI(sc);
+        const rSelM = els.get("sceneRendererM");
+        const rSelF = els.get("sceneRendererF");
         const selF = els.get("sceneBackendF");
         const selRoi = els.get("scenePass2Roi");
+        if (!rSelM || !rSelF) throw new Error("Pass-level model selectors missing");
+        rSelM.value = "9"; rSelM.dispatchEvent({ type: "change", target: rSelM });
+        rSelF.value = "fal_kling_26"; rSelF.dispatchEvent({ type: "change", target: rSelF });
+        if (sc.renderer_m !== 9 || sc.renderer_f !== "fal_kling_26") {
+          throw new Error("Pass model bindings failed: " + JSON.stringify(sc));
+        }
+        if (ctx.window.resolveDuetPassBackend(sc, 2) !== "fal" || !selF.disabled || selF.value !== "fal") {
+          throw new Error("Dedicated cloud pass model must auto-lock Pass 2 engine to fal");
+        }
+        rSelF.value = ""; rSelF.dispatchEvent({ type: "change", target: rSelF });
+        if (sc.renderer_f !== undefined || selF.disabled) {
+          throw new Error("Clearing Pass 2 model should delete renderer_f and unlock backend");
+        }
         selF.value = "local"; selF.dispatchEvent({ type: "change", target: selF });
         selRoi.value = "tight_performer"; selRoi.dispatchEvent({ type: "change", target: selRoi });
         if (sc.backend_f !== "local" || sc.pass2_roi_mode !== "tight_performer") {
@@ -707,6 +731,289 @@ class TestDuetRoiAndLipSyncRepair(unittest.TestCase):
             self.assertIsNone(meta_local)
             self.assertEqual(Path(updated_local["video_guide"]), local_p1)
             self.assertEqual(Path(updated_local["image_start"]), anchor_jpg)
+
+    def test_09_resolve_roi_border_px_ltx2_mvga_and_pass2_meta(self):
+        ltx_cfg = {"model_type": "ltx2_25_22B_distilled", "video_prompt_type": "MVGA"}
+        h3_cfg = {"model_type": "minimax_h3_fl2va_pruned_pdd", "video_prompt_type": "GVA"}
+        self.assertEqual(duet_roi.resolve_roi_border_px(960, 1088, ltx_cfg), 128)
+        self.assertEqual(duet_roi.resolve_roi_border_px(960, 1088, h3_cfg), 64)
+        self.assertEqual(duet_roi.resolve_roi_border_px(544, 544, ltx_cfg), 64)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ctx, _ = _build_temp_project(
+                root, self.ffmpeg,
+                {"resolution": "6", "split_x": 0.48, "pass2_roi_mode": "half_split"},
+            )
+            p1_hd = ctx.renders_dir / "S01_Pass1_1920x1088.mp4"
+            _make_av_mp4(self.ffmpeg, p1_hd, w=1920, h=1088, fps=24, dur=0.15, channels=2)
+            sc = dict(ctx.scenes[0], split_x=0.48, pass2_roi_mode="half_split")
+            base_task = {
+                "output_filename": "S01_Pass2_Final_1920x1088",
+                "image_start": str(ctx.anchors_dir / "A01.jpg"),
+                "video_guide": str(p1_hd),
+                "resolution": "1920x1088",
+                "video_length": 9,
+            }
+            _, meta_ltx = duet_roi.prepare_local_roi_pass2_task(
+                ctx, p1_hd, dict(base_task, **ltx_cfg), sc, "1920x1088", 9, 24.0,
+            )
+            _, meta_h3 = duet_roi.prepare_local_roi_pass2_task(
+                ctx, p1_hd, dict(base_task, **h3_cfg), sc, "1920x1088", 9, 24.0,
+            )
+            self.assertEqual(meta_ltx["border_px"], 128)
+            self.assertEqual(meta_h3["border_px"], 64)
+
+    def test_10_duet_repair_js_ltx2_mvga_warning_and_split_overlay(self):
+        js_path = WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "duet_repair.js"
+        script = r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const els = new Map();
+        const mkEl = (tag) => {
+          const el = {
+            tagName: tag.toUpperCase(), style: {}, dataset: {}, options: [], children: [],
+            listeners: {}, className: "", value: "", textContent: "",
+            addEventListener(ev, fn) { (this.listeners[ev] ||= []).push(fn); },
+            dispatchEvent(ev) { (this.listeners[ev.type] || []).forEach((fn) => fn(ev)); },
+            appendChild(c) { c.parentElement = this; this.children.push(c); if (c.id) els.set(c.id, c); return c; },
+            insertBefore(c) { return this.appendChild(c); },
+          };
+          Object.defineProperty(el, "innerHTML", {
+            get() { return this._html || ""; },
+            set(v) {
+              this._html = String(v);
+              const ids = [...this._html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+              ids.forEach((id) => {
+                if (!els.has(id)) {
+                  const child = mkEl("div");
+                  child.id = id;
+                  child.options = [{ textContent: "" }];
+                  els.set(id, child);
+                }
+              });
+            }
+          });
+          return el;
+        };
+        const grp = mkEl("div"); grp.id = "videoRendererGroup"; els.set("videoRendererGroup", grp);
+        const hint = mkEl("div"); hint.id = "sceneFalHint"; grp.appendChild(hint); els.set("sceneFalHint", hint);
+        const overlay = mkEl("div"); overlay.id = "clipSplitOverlay"; overlay.style.display = "none"; els.set("clipSplitOverlay", overlay);
+        const splitInp = mkEl("input"); splitInp.id = "sceneSplitX"; splitInp.value = "0.48"; els.set("sceneSplitX", splitInp);
+        const splitRng = mkEl("input"); splitRng.id = "sceneSplitXRange"; splitRng.value = "0.48"; els.set("sceneSplitXRange", splitRng);
+
+        const scLtx = { id: "S12a", mode: "duet_method_b", split_x: 0.48, start: 67.3, end: 74.6, renderer: 14, stem_m: "male", stem_f: "female" };
+        const scStereo = { id: "S06", mode: "duet_method_a", split_x: 0.5, start: 30, end: 36, renderer: 14 };
+        const ctx = vm.createContext({
+          document: { getElementById: (id) => els.get(id) || null, createElement: mkEl },
+          window: {
+            state: {
+              currentSlug: "demo",
+              selectedSceneIdx: 0,
+              projectData: { scenes: [scLtx, scStereo], models: { default_backend: "local", default_video_renderer: 14 } },
+              models: {
+                video_renderers: {
+                  "1": { name: "FL2VA", model_type: "minimax_h3_fl2va_pruned_pdd", pass2_video_prompt_type: "GVA" },
+                  "9": { name: "Ref2VA", model_type: "minimax_h3_ref2va_pruned", pass2_video_prompt_type: "GVA" },
+                  "14": { name: "LTX-2.5", model_type: "ltx2_25_22B_distilled", pass2_video_prompt_type: "MVGA" },
+                },
+                fal_video_renderers: {},
+                minimax_video_renderers: {},
+              },
+            },
+            resolveEffectiveSceneBackend: () => "local",
+            getEffectiveProjectBackend: () => "local",
+            syncSceneBackendUI: (s) => ctx.window.syncDuetPassControlsUI(s),
+          },
+        });
+        ctx.window.window = ctx.window;
+        vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+
+        // Full-frame inherited #14 triggers ltx2_duet_mvga_seam; explicit #9 or duet_method_a or cloud clears it
+        const wFull = ctx.window.evaluateComboWarnings(scLtx);
+        if (!wFull.some((w) => w.id === "ltx2_duet_mvga_seam")) throw new Error("Expected ltx2_duet_mvga_seam on Full Frame LTX-2 #14");
+        const wInheritDef = ctx.window.evaluateComboWarnings({ id: "S12b", mode: "duet_method_b", stem_m: "m", stem_f: "f" });
+        if (!wInheritDef.some((w) => w.id === "ltx2_duet_mvga_seam")) throw new Error("Expected inherited default #14 to warn");
+        if (ctx.window.evaluateComboWarnings(scLtx, { renderer_f: 9 }).some((w) => w.id === "ltx2_duet_mvga_seam")) throw new Error("H3 #9 should not warn MVGA");
+        if (ctx.window.evaluateComboWarnings(scStereo).some((w) => w.id === "ltx2_duet_mvga_seam")) throw new Error("duet_method_a should not warn MVGA");
+        const wRep = ctx.window.evaluateComboWarnings(scLtx, null, { isRepair: true, backend: "local", roi_mode: "half_split", side: "right" });
+        if (!wRep.some((w) => w.id === "ltx2_duet_mvga_seam")) throw new Error("Local LTX-2 ROI repair should warn MVGA");
+
+        ctx.window.ensureDuetPassControls(grp);
+        ctx.window.syncDuetPassControlsUI(scLtx);
+        if (!hint.textContent.includes("Local MVGA (Full Mask, $0)") || !hint.textContent.includes("MVGA blends ~10%")) {
+          throw new Error("Unexpected sceneFalHint: " + hint.textContent);
+        }
+        if (overlay.style.display !== "block" || !overlay.innerHTML.includes("Split X 48%") || !overlay.innerHTML.includes("MVGA ~10% blend")) {
+          throw new Error("Unexpected overlay on S12a: " + overlay.innerHTML);
+        }
+        splitInp.value = "0.58";
+        splitInp.dispatchEvent({ type: "input", target: splitInp });
+        if (!overlay.innerHTML.includes("Split X 58%")) throw new Error("Split X input did not live-update overlay");
+
+        ctx.window.state.selectedSceneIdx = 1;
+        ctx.window.syncDuetPassControlsUI(scStereo);
+        if (overlay.style.display !== "none") throw new Error("Expected Stereo Duet to hide Split X overlay");
+        console.log("LTX2_MVGA_JS_OK");
+        """
+        res = subprocess.run(["node", "-e", script, str(js_path)], capture_output=True, text=True, check=True)
+        self.assertIn("LTX2_MVGA_JS_OK", res.stdout)
+
+    def test_11_interactive_video_roi_overlay_master_and_clip_dragging(self):
+        duet_js = WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "duet_repair.js"
+        overlay_js = WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "video_roi_overlay.js"
+        py_half = duet_roi.compute_roi_box(1920, 1088, split_x=0.48, side="right", roi_mode="half_split")
+        py_tight = duet_roi.compute_roi_box(1920, 1088, split_x=0.48, side="right", roi_mode="tight_performer")
+        py_cust = duet_roi.compute_roi_box(1920, 1088, split_x=0.48, side="right", roi_mode="custom", custom_box=[0.40, 0.08, 0.96, 0.88])
+
+        script = r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const els = new Map();
+        const docListeners = {};
+        const mkEl = (tag, id = "") => {
+          const el = {
+            tagName: tag.toUpperCase(), id, style: {}, dataset: {}, options: [], children: [],
+            listeners: {}, className: "", value: "", textContent: "", paused: true, currentTime: 0,
+            videoWidth: 1920, videoHeight: 1088,
+            addEventListener(ev, fn) { (this.listeners[ev] ||= []).push(fn); },
+            dispatchEvent(ev) { (this.listeners[ev.type] || []).forEach((fn) => fn(ev)); },
+            appendChild(c) { c.parentElement = this; this.children.push(c); if (c.id) els.set(c.id, c); return c; },
+            insertBefore(c) { return this.appendChild(c); },
+            getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 566.67 }),
+          };
+          Object.defineProperty(el, "innerHTML", {
+            get() { return this._html || ""; },
+            set(v) {
+              this._html = String(v);
+              const ids = [...this._html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+              ids.forEach((cid) => {
+                if (!els.has(cid)) {
+                  const child = mkEl("div", cid);
+                  child.options = [{ textContent: "" }];
+                  els.set(cid, child);
+                }
+              });
+            }
+          });
+          if (id) els.set(id, el);
+          return el;
+        };
+        const body = mkEl("body", "body");
+        mkEl("div", "videoRendererGroup");
+        mkEl("div", "sceneFalHint");
+        mkEl("div", "clipSplitOverlay");
+        mkEl("div", "masterRoiOverlay");
+        mkEl("video", "clipVideoPlayer");
+        const masterVid = mkEl("video", "masterVideoPlayer");
+        mkEl("audio", "audioElement");
+        const toggleBtn = mkEl("button", "btnToggleMasterRoiOverlay");
+        mkEl("input", "sceneSplitX").value = "0.48";
+        mkEl("input", "sceneSplitXRange").value = "0.48";
+        mkEl("span", "sceneSplitXVal");
+        mkEl("select", "scenePass2Roi");
+        mkEl("div", "scenePass2RoiSideWrap");
+        mkEl("div", "scenePass2RoiBoxWrap");
+        mkEl("input", "scenePass2RoiBox");
+
+        const sc0 = { id: "S01", mode: "solo", start: 0, end: 30, resolution: "6" };
+        const sc1 = { id: "S12a", mode: "duet_method_b", split_x: 0.48, pass2_roi_mode: "half_split", start: 67.3, end: 74.6, renderer: 14, resolution: "6", stem_m: "m", stem_f: "f" };
+        let editCommitted = 0;
+
+        const ctx = vm.createContext({
+          document: {
+            body,
+            getElementById: (id) => els.get(id) || null,
+            createElement: (t) => mkEl(t),
+            addEventListener(ev, fn) { (docListeners[ev] ||= []).push(fn); },
+          },
+          window: {
+            state: {
+              currentSlug: "demo",
+              selectedSceneIdx: 0,
+              playheadTime: 10.0,
+              projectData: { scenes: [sc0, sc1], models: { default_backend: "local", default_video_renderer: 14, default_video_resolution: "6" } },
+              models: {
+                video_renderers: { "14": { name: "LTX-2.5", model_type: "ltx2_25_22B_distilled", pass2_video_prompt_type: "MVGA" } },
+                fal_video_renderers: {},
+                minimax_video_renderers: {},
+              },
+            },
+            resolveEffectiveSceneBackend: () => "local",
+            getEffectiveProjectBackend: () => "local",
+            selectScene: (idx) => { ctx.window.state.selectedSceneIdx = idx; },
+            beginEditSession: () => {},
+            commitEditSession: () => { editCommitted++; },
+            markProjectDirty: () => {},
+            addEventListener: () => {},
+          },
+          setTimeout: (fn) => fn(),
+        });
+        ctx.window.window = ctx.window;
+        vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+        vm.runInContext(fs.readFileSync(process.argv[2], "utf8"), ctx);
+
+        // 1. Verify JS computeRoiBoxJS matches Python compute_roi_box pixel-for-pixel
+        const bHalf = ctx.window.computeRoiBoxJS(1920, 1088, 0.48, "right", "half_split");
+        const bTight = ctx.window.computeRoiBoxJS(1920, 1088, 0.48, "right", "tight_performer");
+        const bCust = ctx.window.computeRoiBoxJS(1920, 1088, 0.48, "right", "custom", [0.40, 0.08, 0.96, 0.88]);
+        console.log("BOXES", JSON.stringify([[bHalf.cx, bHalf.cy, bHalf.cw, bHalf.ch], [bTight.cx, bTight.cy, bTight.cw, bTight.ch], [bCust.cx, bCust.cy, bCust.cw, bCust.ch]]));
+
+        // 2. When Master Video plays into S12a (t=70.0s), masterRoiOverlay auto-displays S12a Split X + Half Split ROI box
+        masterVid.paused = false;
+        masterVid.currentTime = 70.0;
+        masterVid.dispatchEvent({ type: "timeupdate" });
+        const masterOv = els.get("masterRoiOverlay");
+        if (masterOv.style.display !== "block" || !masterOv.innerHTML.includes("S12a Split X 48%") || !masterOv.innerHTML.includes("Half Split ROI")) {
+          throw new Error("Master overlay failed to track S12a at t=70s: " + masterOv.innerHTML);
+        }
+
+        // 3. Simulate dragging Split X handle on Master Video to x=320px / 1000px = 0.32
+        const fakeStage = { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1000, height: 566.67 }) };
+        const splitHandle = {
+          dataset: { handle: "split_x", target: "master" },
+          closest: (sel) => (sel === ".roi-drag-handle" ? splitHandle : fakeStage),
+        };
+        masterOv.dispatchEvent({ type: "mousedown", target: splitHandle, clientX: 480, clientY: 200 });
+        (docListeners.mousemove || []).forEach((fn) => fn({ clientX: 320, clientY: 200 }));
+        (docListeners.mouseup || []).forEach((fn) => fn({}));
+        if (sc1.split_x !== 0.32 || String(els.get("sceneSplitX").value) !== "0.32" || ctx.window.state.selectedSceneIdx !== 1) {
+          throw new Error("Dragging Split X on Master failed: " + JSON.stringify(sc1));
+        }
+
+        // 4. Simulate dragging ROI box left edge (box_w) right by +100px (+0.10) -> auto-promotes to custom ROI box & hides unused Split X guide
+        const boxHandle = {
+          dataset: { handle: "box_w", target: "master" },
+          closest: (sel) => (sel === ".roi-drag-handle" ? boxHandle : fakeStage),
+        };
+        masterOv.dispatchEvent({ type: "mousedown", target: boxHandle, clientX: 320, clientY: 200 });
+        (docListeners.mousemove || []).forEach((fn) => fn({ clientX: 420, clientY: 200 }));
+        (docListeners.mouseup || []).forEach((fn) => fn({}));
+        if (sc1.pass2_roi_mode !== "custom" || !Array.isArray(sc1.pass2_roi_box) || sc1.pass2_roi_box[0] <= 0.35) {
+          throw new Error("Dragging ROI box edge failed to promote to custom box: " + JSON.stringify(sc1));
+        }
+        if (masterOv.innerHTML.includes("Split X") || !masterOv.innerHTML.includes("S12a · Custom ROI")) {
+          throw new Error("Custom ROI mode should show only bounding box with scene prefix, not Split X: " + masterOv.innerHTML);
+        }
+
+        // 5. Toggle Guides Off hides overlays; clicking again restores them
+        toggleBtn.dispatchEvent({ type: "click" });
+        if (masterOv.style.display !== "none" || !toggleBtn.textContent.includes("Off")) {
+          throw new Error("Expected Guides toggle to hide master overlay");
+        }
+        toggleBtn.dispatchEvent({ type: "click" });
+        if (masterOv.style.display !== "block" || !toggleBtn.textContent.includes("On")) {
+          throw new Error("Expected Guides toggle to restore master overlay");
+        }
+        console.log("OVERLAY_DRAG_OK", editCommitted);
+        """
+        res = subprocess.run(["node", "-e", script, str(duet_js), str(overlay_js)], capture_output=True, text=True, check=True)
+        self.assertIn("OVERLAY_DRAG_OK", res.stdout)
+        box_line = next(line for line in res.stdout.splitlines() if line.startswith("BOXES "))
+        js_boxes = json.loads(box_line[len("BOXES "):])
+        self.assertEqual(tuple(js_boxes[0]), py_half)
+        self.assertEqual(tuple(js_boxes[1]), py_tight)
+        self.assertEqual(tuple(js_boxes[2]), py_cust)
 
 
 if __name__ == "__main__":

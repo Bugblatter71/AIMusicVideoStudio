@@ -54,61 +54,82 @@ function hasAnyOtherEngineRunning(excludeFn = "") {
 window.hasAnyOtherEngineRunning = hasAnyOtherEngineRunning;
 window.activeEngineCount = () => Math.max(_ensureActiveJobs().size, window.ENGINES.filter((b) => state.engineLive?.[b]?.running).length);
 
+function _clearTransientRenderMeta(t) {
+  ["estimated_remaining_seconds", "estimated_remaining_str", "pct", "step", "window_pct"].forEach((k) => delete t[k]);
+}
+
 function reconcileQueueStatuses(queue, st, engStatus, isRunning) {
+  const activeProj = st?.current_project || state.renderStatus?.current_project, curProj = state.currentSlug;
+  if (activeProj && curProj && activeProj !== curProj) {
+    queue.forEach((t) => { if (t.status === "rendering") { t.status = t.needs_render === false ? "skipped" : "queued"; _clearTransientRenderMeta(t); } });
+    return;
+  }
   const actStatuses = [];
   if (st?.engines) {
     Object.values(st.engines).forEach((ei) => {
-      if (Array.isArray(ei?.active_tasks) && ei.active_tasks.length) {
-        ei.active_tasks.forEach((tk) => {
-          const isLive = tk.engine_status?.state === "rendering" || tk.engine_status?.state === "cancelling";
-          const es = isLive ? tk.engine_status : { filename: tk.filename };
-          if (es.filename) actStatuses.push(es);
-        });
-      } else if (ei?.running && (ei.filename || ei.engine_status?.filename)) {
-        const isLive = ei.engine_status?.state === "rendering" || ei.engine_status?.state === "cancelling";
-        actStatuses.push(isLive ? ei.engine_status : { filename: ei.filename || ei.engine_status?.filename });
-      }
+      const list = (Array.isArray(ei?.active_tasks) && ei.active_tasks.length) ? ei.active_tasks : (ei?.running && (ei.filename || ei.engine_status?.filename) ? [ei] : []);
+      list.forEach((tk) => {
+        const isLive = tk.engine_status?.state === "rendering" || tk.engine_status?.state === "cancelling";
+        const es = isLive ? tk.engine_status : { filename: tk.filename || tk.engine_status?.filename };
+        if (es.filename) actStatuses.push(es);
+      });
     });
   }
   if (actStatuses.length === 0 && engStatus && engStatus.state === "rendering" && engStatus.filename) actStatuses.push(engStatus);
   const actSet = new Set();
   actStatuses.forEach((es) => {
-    const engFn = es.filename;
-    const engStem = engFn.replace(/\.mp4$/i, "");
-    if (engFn) actSet.add(engFn);
-    if (engStem) actSet.add(engStem);
+    const fn = es.filename, stem = fn.replace(/\.(mp4|jpg|jpeg|png|webp)$/i, "");
+    if (fn) actSet.add(fn);
+    if (stem) actSet.add(stem);
     queue.forEach((t) => {
-      if (engFn && (t.filename === engFn || t.output_filename === engFn || t.output_filename === engStem)) {
+      if (fn && (t.filename === fn || t.output_filename === fn || t.output_filename === stem)) {
         t.status = "rendering";
-        if (es.pct !== undefined) t.pct = es.pct;
-        if (es.step !== undefined) t.step = es.step;
-        ["phase", "raw_phase", "total_steps", "window_index", "window_count", "window_pct"].forEach((k) => { if (es[k] !== undefined) t[k] = es[k]; });
+        ["pct", "step", "phase", "raw_phase", "total_steps", "window_index", "window_count", "window_pct"].forEach((k) => { if (es[k] !== undefined) t[k] = es[k]; });
       }
     });
   });
   const hasAuthEngines = Boolean(st?.engines);
   queue.forEach((t) => {
     const inAct = actSet.has(t.filename) || actSet.has(t.output_filename);
+    const sseCur = state.sseTaskStatuses?.get(t.filename) || state.sseTaskStatuses?.get(t.output_filename);
     if (hasAuthEngines && !inAct) {
-      const sseCur = state.sseTaskStatuses.get(t.filename) || state.sseTaskStatuses.get(t.output_filename);
-      if (sseCur && sseCur.status === "rendering") {
-        state.sseTaskStatuses.delete(t.filename);
-        state.sseTaskStatuses.delete(t.output_filename);
-      }
-      if (t.status === "rendering") t.status = t.needs_render ? "queued" : "skipped";
+      if (sseCur?.status === "rendering") { state.sseTaskStatuses.delete(t.filename); state.sseTaskStatuses.delete(t.output_filename); }
+      if (t.status === "rendering") { t.status = sseCur?.status === "completed" ? "completed" : (t.needs_render === false ? "skipped" : "queued"); _clearTransientRenderMeta(t); }
       return;
     }
-    const sse = isRunning ? (state.sseTaskStatuses.get(t.filename) || state.sseTaskStatuses.get(t.output_filename)) : null;
+    const sse = isRunning ? sseCur : null;
     if (sse && sse.status === "rendering" && t.status !== "completed" && t.status !== "skipped") {
       t.status = "rendering";
       t.pct = (sse.pct != null || t.pct != null) ? Math.max(Number(t.pct) || 0, Number(sse.pct) || 0) : (sse.pct === null ? null : t.pct);
       t.step = (sse.step != null || t.step != null) ? Math.max(Number(t.step) || 0, Number(sse.step) || 0) : (sse.step === null ? null : t.step);
       ["phase", "raw_phase", "total_steps", "window_index", "window_count", "window_pct"].forEach((k) => { if (sse[k] !== undefined) t[k] = sse[k]; });
     }
-    if (!isRunning && t.status === "rendering") t.status = t.needs_render ? "queued" : "skipped";
+    if (!isRunning && t.status === "rendering") { t.status = t.needs_render === false ? "skipped" : "queued"; _clearTransientRenderMeta(t); }
   });
 }
 window.reconcileQueueStatuses = reconcileQueueStatuses;
+
+window.reconcileSseActiveTask = function (match, evBackend) {
+  if (!match || normQueueEngine(evBackend) !== "local") return;
+  const activeSid = String(match.scene_id || "").trim().toUpperCase();
+  (state.renderQueue || []).forEach((t) => {
+    if (t === match || t.status !== "rendering" || normQueueEngine(t.backend_override || t.backend) !== "local") return;
+    if (t.filename) state.sseTaskStatuses?.delete(t.filename);
+    if (t.output_filename) state.sseTaskStatuses?.delete(t.output_filename);
+    const sameSceneP1 = activeSid && match.pass === 2 && t.pass === 1 && String(t.scene_id || "").trim().toUpperCase() === activeSid;
+    t.status = (sameSceneP1 || t.needs_render === false) ? "completed" : "queued";
+    _clearTransientRenderMeta(t);
+  });
+};
+
+window.syncRenderStatusWithQueue = function (json) {
+  const q = state.renderQueue;
+  if (!json?.engines || !Array.isArray(q) || !q.length) return;
+  const renKey = () => q.filter((t) => t.status === "rendering").map((t) => t.output_filename || t.filename).join("|");
+  const before = renKey();
+  reconcileQueueStatuses(q, json, json.engine_status, Boolean(json.running || json.queue_worker_active));
+  if (before !== renKey() && typeof window.renderQueueUI === "function") window.renderQueueUI();
+};
 
 function resetMultiEngineUI() {
   state.engineLive = { local: null, fal: null, minimax: null };
@@ -213,6 +234,12 @@ function handleMultiEngineSSEEvent(tag, payload) {
 window.handleMultiEngineSSEEvent = handleMultiEngineSSEEvent;
 
 function promoteActiveRenderTaskFromState(excludeFn = "") {
+  const activeProj = state.renderStatus?.current_project;
+  if (activeProj && state.currentSlug && activeProj !== state.currentSlug) {
+    state.isEngineRunning = false;
+    state.activeRenderTask = null;
+    return false;
+  }
   const exStem = String(excludeFn || "").replace(/\.(mp4|jpg|png|webp)$/i, "");
   const q = state.renderQueue || [];
   const nextSlot = Array.from(_ensureActiveJobs().values()).find((j) => j.running && (!exStem || j.stem !== exStem));
@@ -256,16 +283,19 @@ function syncRenderAllButtonUI() {
   const runBtn = document.getElementById("btnRenderAll");
   if (!runBtn) return;
   const queue = state.renderQueue || [];
-  const running = Boolean(state.isEngineRunning || state.activeRenderTask?.status === "rendering" || queue.some((t) => t.status === "rendering"));
-  runBtn.textContent = running ? ((window.activeEngineCount?.() || 0) > 1 ? "⏹ Stop All" : "⏹ Stop") : "▶ Run";
+  const activeProj = state.renderStatus?.current_project;
+  const otherBusy = Boolean(activeProj && state.currentSlug && activeProj !== state.currentSlug && (state.renderStatus?.running || state.renderStatus?.queue_worker_active || (window.activeEngineCount?.() || 0) > 0));
+  const running = Boolean(!otherBusy && (state.isEngineRunning || state.activeRenderTask?.status === "rendering" || queue.some((t) => t.status === "rendering")));
+  runBtn.textContent = otherBusy ? `⏳ Busy (${activeProj})` : (running ? ((window.activeEngineCount?.() || 0) > 1 ? "⏹ Stop All" : "⏹ Stop") : "▶ Run");
   runBtn.classList.toggle("btn-danger", running);
-  runBtn.classList.toggle("btn-primary", !running);
-  runBtn.title = running ? "Stop all active engines and pause queue" : "Run pending items for checked engines";
+  runBtn.classList.toggle("btn-primary", !running && !otherBusy);
+  runBtn.title = otherBusy ? `Render engine is active on project '${activeProj}'. Stop it or wait for completion.` : (running ? "Stop all active engines and pause queue" : "Run pending items for checked engines");
 }
 window.syncRenderAllButtonUI = syncRenderAllButtonUI;
 
 function syncMultiEngineStatusUI(json) {
   if (!json) return;
+  state.renderStatus = { ...(state.renderStatus || {}), ...json };
   if (json.enabled_engines) {
     state.enabledEngines = { ...getEnabledEnginesMap(), ...json.enabled_engines };
     document.querySelectorAll(".chk-engine-run").forEach((chk) => {
@@ -371,7 +401,14 @@ function renderMultiEngineActiveLanes() {
   _syncHeroLaneChrome(true);
 
   container.style.display = "flex";
-  container.innerHTML = active.map((slot) => {
+  const activeProj = state.renderStatus?.current_project;
+  const otherBusyBanner = (activeProj && state.currentSlug && activeProj !== state.currentSlug)
+    ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:4px 8px;border-radius:5px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.35);font-size:11px;color:#fcd34d;">
+        <span>🔒 Engine busy on project <b>${typeof escapeHtml === "function" ? escapeHtml(activeProj) : activeProj}</b> — Queue/Done lists below remain isolated to this project.</span>
+        <button type="button" onclick="window.selectProject?.('${String(activeProj).replace(/'/g, "\\'")}')" style="padding:1px 8px;font-size:10px;background:rgba(245,158,11,0.2);color:#fef3c7;border:1px solid rgba(245,158,11,0.45);border-radius:4px;cursor:pointer;">Switch to ${typeof escapeHtml === "function" ? escapeHtml(activeProj) : activeProj}</button>
+      </div>`
+    : "";
+  container.innerHTML = otherBusyBanner + active.map((slot) => {
     const b = slot.backend || "local";
     const meta = window.ENGINE_META[b] || window.ENGINE_META.local;
     const hasNull = slot.pct === null || slot.pct === undefined;
@@ -490,7 +527,159 @@ function initMultiEngineControls() {
     if (!btn || !btn.dataset.engine) return;
     window.stopActiveRender?.(btn.dataset.engine, btn.dataset.filename || null);
   });
+
+  document.querySelectorAll?.("#queueSortControls .btn-queue-sort")?.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.sort) window.sortRenderQueue?.(btn.dataset.sort);
+    });
+  });
+
+  document.getElementById("queueTableHead")?.addEventListener("click", (e) => {
+    const th = e.target?.closest?.("th[data-sort]");
+    if (th && th.dataset.sort && (state.queueFilter || "queued") !== "completed") {
+      window.sortRenderQueue?.(th.dataset.sort);
+    }
+  });
 }
+
+(function () {
+  const SORT_LABELS = { scene: "🎬 Scene Order", engine: "⚙️ Engine", length: "⏱ Length" };
+  const ENGINE_RANK = { local: 0, fal: 1, minimax: 2 };
+
+  function _passNumOf(t) {
+    return t?.pass || (/Pass1/i.test(t?.output_filename || t?.filename || "") ? 1 : (/Pass2/i.test(t?.output_filename || t?.filename || "") ? 2 : null));
+  }
+
+  function _groupUnitsForSort(queue) {
+    const unitMap = new Map(), units = [];
+    (Array.isArray(queue) ? queue : []).forEach((t, i) => {
+      const pNum = _passNumOf(t), sid = String(t?.scene_id || "").trim().toUpperCase();
+      const k = (sid && pNum) ? `sid:${sid}` : `idx:${i}`;
+      if (!unitMap.has(k)) { const u = []; unitMap.set(k, u); units.push(u); }
+      unitMap.get(k).push(t);
+    });
+    units.forEach((u) => { if (u.length > 1) u.sort((a, b) => (_passNumOf(a) || 0) - (_passNumOf(b) || 0)); });
+    return units;
+  }
+
+  function _sceneOrderKey(unit) {
+    const t0 = unit[0] || {};
+    const sid = String(t0.scene_id || "").trim().toUpperCase();
+    const scenes = window.state?.projectData?.scenes || [];
+    const idx = sid ? scenes.findIndex((s) => String(s?.id || "").trim().toUpperCase() === sid) : -1;
+    if (idx >= 0) return [0, idx, ""];
+    const m = (sid || String(t0.output_filename || t0.filename || "").split("_")[0].toUpperCase()).match(/^S0*(\d+)([A-Z]*)$/);
+    return m ? [1, parseInt(m[1], 10), m[2] || ""] : [2, Number(t0.idx) || 999999, sid];
+  }
+
+  function _cmpSceneOrder(uA, uB) {
+    const a = _sceneOrderKey(uA), b = _sceneOrderKey(uB);
+    if (a[0] !== b[0]) return a[0] - b[0];
+    if (a[1] !== b[1]) return a[1] - b[1];
+    return a[2] < b[2] ? -1 : (a[2] > b[2] ? 1 : 0);
+  }
+
+  function _unitEngPair(unit) {
+    const active = unit.filter((x) => x.status === "queued" || x.status === "failed");
+    const list = active.length ? active : unit;
+    const r0 = ENGINE_RANK[normQueueEngine(list[0]?.backend_override || list[0]?.backend)] ?? 9;
+    const r1 = list[1] ? (ENGINE_RANK[normQueueEngine(list[1]?.backend_override || list[1]?.backend)] ?? 9) : r0;
+    return [r0, r1];
+  }
+
+  function _unitLength(unit) {
+    const t0 = unit[0] || {};
+    if (t0.duration != null && Number.isFinite(Number(t0.duration))) return Number(t0.duration);
+    const sid = String(t0.scene_id || "").trim().toUpperCase();
+    const sc = (window.state?.projectData?.scenes || []).find((s) => String(s?.id || "").trim().toUpperCase() === sid);
+    return sc ? Math.max(0, Number(sc.end || 0) - Number(sc.start || 0)) : 0;
+  }
+
+  function syncQueueSortUI() {
+    const st = window.state || {};
+    const sortBar = document.getElementById("queueSortControls");
+    const filter = st.queueFilter || "queued";
+    if (sortBar) sortBar.style.display = filter === "completed" ? "none" : "inline-flex";
+    const cur = st.queueSort;
+    document.querySelectorAll?.("#queueSortControls .btn-queue-sort")?.forEach((btn) => {
+      const k = btn.dataset.sort;
+      const isAct = Boolean(cur && cur.key === k);
+      btn.classList?.toggle("active", isAct);
+      btn.textContent = `${SORT_LABELS[k] || k}${isAct ? (cur.dir === "desc" ? " ↓" : " ↑") : ""}`;
+    });
+    document.querySelectorAll?.("#queueTableHead th[data-sort]")?.forEach((th) => {
+      const k = th.dataset.sort;
+      const isAct = Boolean(cur && cur.key === k && filter !== "completed");
+      th.style.color = isAct ? "#7dd3fc" : "var(--text-muted)";
+      const ind = th.querySelector?.(".qsort-ind");
+      if (ind) ind.textContent = isAct ? (cur.dir === "desc" ? " ↓" : " ↑") : (filter !== "completed" ? " ↕" : "");
+    });
+  }
+  window.syncQueueSortUI = syncQueueSortUI;
+
+  window.clearQueueSortState = function () {
+    if (window.state) window.state.queueSort = null;
+    syncQueueSortUI();
+  };
+
+  window.sortRenderQueue = async function (sortKey, explicitDir = null) {
+    if (!window.state || !SORT_LABELS[sortKey]) return [];
+    const prev = window.state.queueSort;
+    const dir = explicitDir || ((prev && prev.key === sortKey) ? (prev.dir === "asc" ? "desc" : "asc") : "asc");
+    window.state.queueSort = { key: sortKey, dir };
+    const mult = dir === "desc" ? -1 : 1;
+
+    const units = _groupUnitsForSort(window.state.renderQueue || []);
+    const renU = [], sortU = [], otherU = [];
+    units.forEach((u, origIdx) => {
+      if (u.some((x) => x.status === "rendering")) renU.push(u);
+      else if (u.some((x) => x.status === "queued" || x.status === "failed")) sortU.push({ u, origIdx });
+      else otherU.push(u);
+    });
+
+    sortU.sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "scene") {
+        cmp = _cmpSceneOrder(a.u, b.u) * mult;
+      } else if (sortKey === "engine") {
+        const [eA0, eA1] = _unitEngPair(a.u), [eB0, eB1] = _unitEngPair(b.u);
+        cmp = (eA0 - eB0) * mult || (eA1 - eB1) * mult || _cmpSceneOrder(a.u, b.u);
+      } else if (sortKey === "length") {
+        const dA = _unitLength(a.u), dB = _unitLength(b.u);
+        cmp = (dA - dB) * mult || _cmpSceneOrder(a.u, b.u);
+      }
+      return cmp || (a.origIdx - b.origIdx);
+    });
+
+    const nextFlat = [...renU.flat(), ...sortU.map((x) => x.u).flat(), ...otherU.flat()];
+    nextFlat.forEach((t, i) => { t.idx = i + 1; t.total = nextFlat.length; });
+    window.state.renderQueue = nextFlat;
+    window.renderQueueUI?.();
+    syncQueueSortUI();
+
+    const order = sortU
+      .map(({ u }) => String(u[0]?.output_filename || u[0]?.filename || u[0]?.id || u[0]?.scene_id || "").replace(/\.(mp4|jpg|jpeg|png|webp)$/i, ""))
+      .filter(Boolean);
+    const slug = window.state.currentSlug;
+    if (slug && order.length > 0 && typeof fetch === "function") {
+      try {
+        const res = await fetch("/api/queue/reorder", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slug, order }),
+        });
+        const data = await res.json().catch(() => null);
+        if (res?.ok && data?.queue) {
+          if (typeof window.applyQueueApiResponse === "function") window.applyQueueApiResponse(data);
+          else window.state.renderQueue = data.queue;
+          window.renderQueueUI?.();
+          syncQueueSortUI();
+        }
+      } catch (e) {}
+    }
+    window.showToast?.(`Sorted queue by ${SORT_LABELS[sortKey].replace(/^[^\s]+\s+/, "")} (${dir === "desc" ? "↓" : "↑"})`);
+    return nextFlat;
+  };
+})();
 window.handleCompletedAssetSSE = function (tag, rawText) {
   let doneSid = "";
   const bIdx = String(rawText || "").indexOf("{");
@@ -520,9 +709,23 @@ window.handleCompletedAssetSSE = function (tag, rawText) {
     return window.state.doneQueue;
   }
 
+  const _FILL_DONE_KEYS = ["elapsed", "duration", "fal_endpoint", "resolution", "take_id", "take_number", "scene_id", "pass", "model_type", "backend"];
+
+  function _doneMatchDistance(ex, rec) {
+    if (!ex || ex.output_filename !== rec.output_filename) return null;
+    if (ex.take_id && rec.take_id) return ex.take_id === rec.take_id ? 0 : null;
+    const exT = Number(ex.completed_at || 0), recT = Number(rec.completed_at || 0);
+    if (Boolean(ex._fromSse) !== Boolean(rec._fromSse) && Math.abs(exT - recT) <= 60) return Math.abs(exT - recT);
+    if (Boolean(ex.take_id) !== Boolean(rec.take_id)) {
+      const tTake = ex.take_id ? exT : recT, tShadow = ex.take_id ? recT : exT;
+      return (tShadow - tTake >= -5 && tShadow - tTake <= 60) ? Math.abs(tShadow - tTake) : null;
+    }
+    return Math.abs(exT - recT) <= 5 ? Math.abs(exT - recT) : null;
+  }
+
   function _mergeOneDone(list, rawItem) {
     if (!rawItem || typeof rawItem !== "object") return;
-    const outFn = String(rawItem.output_filename || String(rawItem.filename || "").replace(/\.mp4$/i, "")).trim();
+    const outFn = String(rawItem.output_filename || String(rawItem.filename || "").replace(/\.(mp4|jpg|jpeg|png|webp)$/i, "")).trim();
     if (!outFn) return;
     const comp = rawItem.completed_at !== undefined && rawItem.completed_at !== null ? Number(rawItem.completed_at) : null;
     if (comp === null || isNaN(comp) || comp <= 0) return;
@@ -535,11 +738,32 @@ window.handleCompletedAssetSSE = function (tag, rawText) {
       needs_render: false,
       completed_at: comp,
     };
-    const tid = rec.take_id;
-    const hit = list.find((ex) => (tid && ex.take_id && ex.take_id === tid && ex.output_filename === outFn)
-      || (ex.output_filename === outFn && Math.abs(Number(ex.completed_at || 0) - comp) <= 5));
+    let hit = null, bestDist = null;
+    for (const ex of list) {
+      const dist = _doneMatchDistance(ex, rec);
+      if (dist !== null && (bestDist === null || dist < bestDist)) {
+        hit = ex; bestDist = dist;
+        if (dist === 0 && ex.take_id === rec.take_id) break;
+      }
+    }
     if (hit) {
-      ["elapsed", "duration", "fal_endpoint", "resolution", "take_id", "take_number", "scene_id", "pass", "model_type", "backend"].forEach((k) => {
+      if (rec.take_id && !hit.take_id) {
+        const saved = {};
+        _FILL_DONE_KEYS.forEach((k) => { if (hit[k] !== undefined && hit[k] !== null && hit[k] !== "") saved[k] = hit[k]; });
+        ["history_id", "take_id", "take_number", "completed_at", "reason", "elapsed", "duration", ..._FILL_DONE_KEYS].forEach((k) => {
+          if (rec[k] !== undefined && rec[k] !== null && rec[k] !== "") hit[k] = rec[k];
+        });
+        Object.keys(saved).forEach((k) => { if (hit[k] === undefined || hit[k] === null || hit[k] === "") hit[k] = saved[k]; });
+        delete hit._fromSse;
+        return;
+      }
+      if (hit._fromSse && !rec._fromSse) {
+        delete hit._fromSse;
+        ["history_id", "take_id", "take_number", "completed_at", "reason", "elapsed", "duration"].forEach((k) => {
+          if (rec[k] !== undefined && rec[k] !== null && rec[k] !== "") hit[k] = rec[k];
+        });
+      }
+      _FILL_DONE_KEYS.forEach((k) => {
         if ((hit[k] === undefined || hit[k] === null || hit[k] === "") && rec[k] !== undefined && rec[k] !== null && rec[k] !== "") hit[k] = rec[k];
       });
     } else {
@@ -562,8 +786,11 @@ window.handleCompletedAssetSSE = function (tag, rawText) {
       if (payload.filename && !base.filename) base.filename = payload.filename;
       if (payload.elapsed !== undefined && payload.elapsed !== null) base.elapsed = payload.elapsed;
       if (payload.completed_at !== undefined && payload.completed_at !== null) base.completed_at = payload.completed_at;
+      if (payload.take_id) base.take_id = payload.take_id;
+      if (payload.take_number !== undefined && payload.take_number !== null) base.take_number = payload.take_number;
     }
     if (!base.completed_at) base.completed_at = Math.floor(Date.now() / 1000);
+    base._fromSse = true;
     base.status = "completed";
     base.needs_render = false;
     _mergeOneDone(store, base);
@@ -585,14 +812,28 @@ window.handleCompletedAssetSSE = function (tag, rawText) {
     return merged;
   };
 
-  window.applyQueueApiResponse = function (data) {
+  window.isQueueEventForCurrentProject = function (evSlug = "") {
+    const st = window.state;
+    if (!st) return false;
+    const activeProj = String(evSlug || ((st.renderStatus?.running || st.renderStatus?.queue_worker_active) ? st.renderStatus?.current_project : "") || "").trim();
+    return !(activeProj && st.currentSlug && activeProj !== st.currentSlug);
+  };
+
+  window.applyQueueApiResponse = function (data, expectedSlug = null) {
     if (!window.state || !data) return;
-    window.preserveDoneQueueItems(window.state.renderQueue);
+    const curSlug = String(window.state.currentSlug || "").trim();
+    const respSlug = String(data.slug || expectedSlug || "").trim();
+    if (respSlug && curSlug && respSlug !== curSlug) return;
+    if (!window.state._renderQueueSlug || window.state._renderQueueSlug === curSlug) {
+      window.preserveDoneQueueItems(window.state.renderQueue);
+    }
     const store = _ensureDoneStore();
     if (Array.isArray(data.done_queue)) {
       data.done_queue.forEach((d) => _mergeOneDone(store, d));
     }
     if (Array.isArray(data.queue)) {
+      if (window.state._renderQueueSlug !== curSlug) window.state.queueSort = null;
+      window.state._renderQueueSlug = curSlug;
       window.preserveDoneQueueItems(data.queue);
       window.state.renderQueue = data.queue;
     }

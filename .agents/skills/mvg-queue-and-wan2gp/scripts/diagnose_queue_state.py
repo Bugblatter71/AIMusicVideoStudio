@@ -13,10 +13,7 @@ PROJECTS_DIR = WORKSPACE_ROOT / "projects"
 
 
 def _resolve_jobs_dir(proj_dir: Path) -> Path:
-    for cand in (proj_dir / "work" / "jobs_v3", proj_dir / "work" / "jobs"):
-        if cand.is_dir() and any(cand.glob("*.json")):
-            return cand
-    return proj_dir / "work" / "jobs_v3" if (proj_dir / "work" / "jobs_v3").is_dir() else (proj_dir / "work" / "jobs")
+    return proj_dir / "work" / "jobs"
 
 
 def diagnose_project(slug: str) -> dict:
@@ -33,7 +30,7 @@ def diagnose_project(slug: str) -> dict:
     status_file = jobs_dir / "engine_status.json"
     cancel_file = jobs_dir / "cancel_request.json"
     manifest_file = next(
-        (m for m in (proj_dir / "work" / "takes_manifest.json", proj_dir / "work" / "renders_v3" / "takes_manifest.json", proj_dir / "work" / "renders" / "takes_manifest.json") if m.is_file()),
+        (m for m in (proj_dir / "work" / "takes_manifest.json", proj_dir / "work" / "renders" / "takes_manifest.json") if m.is_file()),
         proj_dir / "work" / "takes_manifest.json",
     )
     ckpts_file = proj_dir / "checkpoints" / "index.json"

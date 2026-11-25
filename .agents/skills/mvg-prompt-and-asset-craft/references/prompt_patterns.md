@@ -4,7 +4,7 @@
 ```text
 Cinematic 16:9 medium close-up of {LEAD_DESC} inside a dimly lit neon jazz club. Warm tungsten key light from stage right highlights facial features and expressive open eyes; rain-streaked glass bokeh in background. Shot on 35mm anamorphic lens, shallow depth of field.
 ```
-*For two-pass duets (`duet_method_b`): keep Singer A cleanly framed on the left half (`x < 0.48`) and Singer B cleanly framed on the right half (`x > 0.52`) without overlapping torsos.*
+*For two-pass duets (`duet_method_b`): keep Singer A cleanly framed on the left half (`x < 0.48`) and Singer B cleanly framed on the right half (`x > 0.52`) without overlapping torsos, limbs, or instruments; for LTX-2 (`#14/#15/#16` `MVGA`), also leave a `~10%` clear buffer `[split_x - 0.10, split_x]` for Laplacian seam blending.*
 
 ## 2. Solo Singing Scene Prompt (`mode: "solo"`)
 ```text

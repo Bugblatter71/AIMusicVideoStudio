@@ -14,13 +14,13 @@
     "trim_first_frame_seconds": 0,
     "fade_out_last_scene_seconds": 1,
     "directories": {
-      "anchors": "work/anchors_v3",
-      "audio_slices": "work/audio_v3",
-      "masks": "work/masks_v3",
-      "jobs": "work/jobs_v3",
-      "renders": "work/renders_v3",
-      "trimmed": "work/trimmed_v3",
-      "review_strips": "work/frames_v3"
+      "anchors": "work/anchors",
+      "audio_slices": "work/audio",
+      "masks": "work/masks",
+      "jobs": "work/jobs",
+      "renders": "work/renders",
+      "trimmed": "work/trimmed",
+      "review_strips": "work/frames"
     },
     "render_overlap_seconds": 1
   },

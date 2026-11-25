@@ -551,6 +551,7 @@ def run_stage2_scenes(
     if not (has_scene_filter or no_stitch):
         assemble_progressive_master(ctx, scene_meta, log_prefix="  ")
 
+    fresh_p1_guides: dict[str, tuple[Path, str]] = {}
     for idx, (t, t_hash, reason, needs_render) in enumerate(all_tasks, 1):
         out_name = t["output_filename"]
         out_mp4 = ctx.renders_dir / f"{out_name}.mp4"
@@ -688,37 +689,14 @@ def run_stage2_scenes(
             ])
             subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             elapsed = round(time.time() - t0, 1)
+            done_ts = round(time.time(), 3)
             print(f"      -> [DUMMY] Generated mock {out_mp4.name} in {elapsed:.1f}s", flush=True)
-            print(
-                f"[QUEUE_DONE] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'elapsed': elapsed})}",
-                flush=True,
-            )
-            queue_summary[idx - 1]["status"] = "completed"
-            queue_summary[idx - 1]["elapsed"] = elapsed
-            for k in ("estimated_remaining_seconds", "estimated_remaining_str"): queue_summary[idx - 1].pop(k, None)
-            _sync_queue()
-            write_engine_status(
-                ctx,
-                {
-                    "state": "completed",
-                    "phase": "completed",
-                    "raw_phase": "Completed",
-                    "pct": 100.0,
-                    "elapsed": elapsed,
-                },
-                backend=dummy_b,
-                task_stem=out_name,
-            )
-
             task_hashes[out_name] = t_hash
             settings_store[out_name] = render_settings_of(t)
             scene_renders = state.setdefault("scene_renders", {})
             scene_renders[out_name] = {
-                "render_start": t.get("render_start", 0.0),
-                "render_end": t.get("render_end", 0.0),
-                "frames": t.get("video_length", 0),
-                "elapsed": elapsed,
-                "completed_at": round(time.time(), 3),
+                "render_start": t.get("render_start", 0.0), "render_end": t.get("render_end", 0.0),
+                "frames": t.get("video_length", 0), "elapsed": elapsed, "completed_at": done_ts,
             }
             used_aids = set()
             for img_k in ("image_start", "image_end"):
@@ -727,10 +705,26 @@ def run_stage2_scenes(
                     aid_k = extract_anchor_id(Path(img_p).name)
                     if aid_k.startswith("A") and aid_k[1:].isdigit():
                         state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p)); used_aids.add(aid_k)
+            if pass_num == 2 and sid in fresh_p1_guides:
+                t["parent_p1_task_hash"] = fresh_p1_guides[sid][1]
             ctx.save_state_hashes(state, updated_keys={out_name}, updated_anchor_ids=used_aids)
-            after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state)
+            tk_entry = after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state, created_at=done_ts)
+            if pass_num == 1 and tk_entry and tk_entry.get("vault_rel_mp4"):
+                fresh_p1_guides[sid] = (ctx.renders_dir / tk_entry["vault_rel_mp4"], t_hash)
+            was_activated = bool((tk_entry or {}).get("_activated", True))
+            if tk_entry and not was_activated:
+                print(f"      [Vault] Saved Take #{tk_entry.get('take_number')} to Vault (kept previously selected 'Use' take active).", flush=True)
+            done_payload = {"idx": idx, "filename": out_mp4.name, "elapsed": elapsed, "completed_at": done_ts, "take_id": (tk_entry or {}).get("take_id"), "take_number": (tk_entry or {}).get("take_number"), "activated": was_activated}
+            print(f"[QUEUE_DONE] {json.dumps(done_payload)}", flush=True)
+            queue_summary[idx - 1]["status"] = "completed"
+            queue_summary[idx - 1]["elapsed"] = elapsed
+            queue_summary[idx - 1]["completed_at"] = done_ts
+            if (tk_entry or {}).get("take_id"): queue_summary[idx - 1]["take_id"] = tk_entry["take_id"]
+            for k in ("estimated_remaining_seconds", "estimated_remaining_str"): queue_summary[idx - 1].pop(k, None)
+            _sync_queue()
+            write_engine_status(ctx, {"state": "completed", "phase": "completed", "raw_phase": "Completed", "pct": 100.0, "elapsed": elapsed, "completed_at": done_ts}, backend=dummy_b, task_stem=out_name)
 
-            if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch):
+            if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch) and (was_activated or not ctx.master_output.is_file()):
                 assemble_progressive_master(ctx, scene_meta, log_prefix="      ")
             continue
 
@@ -757,6 +751,9 @@ def run_stage2_scenes(
             exec_task = {k: v for k, v in t.items() if k not in ("render_start", "render_end") and not k.startswith("_")}
         roi_meta = None
         try:
+            if pass_num == 2 and sid in fresh_p1_guides and fresh_p1_guides[sid][0].is_file():
+                exec_task["video_guide"] = str(fresh_p1_guides[sid][0])
+                t["parent_p1_task_hash"] = fresh_p1_guides[sid][1]
             exec_task, roi_meta = apply_pass2_guide_and_roi(ctx, sc_obj, pass_num, exec_task, task_backend)
             res, was_cancelled, t0 = execute_wgp_job(
                 ctx=ctx, session=session, task_cfg=exec_task, idx=idx, total=len(all_tasks),
@@ -796,37 +793,14 @@ def run_stage2_scenes(
             except OSError: pass
             raise
         elapsed = round(time.time() - t0, 1)
+        done_ts = round(time.time(), 3)
         print(f"      -> Completed {out_mp4.name} in {elapsed:.1f}s", flush=True)
-        print(
-            f"[QUEUE_DONE] {json.dumps({'idx': idx, 'filename': out_mp4.name, 'elapsed': elapsed})}",
-            flush=True,
-        )
-        queue_summary[idx - 1]["status"] = "completed"
-        queue_summary[idx - 1]["elapsed"] = elapsed
-        for k in ("estimated_remaining_seconds", "estimated_remaining_str"): queue_summary[idx - 1].pop(k, None)
-        _sync_queue()
-        write_engine_status(
-            ctx,
-            {
-                "state": "completed",
-                "phase": "completed",
-                "raw_phase": "Completed",
-                "pct": 100.0,
-                "elapsed": elapsed,
-            },
-            backend=task_backend,
-            task_stem=out_name,
-        )
-
         task_hashes[out_name] = t_hash
         settings_store[out_name] = render_settings_of(t)
         scene_renders = state.setdefault("scene_renders", {})
         scene_renders[out_name] = {
-            "render_start": t.get("render_start", 0.0),
-            "render_end": t.get("render_end", 0.0),
-            "frames": t.get("video_length", 0),
-            "elapsed": elapsed,
-            "completed_at": round(time.time(), 3),
+            "render_start": t.get("render_start", 0.0), "render_end": t.get("render_end", 0.0),
+            "frames": t.get("video_length", 0), "elapsed": elapsed, "completed_at": done_ts,
         }
         used_aids = set()
         for img_k in ("image_start", "image_end"):
@@ -836,10 +810,24 @@ def run_stage2_scenes(
                 if aid_k.startswith("A") and aid_k[1:].isdigit():
                     state.setdefault("anchor_file_hashes", {})[aid_k] = _file_sha256(Path(img_p)); used_aids.add(aid_k)
         ctx.save_state_hashes(state, updated_keys={out_name}, updated_anchor_ids=used_aids)
-        after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state)
+        tk_entry = after_scene_render(ctx, sc_obj, pass_num, out_name, out_mp4, t_hash, t, elapsed, state, created_at=done_ts)
+        if pass_num == 1 and tk_entry and tk_entry.get("vault_rel_mp4"):
+            fresh_p1_guides[sid] = (ctx.renders_dir / tk_entry["vault_rel_mp4"], t_hash)
+        was_activated = bool((tk_entry or {}).get("_activated", True))
+        if tk_entry and not was_activated:
+            print(f"      [Vault] Saved Take #{tk_entry.get('take_number')} to Vault (kept previously selected 'Use' take active).", flush=True)
+        queue_summary[idx - 1]["status"] = "completed"
+        queue_summary[idx - 1]["elapsed"] = elapsed
+        queue_summary[idx - 1]["completed_at"] = done_ts
+        if (tk_entry or {}).get("take_id"): queue_summary[idx - 1]["take_id"] = tk_entry["take_id"]
+        for k in ("estimated_remaining_seconds", "estimated_remaining_str"): queue_summary[idx - 1].pop(k, None)
+        _sync_queue()
+        write_engine_status(ctx, {"state": "completed", "phase": "completed", "raw_phase": "Completed", "pct": 100.0, "elapsed": elapsed, "completed_at": done_ts}, backend=task_backend, task_stem=out_name)
+        done_payload = {"idx": idx, "filename": out_mp4.name, "elapsed": elapsed, "completed_at": done_ts, "take_id": (tk_entry or {}).get("take_id"), "take_number": (tk_entry or {}).get("take_number"), "activated": was_activated}
+        print(f"[QUEUE_DONE] {json.dumps(done_payload)}", flush=True)
 
-        # Update progressive master if this pass completed a full scene (not an intermediate pass 1 guide)
-        if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch):
+        # Update progressive master only when active timeline clip actually changed (or master missing yet)
+        if "_Pass1_Left" not in out_name and not (has_scene_filter or no_stitch) and (was_activated or not ctx.master_output.is_file()):
             assemble_progressive_master(ctx, scene_meta, log_prefix="      ", progressive=True)
 
     return scene_meta

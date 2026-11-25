@@ -119,3 +119,8 @@ MusicVideoGeneration/
 3. **Maintain Modularity & Facades**:
    - Keep every `.py`, `.js`, `.html`, `.css` file under `work/` (excluding `Wan2GP`) strictly `< 850` lines.
    - Always preserve re-exports in `work/run_overnight_v3.py` and `work/ui/server.py` so existing batch files and test imports remain 100% functional.
+
+4. **Windows Sandbox Exception — Playwright / Browser E2E Tests**:
+   - **Never run Playwright / browser E2E tests inside the sandbox** (`tests/test_ui_e2e_playwright.py`, `tests/ui_render_queue.spec.js`): Chromium subprocesses and localhost HTTP server binding hang inside the Windows sandbox until canceled.
+   - Always run Playwright E2E commands directly **outside the sandbox** (`BypassSandbox: true`) on the first attempt — do NOT attempt them sandboxed first.
+   - Keep `verify_repo_health.py`, `symbol_index.py`, and non-browser offline unit/regression suites inside the sandbox; run only targeted suites during rapid iteration and the full offline sweep once for final verification.

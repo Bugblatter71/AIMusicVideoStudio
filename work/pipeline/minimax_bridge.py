@@ -173,10 +173,11 @@ def _encode_multipart(field_name: str, file_path: Path, extra_fields: dict[str, 
         chunks.append(
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode("utf-8")
         )
-    ctype = mimetypes.guess_type(file_path.name)[0] or {
+    ctype = {
+        ".flac": "audio/flac", ".ogg": "audio/ogg", ".m4a": "audio/mp4", ".aac": "audio/aac",
         ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp",
         ".mp4": "video/mp4", ".wav": "audio/wav", ".mp3": "audio/mpeg",
-    }.get(file_path.suffix.lower(), "application/octet-stream")
+    }.get(file_path.suffix.lower()) or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
     chunks.append(
         (
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field_name}\"; filename=\"{file_path.name}\"\r\n"

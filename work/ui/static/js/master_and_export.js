@@ -116,7 +116,7 @@ async function triggerImmediateRestitch() {
         try {
           const st = await (await fetch("/api/render/status")).json();
           if (st?.stitch_in_progress) { seenActive = true; if (st.stitch_progress) updateMasterStitchProgress(st.stitch_progress); }
-          else if (seenActive || (Date.now() - startedAt > 3000)) { await finishMasterStitch(true); }
+          else if (seenActive || (Date.now() - startedAt > 3000)) { await finishMasterStitch(!st?.stitch_error, st?.stitch_error || ""); }
         } catch (e) {}
       }, 1000);
     }
@@ -333,18 +333,10 @@ function getSceneOptionCatalog(sc) {
     || (scFF.denoise ?? shF.ffmpeg?.denoise ?? 0) > 0 || Object.keys(scEq).length > 0;
   const isCustomFilter = Boolean(scRefVal) || Object.keys(scF).length > 0;
 
-  const stems = [], seenStems = new Set();
-  const addStem = (v, lbl) => { if (v && !seenStems.has(v.toLowerCase())) { seenStems.add(v.toLowerCase()); stems.push({ value: v, label: lbl || v }); } };
-  const cfgStems = state.projectData?.project?.stems || {};
-  Object.keys(cfgStems).forEach((k) => addStem(k, `${k} (${cfgStems[k].split("/").pop()})`));
-  addStem("male", "male (male_vocal.mp3)");
-  addStem("female", "female (female_vocal.mp3)");
-  const masterAudio = (state.projectData?.project?.master_audio || "").split("/").pop();
-  (state.assets?.audio_files || []).forEach((fn) => {
-    if (fn !== masterAudio && !Object.values(cfgStems).some((p) => p.endsWith(fn))) addStem(fn.replace(/\.[^/.]+$/, ""), `${fn.replace(/\.[^/.]+$/, "")} (${fn})`);
-  });
-  addStem("master", "full audio (master)");
-  addStem("silent", "silent (no lip sync)");
+  const stems = window.getProjectStemsCatalog ? window.getProjectStemsCatalog() : [
+    ...((state.assets?.master_audio_exists !== false) ? [{ value: "master", label: "full audio (master)" }] : []),
+    { value: "silent", label: "silent (no lip sync)" },
+  ];
 
   return {
     resDefs, defResKey, defResLabel, vModels, fModels, mmModels, defaultModelId, defaultModelName,
@@ -703,6 +695,7 @@ async function deleteSceneTake(scene, chosenTake, btnEl, opts = {}) {
   const orig = btnEl ? btnEl.textContent : "";
   if (btnEl) { btnEl.disabled = true; btnEl.textContent = "..."; }
   try {
+    if (window.unloadClipVideoPlayer?.()) await new Promise((r) => setTimeout(r, 40));
     const resp = await fetch("/api/takes/delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -12,10 +12,13 @@ from .media_utils import (
     _file_sha256,
     auto_detect_wgp_root,
     find_local_config,
+    is_valid_wgp_root,
     prepend_unique_env_path,
+    resolve_wgp_root_with_fallback,
     resolve_ffmpeg_path,
     resolve_path,
 )
+from .project_paths import resolve_master_audio_path
 from .prompts import (
     adapt_video_prompt,
     build_ref2va_prompt,
@@ -112,13 +115,10 @@ class ProjectContext:
         self.characters = synthesize_default_characters(raw, self.project_dir)
         self.tag_lookup = build_tag_lookup(self.characters, self.project_dir)
 
-        # Resolve WGP root with auto-detection fallback across standard Pinokio locations
-        wgp_str = os.environ.get("WGP_ROOT") or env.get("wgp_root", "")
-        if wgp_str and Path(wgp_str).is_dir():
-            self.wgp_root = Path(wgp_str).resolve()
-        else:
-            detected = auto_detect_wgp_root()
-            self.wgp_root = detected if detected else resolve_path(self.project_dir, wgp_str)
+        # Resolve WGP root cleanly, re-scanning if any configured/env path disappeared
+        wgp_str = env.get("wgp_root", "")
+        detected = resolve_wgp_root_with_fallback(wgp_str, auto_detect_fn=auto_detect_wgp_root)
+        self.wgp_root = detected if detected else resolve_path(self.project_dir, os.environ.get("WGP_ROOT") or wgp_str)
 
         extra_paths = [str(resolve_path(self.project_dir, p)) for p in env.get("extra_path_dirs", []) if p]
         if self.wgp_root and self.wgp_root.is_dir():
@@ -147,7 +147,7 @@ class ProjectContext:
         self.head_overlap_s = float(raw_ov.get("head", 0.0) if isinstance(raw_ov, dict) else (raw_ov or 0.0))
         self.tail_overlap_s = float(raw_ov.get("tail", 0.0) if isinstance(raw_ov, dict) else (raw_ov or 0.0))
 
-        self.master_audio = resolve_path(self.project_dir, proj["master_audio"])
+        self.master_audio = resolve_master_audio_path(self.project_dir, proj.get("master_audio"))
         self.master_output_template = proj.get("master_output", "All_Or_Nothing_Master_{resolution}_{fps}fps.mp4")
         self.master_output = resolve_path(self.project_dir, self.master_output_template)
         self.stems = {
@@ -533,14 +533,12 @@ class ProjectContext:
         subprocess.run(
             [
                 str(self.ffmpeg), "-y", "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}",
-                "-i", str(src_audio), "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(out_wav),
+                "-i", str(src_audio), "-vn", "-ar", "44100", "-ac", "2", "-c:a", "pcm_s16le", str(out_wav),
             ],
             check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        try:
-            meta.write_text(sig, encoding="utf-8")
-        except OSError:
-            pass
+        try: meta.write_text(sig, encoding="utf-8")
+        except OSError: pass
 
     def ensure_silent_wav(self, dur_s: float, frames: int) -> Path:
         out_wav = self.audio_dir / f"silent_{frames}f.wav"
@@ -680,9 +678,11 @@ class ProjectContext:
         else:
             neg_prompt = rspec.get("negative_prompt", vshared.get("negative_prompt", ""))
         from .fal_catalog import is_ref2va_spec
+        from .ltx_refs import apply_ltx2_ref_mode, is_ltx2_ref_spec
         mtype = rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd")
         is_ref2va = is_ref2va_spec(rspec)
-        supports_refs = bool(rspec.get("supports_image_refs", is_ref2va))
+        ltx_ref = is_ltx2_ref_spec(rspec)
+        supports_refs = False if ltx_ref else bool(rspec.get("supports_image_refs", is_ref2va))
         supports_end = bool(rspec.get("supports_end_anchor", not is_ref2va)) and not (video_guide and video_mask)
         has_end = bool(supports_end and image_end and Path(image_end).exists())
         raw_apt = rspec.get("audio_prompt_type", vshared.get("audio_prompt_type", ""))
@@ -761,15 +761,10 @@ class ProjectContext:
             task["image_end"] = str(image_end)
         if resolved_refs:
             task["image_refs"] = [str(p) for p in resolved_refs]
-            task["image_refs_relative_size"] = rspec.get(
-                "image_refs_relative_size", vshared.get("image_refs_relative_size", 100)
-            )
-            task["remove_background_images_ref"] = rspec.get(
-                "remove_background_images_ref", vshared.get("remove_background_images_ref", 0)
-            )
+            task["image_refs_relative_size"] = rspec.get("image_refs_relative_size", vshared.get("image_refs_relative_size", 100))
+            task["remove_background_images_ref"] = rspec.get("remove_background_images_ref", vshared.get("remove_background_images_ref", 0))
         if "flow_shift" in rspec or "flow_shift" in vshared:
             task["flow_shift"] = rspec.get("flow_shift", vshared.get("flow_shift", 12.0))
-        mtype = rspec.get("model_type", "minimax_h3_fl2va_pruned_pdd")
         upscale = self.resolve_scene_spatial_upsampling(sc, rspec, res_str=eff_res, pass_num=pass_num)
         if upscale:
             task["spatial_upsampling"] = upscale
@@ -785,6 +780,8 @@ class ProjectContext:
             task["video_mask"] = str(video_mask)
             task["denoising_strength"] = rspec.get("denoising_strength", vshared.get("denoising_strength", 1.0))
             task["masking_strength"] = rspec.get("masking_strength", vshared.get("masking_strength", 1.0))
+        if ltx_ref:
+            apply_ltx2_ref_mode(self, task, rspec=rspec, sc=sc, raw_prompt=prompt, image_start=image_start, image_refs=image_refs, has_end=has_end, video_guide=video_guide, video_mask=video_mask)
         from .fal_catalog import attach_fal_task_meta
         attach_fal_task_meta(self, task, sc=sc, rspec=rspec, pass_num=pass_num, stage="video")
         return task
@@ -796,16 +793,8 @@ class ProjectContext:
         sp = sp or {}
         shared_cfg = self.anchor_shared_cfg
         model_type = rspec["model_type"]
-        res_val = resolution or sp.get("resolution", rspec.get("resolution", shared_cfg.get("resolution", "1664x960")))
-        if "x" in str(res_val):
-            try:
-                rw, rh = [int(x) for x in str(res_val).lower().split("x", 1)]
-                if "flux3" in model_type.lower() and (rw % 16 != 0 or rh % 16 != 0):
-                    rw = max(64, ((rw + 8) // 16) * 16)
-                    rh = max(64, ((rh + 8) // 16) * 16)
-                    res_val = f"{rw}x{rh}"
-            except ValueError:
-                pass
+        from .prompts import align_anchor_resolution, finalize_anchor_task_cfg
+        res_val = align_anchor_resolution(str(resolution or sp.get("resolution") or shared_cfg.get("resolution") or rspec.get("resolution") or "1920x1080"), model_type)
         refs = self.anchor_refs if image_refs is None else image_refs
         has_refs = bool(refs)
 
@@ -819,29 +808,21 @@ class ProjectContext:
             "remove_background_images_ref", shared_cfg.get("remove_background_images_ref", 0)
         )
         if has_refs:
-            cfg["video_prompt_type"] = rspec.get("video_prompt_type", shared_cfg.get("video_prompt_type", "I"))
+            cfg["video_prompt_type"] = sp.get("video_prompt_type", rspec.get("video_prompt_type", shared_cfg.get("video_prompt_type", "I")))
             cfg["image_refs"] = list(refs)
         else:
             cfg["video_prompt_type"] = ""
             cfg["image_refs"] = None
 
-        for opt_key in ("num_inference_steps", "guidance_scale", "embedded_guidance_scale", "flow_shift", "sample_solver", "multi_prompts_gen_type"):
-            if opt_key in rspec: cfg[opt_key] = rspec[opt_key]
-            if opt_key in sp: cfg[opt_key] = sp[opt_key]
-
-        merged_custom = dict(cfg.get("custom_settings") or {})
-        for src_cfg in (shared_cfg, rspec, sp):
-            if isinstance(src_cfg.get("custom_settings"), dict):
-                merged_custom.update(src_cfg["custom_settings"])
-        cfg["custom_settings"] = merged_custom
         cfg["prompt"] = prompt
+        finalize_anchor_task_cfg(cfg, rspec, sp, shared_cfg)
         from .fal_catalog import attach_fal_task_meta
         attach_fal_task_meta(self, cfg, sc=sp, rspec=rspec, stage="anchor")
         return cfg
 
 
 try:
-    from .scene_ops import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data
+    from .scene_ops import derive_split_scene_ids, derive_duplicate_scene_id, split_scene_in_project_data, delete_scene_in_project_data, duplicate_scene_in_project_data, duplicate_scene_with_takes
 except ImportError:
-    from pipeline.scene_ops import derive_split_scene_ids, split_scene_in_project_data, delete_scene_in_project_data
+    from pipeline.scene_ops import derive_split_scene_ids, derive_duplicate_scene_id, split_scene_in_project_data, delete_scene_in_project_data, duplicate_scene_in_project_data, duplicate_scene_with_takes
 

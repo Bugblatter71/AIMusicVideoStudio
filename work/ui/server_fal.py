@@ -155,6 +155,32 @@ def _probe_minimax_connection(api_key: str) -> tuple[bool, int, str]:
         return False, 0, f"Connection error: {exc}"
 
 
+def _shared_cloud_root(proj_dir: Path | None) -> tuple[Path | None, Path | None]:
+    """Resolves (read_root, shared_write_dir) so cloud keys are shared across all projects."""
+    srv = _srv()
+    ws_root = getattr(srv, "WORKSPACE_ROOT", None)
+    p_root = getattr(srv, "PROJECTS_DIR", None)
+    if ws_root and p_root:
+        try:
+            if Path(p_root).resolve() == (Path(ws_root) / "projects").resolve():
+                return Path(ws_root), Path(ws_root)
+        except Exception:
+            pass
+    if p_root:
+        p_root_p = Path(p_root)
+        single_proj = sum(1 for d in p_root_p.iterdir() if d.is_dir()) <= 1 if p_root_p.is_dir() else True
+        has_proj_seed = bool(
+            single_proj
+            and proj_dir
+            and any((Path(proj_dir) / fn).is_file() for fn in ("local_config.json", "config.local.json"))
+            and not any((p_root_p / fn).is_file() for fn in ("local_config.json", "config.local.json"))
+        )
+        if has_proj_seed:
+            return Path(proj_dir), None
+        return p_root_p, p_root_p
+    return proj_dir, None
+
+
 def handle_fal_get(handler, path: str, parsed) -> bool:
     if path not in ("/api/fal/status", "/api/minimax/status"):
         return False
@@ -162,7 +188,8 @@ def handle_fal_get(handler, path: str, parsed) -> bool:
     ok, proj_dir = _require_optional_project(handler, slug)
     if not ok:
         return True
-    status = get_fal_status(root_dir=proj_dir)
+    cloud_root, _ = _shared_cloud_root(proj_dir)
+    status = get_fal_status(root_dir=cloud_root)
     status.update(_project_backend_defaults(proj_dir))
     handler.send_json({"success": True, **status})
     return True
@@ -175,11 +202,12 @@ def handle_fal_post(handler, path: str, body: dict | None) -> bool:
         ok, proj_dir = _require_optional_project(handler, slug)
         if not ok:
             return True
+        cloud_root, shared_dir = _shared_cloud_root(proj_dir)
         raw_key = body["fal_key"] if "fal_key" in body else None
         raw_mm = body["minimax_key"] if "minimax_key" in body else None
         try:
             save_fal_settings(
-                root_dir=proj_dir,
+                root_dir=cloud_root,
                 fal_key=str(raw_key).strip() if isinstance(raw_key, str) and raw_key.strip() else None,
                 clear_key=(raw_key == ""),
                 minimax_key=str(raw_mm).strip() if isinstance(raw_mm, str) and raw_mm.strip() else None,
@@ -188,8 +216,9 @@ def handle_fal_post(handler, path: str, body: dict | None) -> bool:
                 default_upscale_backend=body.get("default_upscale_backend"),
                 custom_fal_app=body.get("custom_fal_app"),
                 fal_timeout_s=body.get("fal_timeout_s"),
+                shared_dir=shared_dir,
             )
-            status = get_fal_status(root_dir=proj_dir)
+            status = get_fal_status(root_dir=cloud_root)
         except Exception as exc:
             handler.send_error_json(str(exc), status=HTTPStatus.BAD_REQUEST)
             return True
@@ -201,8 +230,9 @@ def handle_fal_post(handler, path: str, body: dict | None) -> bool:
         ok_p, proj_dir = _require_optional_project(handler, body.get("slug"))
         if not ok_p:
             return True
+        cloud_root, _ = _shared_cloud_root(proj_dir)
         override_key = str(body.get("fal_key") or "").strip()
-        key, source = (override_key, "input") if override_key else resolve_fal_key(proj_dir)
+        key, source = (override_key, "input") if override_key else resolve_fal_key(cloud_root)
         if not key:
             handler.send_json({"success": False, "source": "none", "error": "No fal.ai API key configured."})
             return True
@@ -214,8 +244,9 @@ def handle_fal_post(handler, path: str, body: dict | None) -> bool:
         ok_p, proj_dir = _require_optional_project(handler, body.get("slug"))
         if not ok_p:
             return True
+        cloud_root, _ = _shared_cloud_root(proj_dir)
         override_key = str(body.get("minimax_key") or "").strip()
-        key, source = (override_key, "input") if override_key else resolve_minimax_key(proj_dir)
+        key, source = (override_key, "input") if override_key else resolve_minimax_key(cloud_root)
         if not key:
             handler.send_json({"success": False, "source": "none", "error": "No MiniMax API key configured."})
             return True
@@ -278,7 +309,7 @@ def handle_fal_post(handler, path: str, body: dict | None) -> bool:
         try:
             items = srv.set_queue_item_backend_override(srv, str(slug).strip(), item_id, ovr_norm)
             done_q = srv.get_done_queue_history(srv, str(slug).strip(), items) if hasattr(srv, "get_done_queue_history") else None
-            handler.send_json({"success": True, "queue": items, **({"done_queue": done_q} if done_q is not None else {})})
+            handler.send_json({"success": True, "slug": str(slug).strip(), "queue": items, **({"done_queue": done_q} if done_q is not None else {})})
         except KeyError as exc:
             handler.send_error_json(str(exc), status=HTTPStatus.NOT_FOUND)
         except RuntimeError as exc:
@@ -307,6 +338,35 @@ def enrich_queue_with_fal_metadata(
 ) -> None:
     """Attaches effective execution backend, model_type, endpoint, and cloud cost estimate to UI queue items."""
     for itm in queue:
+        if itm.get("stage") == "anchor":
+            aid = str(itm.get("anchor_id") or itm.get("scene_id") or "").upper()
+            sp = next((a for a in getattr(ctx, "anchors", []) if str(a.get("filename") or "").upper().startswith(aid)), None) if (ctx is not None and aid and not aid.startswith("CHAR:")) else None
+            arspec: dict = {}
+            if ctx is not None and sp is not None:
+                try:
+                    _, arspec = ctx.resolve_anchor_renderer(sp)
+                except Exception:
+                    arspec = {}
+            def_b = resolve_task_backend(ctx, sc=sp, rspec=arspec, stage="anchor") if (ctx is not None and sp is not None) else str(itm.get("backend") or "local")
+            ovr_raw = str(itm.get("backend_override") or "").strip().lower()
+            backend = ovr_raw if ovr_raw in ("local", "fal") else def_b
+            itm["resolved_default_backend"] = def_b
+            itm["backend"] = backend
+            if arspec.get("model_type"):
+                itm["model_type"] = str(arspec["model_type"])
+            if backend == "fal":
+                est = estimate_fal_cost_usd(0.0, resolution=str(itm.get("resolution") or "1920x1080"), rspec=arspec, sc=sp, stage="anchor")
+                itm["fal_endpoint"] = est["endpoint"]
+                itm["estimated_cost_usd"] = est["estimated_cost_usd"]
+                itm["cost_str"] = est["cost_str"]
+                itm["auto_chunks"] = 1
+                itm["fal_notes"] = est["notes"]
+                itm["estimated_seconds"] = 25.0
+                itm["estimated_str"] = "25s"
+            else:
+                for k in ("fal_endpoint", "estimated_cost_usd", "cost_str", "auto_chunks", "fal_notes"):
+                    itm.pop(k, None)
+            continue
         sid = itm.get("scene_id")
         pass_num = itm.get("pass")
         sc = scene_by_id.get(sid) if isinstance(scene_by_id, dict) else None

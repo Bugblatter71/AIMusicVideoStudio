@@ -52,6 +52,16 @@ def validate_profiles(profiles_path: Path) -> tuple[list[str], list[str]]:
             warnings.append(f"video_renderers[{rid}] ({mtype}) unusual audio_prompt_type={apt!r}.")
         if "minimax_h3" in mtype.lower() and spec.get("frames_formula") not in ("h3", "h3_ref2va", None):
             warnings.append(f"video_renderers[{rid}] ({mtype}) unexpected frames_formula={spec.get('frames_formula')!r}.")
+        if str(spec.get("ref_mode") or "").lower() == "ltx2_msr":
+            ipt = str(spec.get("image_prompt_type") or "")
+            vpt = str(spec.get("video_prompt_type") or "")
+            apt_s = str(apt or "")
+            if any(ch in ipt for ch in "SVL"):
+                errors.append(f"video_renderers[{rid}] ({mtype}) ltx2_msr image_prompt_type={ipt!r} must not contain S/V/L.")
+            if vpt not in ("KI", "I"):
+                errors.append(f"video_renderers[{rid}] ({mtype}) ltx2_msr video_prompt_type={vpt!r} must be 'KI' or 'I'.")
+            if any(ch in apt_s for ch in "K2"):
+                errors.append(f"video_renderers[{rid}] ({mtype}) ltx2_msr audio_prompt_type={apt_s!r} must not contain K/2.")
 
     # 3. Cloud profile sections (ensure fal_catalog keys align if present)
     sys.path.insert(0, str(WORKSPACE_ROOT / "work"))

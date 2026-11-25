@@ -104,8 +104,8 @@ def cmd_summary(args):
     print(f"    - Duet Scenes: {duet_count}")
 
     pdir = PROJECTS_DIR / args.slug
-    manifest_file = pdir / "work" / "takes_manifest.json"
-    if manifest_file.is_file():
+    manifest_file = next((mf for mf in (pdir / "work" / "takes_manifest.json", pdir / "work" / "renders" / "takes_manifest.json") if mf.is_file()), None)
+    if manifest_file is not None:
         try:
             m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
             scs = m_data.get("scenes", {})
@@ -122,13 +122,19 @@ def cmd_summary(args):
         except Exception:
             pass
 
-    chars_file = pdir / "characters.json"
-    if chars_file.is_file():
-        try:
-            ch_data = json.loads(chars_file.read_text(encoding="utf-8"))
-            print(f"  Characters     : {len(ch_data.get('characters', []))} registered character tags")
-        except Exception:
-            pass
+    raw_chars = data.get("characters")
+    if isinstance(raw_chars, dict) and raw_chars:
+        print(f"  Characters     : {len(raw_chars)} characters in config ({', '.join(raw_chars.keys())})")
+    elif isinstance(raw_chars, list) and raw_chars:
+        print(f"  Characters     : {len(raw_chars)} characters in config")
+    else:
+        chars_file = pdir / "characters.json"
+        if chars_file.is_file():
+            try:
+                ch_data = json.loads(chars_file.read_text(encoding="utf-8"))
+                print(f"  Characters     : {len(ch_data.get('characters', []))} registered character tags")
+            except Exception:
+                pass
 
     print("-" * 80)
 
@@ -168,9 +174,13 @@ def cmd_audit(args):
 
     # 2. Audio stem checks
     audio_dir = pdir / "audio"
-    available_stems = set()
+    available_stems: set[str] = set()
     if audio_dir.is_dir():
-        available_stems = {f.name.lower() for f in audio_dir.iterdir() if f.is_file()}
+        for f in audio_dir.iterdir():
+            if f.is_file():
+                available_stems.add(f.name.lower())
+                available_stems.add(f.stem.lower())
+    cfg_stems = {str(k).lower(): Path(str(v)).name.lower() for k, v in (data.get("project", {}).get("stems") or {}).items() if v}
 
     for s in scenes:
         sid = s.get("id", "?")
@@ -181,9 +191,12 @@ def cmd_audit(args):
             stems_to_check = [("stem", s.get("stem"))]
 
         for role, st in stems_to_check:
-            if st and st != "silent" and available_stems:
-                clean_st = Path(st).name.lower()
-                if clean_st not in available_stems and f"{clean_st}.mp3" not in available_stems:
+            if st and st != "silent" and (available_stems or cfg_stems):
+                raw_st = str(st).strip().lower()
+                mapped_st = cfg_stems.get(raw_st, Path(raw_st).name.lower())
+                clean_st = Path(mapped_st).name.lower()
+                stem_noext = Path(mapped_st).stem.lower()
+                if clean_st not in available_stems and stem_noext not in available_stems:
                     warnings.append(f"Scene {sid} {role} '{st}' not found in {audio_dir.name}/")
 
         # Check render padding
@@ -206,7 +219,7 @@ def cmd_audit(args):
 
     # 3. Anchor references & disk existence
     cfg_anchors_rel = data.get("project", {}).get("directories", {}).get("anchors", "work/anchors")
-    anchor_dirs = [d for d in (pdir / cfg_anchors_rel, pdir / "work" / "anchors_v3", pdir / "work" / "anchors", pdir / "anchors") if d.is_dir()]
+    anchor_dirs = [d for d in (pdir / cfg_anchors_rel, pdir / "work" / "anchors", pdir / "anchors") if d.is_dir()]
     for s in scenes:
         sid = s.get("id", "?")
         for aid_key in ("anchor", "anchor_end", "anchor_female"):
@@ -225,19 +238,29 @@ def cmd_audit(args):
                     warnings.append(f"Scene {sid} {aid_key} '{aid_val}' file not found on disk")
 
     # 4. Render coverage check
-    renders_dir = pdir / "work" / "renders_v3"
-    trimmed_dir = pdir / "work" / "trimmed_v3"
+    proj_dirs = data.get("project", {}).get("directories", {})
+    cand_render_dirs = [
+        pdir / proj_dirs.get("renders", "work/renders"),
+        pdir / proj_dirs.get("trimmed", "work/trimmed"),
+        pdir / "work" / "renders",
+        pdir / "work" / "trimmed",
+    ]
+    seen_rdirs: set[Path] = set()
+    clip_dirs = []
+    for cd in cand_render_dirs:
+        rc = cd.resolve()
+        if rc not in seen_rdirs and cd.is_dir():
+            seen_rdirs.add(rc)
+            clip_dirs.append(cd)
     unrendered_count = 0
     for s in scenes:
         sid = s.get("id", "")
-        # Look for any matching rendered MP4
         found_clip = False
-        for cdir in (renders_dir, trimmed_dir):
-            if cdir.is_dir():
-                for c in cdir.glob("*.mp4"):
-                    if re.search(rf"(?:^|_)({re.escape(sid)})(?:[_\.]|$)", c.name, re.IGNORECASE):
-                        found_clip = True
-                        break
+        for cdir in clip_dirs:
+            for c in cdir.glob("*.mp4"):
+                if "placeholder" not in c.name.lower() and re.search(rf"(?:^|_)({re.escape(sid)})(?:[_\.]|$)", c.name, re.IGNORECASE):
+                    found_clip = True
+                    break
             if found_clip:
                 break
         if not found_clip:
@@ -381,11 +404,44 @@ def cmd_set_scene(args):
         old_val = scene.get("stem")
         scene["stem"] = args.stem
         changes.append(f"stem: '{old_val}' -> '{args.stem}'")
+    if getattr(args, "stem_m", None) is not None and _valid(args.stem_m):
+        old_val = scene.get("stem_m")
+        scene["stem_m"] = str(args.stem_m)
+        changes.append(f"stem_m: '{old_val}' -> '{args.stem_m}'")
+    if getattr(args, "stem_f", None) is not None and _valid(args.stem_f):
+        old_val = scene.get("stem_f")
+        scene["stem_f"] = str(args.stem_f)
+        changes.append(f"stem_f: '{old_val}' -> '{args.stem_f}'")
+    for bk_attr, bk_key in (("backend", "backend"), ("backend_f", "backend_f")):
+        val = getattr(args, bk_attr, None)
+        if val is not None and _valid(val):
+            old_val = scene.get(bk_key)
+            low_bk = str(val).strip().lower()
+            if low_bk in ("none", "null", "clear", "default", ""):
+                scene.pop(bk_key, None)
+                new_val = None
+            else:
+                scene[bk_key] = low_bk
+                new_val = low_bk
+            changes.append(f"{bk_key}: {old_val} -> {new_val}")
     if getattr(args, "renderer", None) is not None:
         old_val = scene.get("renderer")
         new_val = None if str(args.renderer).lower() in ("null", "none", "default") else (int(args.renderer) if str(args.renderer).isdigit() else args.renderer)
         scene["renderer"] = new_val
         changes.append(f"renderer: {old_val} -> {new_val}")
+    if getattr(args, "pass2_roi_mode", None) is not None and _valid(args.pass2_roi_mode):
+        old_val = scene.get("pass2_roi_mode")
+        raw_roi = str(args.pass2_roi_mode).strip().lower()
+        if raw_roi in ("none", "null", "clear", "default"):
+            scene.pop("pass2_roi_mode", None)
+            new_val = None
+        else:
+            if raw_roi not in ("full", "half_split", "tight_performer", "custom"):
+                print(f"❌ Error: Invalid pass2_roi_mode '{args.pass2_roi_mode}'", file=sys.stderr)
+                sys.exit(1)
+            scene["pass2_roi_mode"] = raw_roi
+            new_val = raw_roi
+        changes.append(f"pass2_roi_mode: {old_val} -> {new_val}")
     if getattr(args, "pad_start", None) is not None:
         old_val = scene.get("render_pad_start")
         if str(args.pad_start).strip().lower() in ("none", "null", "clear", "default", ""):
@@ -433,8 +489,8 @@ def cmd_set_scene(args):
 
     try:
         sys.path.insert(0, str(WORKSPACE_ROOT / "work"))
-        from ui.server_queue import compute_fast_project_queue
-        compute_fast_project_queue(args.slug)
+        from ui import server as _ui_srv
+        _ui_srv.compute_fast_project_queue(args.slug)
     except Exception:
         pass
 
@@ -471,6 +527,11 @@ def cmd_split_scene(args):
 
     bak = backup_file(pjson)
     pjson.write_text(json.dumps(updated_data, indent=2), encoding="utf-8")
+    try:
+        from pipeline.scene_purge import handle_scene_split_post_purge
+        handle_scene_split_post_purge(pjson.parent, pjson, args.scene_id, sc1, sc2, updated_data)
+    except Exception:
+        pass
 
     print(f"✅ Successfully split scene {args.scene_id} in {pjson.name}:")
     print(f"   - {sc1.get('id')}: {sc1.get('start', 0):.2f}s -> {sc1.get('end', 0):.2f}s ({sc1.get('end', 0) - sc1.get('start', 0):.2f}s duration)")
@@ -503,6 +564,11 @@ def cmd_delete_scene(args):
 
     bak = backup_file(pjson)
     pjson.write_text(json.dumps(updated_data, indent=2), encoding="utf-8")
+    try:
+        from pipeline.scene_purge import purge_deleted_scene_artifacts
+        purge_deleted_scene_artifacts(pjson.parent, [deleted_sc.get("id") or args.scene_id], config_data=updated_data, config_file=pjson)
+    except Exception:
+        pass
 
     print(f"✅ Successfully deleted scene {args.scene_id} in {pjson.name}:")
     print(f"   - Removed {deleted_sc.get('id')} ({deleted_sc.get('start', 0):.2f}s -> {deleted_sc.get('end', 0):.2f}s, close_gap={close_gap})")
@@ -547,7 +613,12 @@ def main():
     p_set.add_argument("--anchor", help="Anchor ID (e.g. A01)")
     p_set.add_argument("--anchor-end", help="End Anchor ID (e.g. A02) or 'none'/'clear' to remove")
     p_set.add_argument("--stem", help="Audio stem filename")
+    p_set.add_argument("--stem-m", help="Pass 1 / male vocal stem")
+    p_set.add_argument("--stem-f", help="Pass 2 / female vocal stem")
+    p_set.add_argument("--backend", help="Scene/Pass 1 execution backend ('local', 'fal', 'minimax', or 'clear')")
+    p_set.add_argument("--backend-f", help="Pass 2 duet execution backend ('local', 'fal', 'minimax', or 'clear')")
     p_set.add_argument("--renderer", help="Renderer profile index or ID (e.g. 1, 9, or null/default)")
+    p_set.add_argument("--pass2-roi-mode", help="Two-pass Pass 2 ROI mode ('full', 'half_split', 'tight_performer', 'custom', or 'clear')")
     p_set.add_argument("--pad-start", help="Head render padding in seconds, or 'none'/'clear'/'default' to remove")
     p_set.add_argument("--pad-end", help="Tail render padding in seconds, or 'none'/'clear'/'default' to remove")
     p_set.add_argument("--hold-last-frame", help="Set 'true' to allow tail padding/cloning final frame, or 'clear'/'false' to remove")

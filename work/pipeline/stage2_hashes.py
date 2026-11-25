@@ -235,6 +235,18 @@ def compute_project_task_hashes(
                 if resolved_refs:
                     base_payload["refs"] = [(p.name, _file_sha256(p)) for p in resolved_refs]
                     base_payload["ref_prompt_v"] = 1
+            else:
+                from .ltx_refs import get_video_ref_mode, resolve_ltx2_hash_refs, resolve_msr_remove_bg_flag
+                ref_mode = get_video_ref_mode(vrspec)
+                if ref_mode in ("ltx2_msr", "ltx2_ingredients"):
+                    base_payload["ref_mode"] = ref_mode
+                    ltx_refs = resolve_ltx2_hash_refs(ctx, sc, vrspec, raw_prompt, anchor_path, pass_num=None)
+                    if ref_mode == "ltx2_msr":
+                        base_payload["msr_bg"] = bool(sc.get("msr_use_start_as_bg", True))
+                        subj_only = ltx_refs[1:] if (base_payload["msr_bg"] and anchor_path and ltx_refs and ltx_refs[0] == anchor_path and len(ltx_refs) > 1) else ltx_refs
+                        base_payload["msr_rmbg"] = resolve_msr_remove_bg_flag(ctx, sc, vrspec, subj_only)
+                    if ltx_refs:
+                        base_payload["refs"] = [(p.name, _file_sha256(p)) for p in ltx_refs]
             t_payload = dict(base_payload, stem=stem_key)
             t_hash = _sha256(t_payload)
             t_payload_leg = dict(t_payload, start=start, end=end)
@@ -333,6 +345,18 @@ def compute_project_task_hashes(
                 if resolved_p1:
                     p1_base["refs"] = [(p.name, _file_sha256(p)) for p in resolved_p1]
                     p1_base["ref_prompt_v"] = 1
+            else:
+                from .ltx_refs import get_video_ref_mode, resolve_ltx2_hash_refs, resolve_msr_remove_bg_flag
+                ref_mode_p1 = get_video_ref_mode(vrspec_p1)
+                if ref_mode_p1 in ("ltx2_msr", "ltx2_ingredients"):
+                    p1_base["ref_mode"] = ref_mode_p1
+                    ltx_refs_p1 = resolve_ltx2_hash_refs(ctx, sc, vrspec_p1, raw_m, anchor_path, pass_num=1)
+                    if ref_mode_p1 == "ltx2_msr":
+                        p1_base["msr_bg"] = bool(sc.get("msr_use_start_as_bg", True))
+                        subj_only_p1 = ltx_refs_p1[1:] if (p1_base["msr_bg"] and anchor_path and ltx_refs_p1 and ltx_refs_p1[0] == anchor_path and len(ltx_refs_p1) > 1) else ltx_refs_p1
+                        p1_base["msr_rmbg"] = resolve_msr_remove_bg_flag(ctx, sc, vrspec_p1, subj_only_p1)
+                    if ltx_refs_p1:
+                        p1_base["refs"] = [(p.name, _file_sha256(p)) for p in ltx_refs_p1]
             p1_payload = dict(p1_base, stem_m=stem_m)
             h_p1 = _sha256(p1_payload)
             h_p1_leg = _sha256(dict(p1_payload, start=start, end=end))

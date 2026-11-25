@@ -27,10 +27,17 @@ Two-Pass Duet renders Pass 1 (`<SID>_Pass1_Left_<res>.mp4`, male/left audio stem
 
 | Backend (Pass 2) | Adapter / Behavior | Strengths & Trade-Offs |
 | :--- | :--- | :--- |
-| **`local`** (Wan2GP VACE guide) | Uses full Pass 1 video + spatial right-side mask as guide frames (`backend_f: "local"`). | Follows Pass 1 camera motion, lighting & seam best; heavy on VRAM at `1920x1088` (~175f+ can OOM on 24GB). |
+| **`local` MiniMax H3 `GVA`** (`#1..#13`) | Uses full Pass 1 video + spatial right-side mask as guide frames (`backend_f: "local"`). | Follows Pass 1 camera motion, lighting & seam well; heavy on VRAM at `1920x1088` (~175f+ can OOM on 24GB). |
+| **`local` LTX-2 `MVGA`** (`#14`, `#15`, `#16`) | Uses Wan2GP LTX-2 Inpainting IC-LoRA (`in-outpainting`, `video_prompt_type: "MVGA"`, `masking_strength: 0.0`, `denoising_strength: 1.0`). | Even in **Full Frame (`Split-Masked`)**, preprocessing blanks masked Pass 1 guide pixels to solid `#66FF00` after Frame 0, and post-decode `_apply_ltx2_mask_blend` dilates the mask by `6` px at `long_side = 64` (**`~10%` width / `~180px` at `1920px`**) for a 7-level Laplacian blend across `split_x`. |
 | **`fal`** (`fal-ai/sync-lipsync/v2`) | Video-to-video lip-sync directly on cropped right ROI (`duet_pass2_roi_lipsync`), composited with feathered edge (`18px`). | Preserves exact Pass 1 framing & orbital camera drift cleanly without local VRAM limits. |
 | **`minimax`** (`duet_pass2_roi_minimax`) | Regenerates right ROI crop from single `reference_image` + `reference_audio` (`adaptive` ratio) and composites onto Pass 1. | Fast & offloads VRAM, **but** does not take guide video frames—use on locked/static cameras rather than moving orbital shots. |
 
+- **Full Frame (`pass2_roi_mode: "full"`) is NOT unmasked in `duet_method_b`**: UI label is `Full Frame (Split-Masked)`. It still sends `video_mask = mask_right_{split_x}` (or left); it only skips cropping to a sub-ROI box.
+- **LTX-2 `MVGA` Seam & Crossing-Subject Constraint (`duet_method_b`)**:
+  - Because `MVGA` erases Pass 1 guidance inside the masked region after Frame 0 and blends `~10%` leftward across `split_x`, any arm, prop, or instrument (e.g., trombone slide) crossing `[split_x - 0.10, split_x]` will split or ghost between Pass 1 and Pass 2.
+  - **Do NOT blindly switch `#14/#15/#16` `pass2_video_prompt_type` to `VGA`** without installing a compatible control IC-LoRA: without `"M"`/`"OPDE"`, Wan2GP `ltx2.py` loads no control IC-LoRA yet still passes `video_guide` at `strength=1.0`.
+  - **Cropped ROI Border Ring (`duet_roi.resolve_roi_border_px`)**: Local cropped Pass 2 (`half_split`, `tight_performer`, `custom`) and local `repair-lipsync` automatically expand the 0-locked border ring for LTX-2 `MVGA` (e.g., `128px` at `960x1088` vs `64px` for H3) so Wan2GP's low-res Laplacian dilation stays inside the locked ring.
+  - **Recovery Options When Subjects Cross `split_x`**: (1) switch `mode` to `duet_method_a` (Stereo Duet, zero spatial mask), (2) switch Pass 2 to MiniMax H3 (`#1`/`#9` `GVA`) or `fal.ai` (`sync-lipsync/v2`), or (3) move `split_x` cleanly clear of the crossing object + its `~10%` blend band (shown live in `#clipSplitOverlay`).
 - Control Pass 2 ROI crop with `pass2_roi_mode`: `"full"`, `"half_split"`, `"tight_performer"`, or `"custom"`.
 - Notice cloud clips >15s automatically chunk in `run_chunked_video_sequence`, and MiniMax H3 native caps at `768P` / `2K` (`fal_catalog.resolve_minimax_route`) with Stage 3 scaling to master resolution.
 

@@ -8,6 +8,7 @@ without requiring TCP port binding or live GPU renders.
 
 from __future__ import annotations
 
+import base64
 import email.message
 import hashlib
 import io
@@ -44,6 +45,7 @@ from pipeline.cli import (
 from pipeline.context import ProjectContext
 from pipeline.media_utils import resolve_ffmpeg_path
 from pipeline.stage1_anchors import (
+    compile_anchor_prompt_and_refs,
     import_anchors_from_dir,
     match_anchor_id,
     run_stage1_anchors,
@@ -106,12 +108,12 @@ def _create_fixture_project(
     for sub in (
         "audio",
         "references",
-        "work/anchors_v3",
-        "work/audio_v3",
-        "work/jobs_v3",
-        "work/renders_v3",
-        "work/trimmed_v3",
-        "work/frames_v3",
+        "work/anchors",
+        "work/audio",
+        "work/jobs",
+        "work/renders",
+        "work/trimmed",
+        "work/frames",
     ):
         (proj_dir / sub).mkdir(parents=True, exist_ok=True)
 
@@ -119,8 +121,8 @@ def _create_fixture_project(
     _write_silent_wav(proj_dir / "audio" / "male.wav", duration_s=4.0)
 
     if with_anchors:
-        (proj_dir / "work" / "anchors_v3" / "A01_Lead.jpg").write_bytes(b"A01_JPG_BYTES_" + b"\x01" * 64)
-        (proj_dir / "work" / "anchors_v3" / "A02_Wide.jpg").write_bytes(b"A02_JPG_BYTES_" + b"\x02" * 64)
+        (proj_dir / "work" / "anchors" / "A01_Lead.jpg").write_bytes(b"A01_JPG_BYTES_" + b"\x01" * 64)
+        (proj_dir / "work" / "anchors" / "A02_Wide.jpg").write_bytes(b"A02_JPG_BYTES_" + b"\x02" * 64)
 
     cfg = {
         "project": {
@@ -134,13 +136,13 @@ def _create_fixture_project(
             "total_duration": 4.0,
             "fade_out_last_scene_seconds": 0.5,
             "directories": {
-                "anchors": "work/anchors_v3",
-                "audio_slices": "work/audio_v3",
+                "anchors": "work/anchors",
+                "audio_slices": "work/audio",
                 "masks": "work/masks",
-                "jobs": "work/jobs_v3",
-                "renders": "work/renders_v3",
-                "trimmed": "work/trimmed_v3",
-                "review_strips": "work/frames_v3",
+                "jobs": "work/jobs",
+                "renders": "work/renders",
+                "trimmed": "work/trimmed",
+                "review_strips": "work/frames",
             },
         },
         "models": {
@@ -558,7 +560,7 @@ class TestUpscaleAndCharactersCoverage(unittest.TestCase):
             self.assertTrue((proj_dir / rel_img).is_file())
             self.assertEqual(rel_img, "references/char_male/pose.png")
 
-            clip_path = proj_dir / "work" / "renders_v3" / "S01_solo_832x480.mp4"
+            clip_path = proj_dir / "work" / "renders" / "S01_solo_832x480.mp4"
             _make_dummy_mp4(ffmpeg_bin, clip_path, duration_s=1.0)
             rel_crop = crop_reference_from_clip(proj_dir, "S01_solo_832x480.mp4", 0.2, None, "references/char_male/crop.jpg")
             self.assertTrue((proj_dir / rel_crop).is_file())
@@ -617,8 +619,8 @@ class TestServerMediaAndRoutesCoverage(unittest.TestCase):
             proj_dir, _ = _create_fixture_project(tmp_p, slug="media_proj")
             a05_bytes = b"A05_MAIN_CONTENT"
             a05a_bytes = b"A05A_SUBLETTER_CONTENT"
-            (proj_dir / "work" / "anchors_v3" / "A05_Main.jpg").write_bytes(a05_bytes)
-            (proj_dir / "work" / "anchors_v3" / "A05a_Sub.jpg").write_bytes(a05a_bytes)
+            (proj_dir / "work" / "anchors" / "A05_Main.jpg").write_bytes(a05_bytes)
+            (proj_dir / "work" / "anchors" / "A05a_Sub.jpg").write_bytes(a05a_bytes)
             (proj_dir / "secret.txt").write_text("TOP_SECRET", encoding="utf-8")
 
             with mock.patch.object(server, "PROJECTS_DIR", tmp_p):
@@ -701,8 +703,8 @@ class TestServerMediaAndRoutesCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_p = Path(tmp)
             proj_dir, cfg_path = _create_fixture_project(tmp_p, slug="subletter_proj")
-            a05 = proj_dir / "work" / "anchors_v3" / "A05_Stage.jpg"
-            a05a = proj_dir / "work" / "anchors_v3" / "A05a_Strings.jpg"
+            a05 = proj_dir / "work" / "anchors" / "A05_Stage.jpg"
+            a05a = proj_dir / "work" / "anchors" / "A05a_Strings.jpg"
             a05.write_bytes(b"A05_ORIG")
             a05a.write_bytes(b"A05A_ORIG")
 
@@ -766,6 +768,681 @@ class TestServerMediaAndRoutesCoverage(unittest.TestCase):
                 self.assertLessEqual(len(sub_env["PATH"]), len_after_1 + 64)
             finally:
                 _os.environ["PATH"] = orig_path
+
+
+class TestAnchorStudioAndStage1PromptRefs(unittest.TestCase):
+    def test_17_compile_anchor_prompt_and_refs_character_expansion_and_neg_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            proj_dir, cfg_path = _create_fixture_project(tmp_p, slug="anc_char_proj", with_anchors=False)
+            (proj_dir / "references" / "elena_ref.png").write_bytes(_MIN_1X1_PNG)
+            (proj_dir / "references" / "shared_bg.png").write_bytes(_MIN_1X1_PNG)
+
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg["characters"] = {
+                "char_elena": {
+                    "id": "char_elena",
+                    "name": "Elena",
+                    "physical_traits": "concert violinist",
+                    "default_look": "emerald",
+                    "looks": {
+                        "emerald": {
+                            "tag": "@elena",
+                            "description": "wearing emerald velvet gown",
+                            "image_refs": ["references/elena_ref.png"],
+                        }
+                    },
+                }
+            }
+            cfg["models"]["anchor_shared_settings"] = {
+                "image_refs": ["references/shared_bg.png"],
+                "negative_prompt": "blurry, watermark",
+            }
+            cfg["anchors"] = [
+                {
+                    "filename": "A01_Elena.jpg",
+                    "seed": 101,
+                    "resolution": "1280x720",
+                    "negative_prompt": "extra fingers, deformed hands",
+                    "prompt": "Dramatic spotlight on @elena holding a violin",
+                },
+                {
+                    "filename": "A02_Custom.jpg",
+                    "seed": 102,
+                    "image_refs": ["references/shared_bg.png"],
+                    "prompt": "Wide stage framing of @elena",
+                },
+                {
+                    "filename": "A03_Manual.jpg",
+                    "external": True,
+                    "prompt": "",
+                },
+                {
+                    "filename": "A04_New.jpg",
+                    "seed": 204,
+                    "prompt": "Portrait of @elena at center stage",
+                },
+            ]
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            ctx = ProjectContext(cfg_path)
+            _, rspec0 = ctx.resolve_anchor_renderer(ctx.anchors[0])
+            canon0, adapted0, refs0 = compile_anchor_prompt_and_refs(ctx, ctx.anchors[0], rspec0)
+            self.assertIn("concert violinist", canon0)
+            self.assertIn("wearing emerald velvet gown", canon0)
+            self.assertIn("concert violinist", adapted0)
+            self.assertEqual([Path(p).name for p in refs0], ["elena_ref.png"])
+
+            task0 = ctx.make_anchor_task(
+                None, rspec0, str(ctx.anchors_dir / "A01_Elena.jpg"), adapted0, seed=101, sp=ctx.anchors[0], image_refs=refs0
+            )
+            self.assertEqual(task0["negative_prompt"], "extra fingers, deformed hands")
+            self.assertEqual(task0["resolution"], "1280x720")
+            self.assertEqual(task0["image_refs"], refs0)
+
+            # Default shared negative prompt inherited when anchor omits negative_prompt
+            _, rspec3 = ctx.resolve_anchor_renderer(ctx.anchors[3])
+            _, adapted3, refs3 = compile_anchor_prompt_and_refs(ctx, ctx.anchors[3], rspec3)
+            task3 = ctx.make_anchor_task(
+                None, rspec3, str(ctx.anchors_dir / "A04_New.jpg"), adapted3, seed=204, sp=ctx.anchors[3], image_refs=refs3
+            )
+            self.assertEqual(task3["negative_prompt"], "blurry, watermark")
+
+            # Explicit sp["image_refs"] overrides matched @character refs
+            _, rspec1 = ctx.resolve_anchor_renderer(ctx.anchors[1])
+            _, _, refs1 = compile_anchor_prompt_and_refs(ctx, ctx.anchors[1], rspec1)
+            self.assertEqual([Path(p).name for p in refs1], ["shared_bg.png"])
+
+            # Dummy generation for targeted A04 creates A04_New.jpg without creating A03_Manual or A01_Elena
+            lazy = LazyWgpSession(ctx)
+            state = {}
+            regen = run_stage1_anchors(ctx, lazy, state, force_anchors=["A04"], dummy_render=True)
+            self.assertTrue("A04" in regen or "A04_New.jpg" in regen)
+            self.assertTrue((ctx.anchors_dir / "A04_New.jpg").is_file())
+            self.assertGreater((ctx.anchors_dir / "A04_New.jpg").stat().st_size, 1000)
+            self.assertFalse((ctx.anchors_dir / "A03_Manual.jpg").exists())
+            self.assertFalse((ctx.anchors_dir / "A01_Elena.jpg").exists())
+
+            # Unforced Stage 1 skips external anchor with empty prompt cleanly
+            regen2 = run_stage1_anchors(ctx, lazy, state, force_anchors=[], dummy_render=True)
+            self.assertNotIn("A03_Manual.jpg", regen2)
+            self.assertFalse((ctx.anchors_dir / "A03_Manual.jpg").exists())
+            self.assertNotIn("A04_New.jpg", regen2)
+
+            # Editing an already-generated anchor's prompt triggers automatic CONFIG CHANGED regeneration on unforced run
+            ctx.anchors[3]["prompt"] = "Updated wide twilight portrait of @elena on stage"
+            regen3 = run_stage1_anchors(ctx, lazy, state, force_anchors=[], dummy_render=True)
+            self.assertIn("A04_New.jpg", regen3)
+
+            # Pure text-to-image override (image_refs=[]) strips any orphan <imageN> tags
+            no_ref_sp = {"filename": "A05_NoRef.jpg", "image_refs": [], "prompt": "Solo portrait of @elena (from <image1>)"}
+            _, adapted_noref, refs_noref = compile_anchor_prompt_and_refs(ctx, no_ref_sp, rspec0)
+            self.assertEqual(refs_noref, [])
+            self.assertNotIn("<image1>", adapted_noref)
+            self.assertNotIn("<Picture 1>", adapted_noref)
+
+    def test_18_anchors_upload_and_delete_api_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            proj_dir, _ = _create_fixture_project(tmp_p, slug="anc_api_proj", with_anchors=False)
+            b64_png = base64.b64encode(_MIN_1X1_PNG).decode("ascii")
+            data_url = f"data:image/png;base64,{b64_png}"
+
+            with mock.patch.object(server, "PROJECTS_DIR", tmp_p):
+                # Reject path traversal and corrupt payload
+                st_trav, _, _ = _call_handler(
+                    "POST",
+                    "/api/anchors/upload",
+                    body={"slug": "anc_api_proj", "filename": "../evil.png", "data_url": data_url},
+                )
+                self.assertEqual(st_trav, 400)
+                self.assertFalse((proj_dir / "work" / "evil.png").exists())
+
+                st_bad_img, _, _ = _call_handler(
+                    "POST",
+                    "/api/anchors/upload",
+                    body={"slug": "anc_api_proj", "filename": "A03_Stage.png", "data_url": "data:image/png;base64,bm90YW5pbWc="},
+                )
+                self.assertEqual(st_bad_img, 400)
+
+                # Upload valid PNG anchor
+                st_ok, _, raw_ok = _call_handler(
+                    "POST",
+                    "/api/anchors/upload",
+                    body={"slug": "anc_api_proj", "filename": "A03_Stage.png", "data_url": data_url},
+                )
+                self.assertEqual(st_ok, 200)
+                resp_ok = json.loads(raw_ok.decode("utf-8"))
+                self.assertTrue(resp_ok["success"])
+                self.assertEqual(resp_ok["aid"], "A03")
+                dest = proj_dir / "work" / "anchors" / "A03_Stage.png"
+                self.assertTrue(dest.is_file())
+                self.assertEqual(dest.read_bytes(), _MIN_1X1_PNG)
+
+                # Reject traversal on delete, then delete valid anchor
+                st_del_bad, _, _ = _call_handler(
+                    "POST",
+                    "/api/anchors/delete",
+                    body={"slug": "anc_api_proj", "filename": "../A03_Stage.png"},
+                )
+                self.assertEqual(st_del_bad, 400)
+                self.assertTrue(dest.is_file())
+
+                st_del_ok, _, raw_del = _call_handler(
+                    "POST",
+                    "/api/anchors/delete",
+                    body={"slug": "anc_api_proj", "filename": "A03_Stage.png"},
+                )
+                self.assertEqual(st_del_ok, 200)
+                self.assertTrue(json.loads(raw_del.decode("utf-8"))["deleted"])
+                self.assertFalse(dest.exists())
+
+                # Upload standalone source image via /api/anchors/upload-source with ZERO characters/refs
+                st_src_bad, _, _ = _call_handler(
+                    "POST",
+                    "/api/anchors/upload-source",
+                    body={"slug": "anc_api_proj", "filename": "bad.png", "data_url": "data:image/png;base64,bm90YW5pbWc="},
+                )
+                self.assertEqual(st_src_bad, 400)
+
+                st_src_ok, _, raw_src_ok = _call_handler(
+                    "POST",
+                    "/api/anchors/upload-source",
+                    body={"slug": "anc_api_proj", "filename": "Look Plate.png", "data_url": data_url},
+                )
+                self.assertEqual(st_src_ok, 200)
+                src_resp = json.loads(raw_src_ok.decode("utf-8"))
+                self.assertTrue(src_resp["success"])
+                rel_src = src_resp["rel_path"]
+                self.assertTrue(rel_src.startswith("work/anchor_sources/Look_Plate_"))
+                self.assertTrue((proj_dir / rel_src).is_file())
+                self.assertIn(rel_src, src_resp.get("anchor_source_files", []))
+
+                # Compile & build task when anchor uses image_refs directly on zero-character project
+                from pipeline.context import ProjectContext
+                from pipeline.stage1_anchors import compile_anchor_prompt_and_refs
+                cfg_p = proj_dir / "anc_api_proj.json"
+                cfg_data = json.loads(cfg_p.read_text(encoding="utf-8"))
+                cfg_data["characters"] = {}
+                cfg_data["anchors"] = [{"filename": "A01_Hero.jpg", "seed": 111, "prompt": "Subject from <image1> on neon rooftop", "image_refs": [rel_src]}]
+                cfg_p.write_text(json.dumps(cfg_data, indent=2), encoding="utf-8")
+                ctx_src = ProjectContext(cfg_p)
+                rspec_src = {"model_type": "flux2_klein_9b_kv", "ref_tag_style": "image N"}
+                canon_p, adapted_p, res_refs = compile_anchor_prompt_and_refs(ctx_src, cfg_data["anchors"][0], rspec_src)
+                self.assertEqual(len(res_refs), 1)
+                self.assertEqual(Path(res_refs[0]).resolve(), (proj_dir / rel_src).resolve())
+                self.assertIn("image 1", adapted_p)
+                t_cfg = ctx_src.make_anchor_task(None, rspec_src, "A01_Hero", adapted_p, seed=111, sp=cfg_data["anchors"][0], image_refs=res_refs)
+                self.assertEqual(t_cfg["image_refs"], res_refs)
+                self.assertEqual(t_cfg["video_prompt_type"], "I")
+
+                # Archive take records image_refs and take-to-anchor carries image_refs over
+                from pipeline.anchor_takes import archive_anchor_take_file
+                a01_file = proj_dir / "work" / "anchors" / "A01_Hero.jpg"
+                a01_file.parent.mkdir(parents=True, exist_ok=True)
+                a01_file.write_bytes(_MIN_1X1_PNG)
+                t_entry = archive_anchor_take_file(
+                    a01_file.parent, proj_dir, "A01", a01_file, cfg_data["anchors"][0],
+                    seed=111, model_type="flux2_klein_9b_kv", image_refs=[rel_src],
+                )
+                self.assertEqual((t_entry or {}).get("image_refs"), [rel_src])
+                st_prom, _, raw_prom = _call_handler(
+                    "POST", "/api/anchors/take-to-anchor",
+                    body={"slug": "anc_api_proj", "aid": "A01", "take_id": t_entry["take_id"], "label": "Promoted"},
+                )
+                self.assertEqual(st_prom, 200)
+                self.assertEqual(json.loads(raw_prom.decode("utf-8"))["new_anchor"].get("image_refs"), [rel_src])
+
+                # /api/anchors/delete-source rejects non-anchor_sources path, deletes valid uploaded source & detaches from JSON
+                st_dsrc_bad, _, _ = _call_handler(
+                    "POST", "/api/anchors/delete-source",
+                    body={"slug": "anc_api_proj", "rel_path": "work/anchors/A01_Hero.jpg"},
+                )
+                self.assertEqual(st_dsrc_bad, 400)
+                st_dsrc_ok, _, raw_dsrc = _call_handler(
+                    "POST", "/api/anchors/delete-source",
+                    body={"slug": "anc_api_proj", "rel_path": rel_src},
+                )
+                self.assertEqual(st_dsrc_ok, 200)
+                dsrc_resp = json.loads(raw_dsrc.decode("utf-8"))
+                self.assertTrue(dsrc_resp["deleted"])
+                self.assertFalse((proj_dir / rel_src).exists())
+                self.assertEqual(dsrc_resp["anchor_source_files"], [])
+                updated_cfg = json.loads(cfg_p.read_text(encoding="utf-8"))
+                self.assertNotIn("image_refs", updated_cfg["anchors"][0])
+
+    def test_19_anchors_studio_js_vm_create_edit_prefill_and_render(self):
+        node_bin = shutil.which("node")
+        if not node_bin:
+            self.skipTest("node not available")
+        js_script = r"""
+        const fs = require("fs");
+        const vm = require("vm");
+        const calls = { dirty: 0, history: [], dropdown: 0, switchTab: [], renderArgs: null, toast: [] };
+        const fakeEl = () => ({
+          innerHTML: "", style: {}, value: "", checked: false, disabled: false, dataset: {},
+          className: "", textContent: "", options: [], classList: { add(){}, remove(){}, toggle(){} },
+          add(o){ this.options.push(o); },
+          append(){}, appendChild(){}, querySelector(){ return null; }, querySelectorAll(){ return []; },
+          addEventListener(){}, dispatchEvent(){}, focus(){}, click(){}, scrollIntoView(){},
+        });
+        const win = {
+          state: {
+            currentSlug: "vm_proj",
+            selectedSceneIdx: 0,
+            isDirty: false,
+            models: { anchor_renderers: {}, fal_anchor_renderers: {} },
+            assets: { anchors: {}, ref_files: [] },
+            charactersData: { char_e: { name: "Elena", default_look: "default", looks: { default: { tag: "@elena", image_refs: ["references/e.png"] } } } },
+            projectData: {
+              anchors: [{ filename: "A01_Lead.jpg", seed: 1001, prompt: "Initial anchor" }],
+              scenes: [{ id: "S01", start: 0, end: 3, seed: 3003, anchor: "A01_Lead.jpg", prompt: "For the target video, continuous camera:\ndetailed_description: [Shot 01] Continue directly from <Picture 1>. @elena singing passionately <cue>." }],
+              models: { anchor_shared_settings: { image_refs: [] } },
+            },
+          },
+          extractAnchorId: (s) => (String(s || "").match(/^(A\d+[a-z]?)/i)?.[1] || String(s || "")).toUpperCase(),
+          escapeHtml: (s) => String(s || ""),
+          getMergedAnchorsList: () => [],
+          markProjectDirty: () => { calls.dirty++; win.state.isDirty = true; },
+          recordHistorySnapshot: (lbl) => calls.history.push(lbl),
+          updateInspectorAnchorsDropdown: () => { calls.dropdown++; },
+          updateSceneAnchorPreview: () => {},
+          redrawTimeline: () => {},
+          switchTab: (t) => calls.switchTab.push(t),
+          showToast: (m) => calls.toast.push(m),
+          triggerRender: async (args) => { calls.renderArgs = args; },
+          handleQueueSSEEvent: () => {},
+          addEventListener: () => {},
+        };
+        const ctx = vm.createContext({
+          window: win,
+          document: { readyState: "complete", getElementById: () => null, createElement: () => fakeEl(), addEventListener: () => {} },
+          Event: function(t){ this.type = t; },
+          Option: function(t, v){ return { text: t, value: v }; },
+          setTimeout, clearTimeout, console, Promise,
+        });
+        Object.assign(ctx, { window: ctx.window });
+        vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), ctx);
+        const derived = ctx.window.deriveAnchorPromptFromScene(ctx.window.state.projectData.scenes[0]);
+        if (!derived.startsWith("Cinematic 16:9 still frame,") || derived.includes("For the target video") || derived.includes("<Picture 1>") || derived.includes("<cue>")) {
+          throw new Error("Bad derived prompt: " + derived);
+        }
+        const duetSc = {
+          id: "S02",
+          mode: "duet_method_b",
+          prompt_m: "For the target video:\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Wide studio floor. On the left, @male sings with synchronized lip movements, while the partner on the right listens quietly.",
+          prompt_f: "For the target video:\nintegrated_multimodal_description: [Shot 1] Continue directly from <Picture 1>. Wide studio floor. On the right, @elena sings harmony with synchronized lip movements.",
+        };
+        const duetDerived = ctx.window.deriveAnchorPromptFromScene(duetSc);
+        if (!duetDerived.includes("@male") || !duetDerived.includes("@elena") || duetDerived.includes("synchronized lip movements")) {
+          throw new Error("Bad duet derived prompt: " + duetDerived);
+        }
+        const a2 = ctx.window.createNewAnchor({ label: "Chorus", prompt: "Neon @elena closeup", seed: 4444, resolution: "1280x720", negative_prompt: "blurry" });
+        if (a2.filename !== "A02_Chorus.jpg" || a2.seed !== 4444 || !ctx.window.state.isDirty) {
+          throw new Error("Bad created anchor: " + JSON.stringify(a2));
+        }
+        const a3 = ctx.window.createAnchorFromScene(0);
+        if (a3.filename !== "A03_S01.jpg" || ctx.window.state.projectData.scenes[0].anchor !== "A03_S01.jpg" || !calls.switchTab.includes("anchors")) {
+          throw new Error("Bad createAnchorFromScene result: " + JSON.stringify(a3));
+        }
+        const a4 = ctx.window.duplicateAnchor("A02_Chorus.jpg");
+        if (!a4 || a4.filename !== "A04_Chorus_Copy.jpg" || a4.prompt !== "Neon @elena closeup" || a4.resolution !== "1280x720" || a4.negative_prompt !== "blurry") {
+          throw new Error("Bad duplicateAnchor result: " + JSON.stringify(a4));
+        }
+        ctx.window.renderSingleAnchor("A02_Chorus.jpg");
+        if (JSON.stringify(calls.renderArgs) !== JSON.stringify(["--anchors-only", "A02"])) {
+          throw new Error("Bad renderSingleAnchor args: " + JSON.stringify(calls.renderArgs));
+        }
+        ctx.window.renderSingleAnchor("A02_Chorus.jpg", 3);
+        if (JSON.stringify(calls.renderArgs) !== JSON.stringify(["--anchors-only", "A02:x3"])) {
+          throw new Error("Bad multi-take renderSingleAnchor args: " + JSON.stringify(calls.renderArgs));
+        }
+        process.stdout.write("VM_OK");
+        """
+        proc = subprocess.run(
+            [node_bin, "-e", js_script, str(WORK_DIR / "ui" / "static" / "js" / "anchors_studio.js")],
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(proc.stdout.strip(), "VM_OK")
+
+    def test_20_anchor_takes_batch_use_delete_promote_and_character_ref_generation(self):
+        from pipeline.anchor_takes import run_character_ref_generation
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            tmp_p = tmp_root / "projects"
+            tmp_p.mkdir()
+            proj_dir, cfg_path = _create_fixture_project(tmp_p, slug="takes_proj", with_anchors=False)
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg["characters"] = {
+                "char_elena": {
+                    "id": "char_elena",
+                    "name": "Elena",
+                    "physical_traits": "concert violinist",
+                    "default_look": "emerald",
+                    "looks": {
+                        "emerald": {
+                            "tag": "@elena",
+                            "description": "wearing emerald velvet gown",
+                            "gen_prompt": "Cinematic portrait of @elena on stage",
+                            "gen_seed": 500,
+                            "image_refs": [],
+                        }
+                    },
+                }
+            }
+            cfg["anchors"] = [
+                {"filename": "A01_Elena.jpg", "seed": 101, "prompt": "Portrait of @elena"},
+            ]
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            ctx = ProjectContext(cfg_path)
+            lazy = LazyWgpSession(ctx)
+            state = {}
+
+            # 1. Generate 3 takes for A01 in one batch via A01:x3
+            run_stage1_anchors(ctx, lazy, state, force_anchors=["A01:x3"], dummy_render=True)
+            with mock.patch.object(server, "PROJECTS_DIR", tmp_p):
+                st_t, _, raw_t = _call_handler("POST", "/api/anchors/takes", body={"slug": "takes_proj"})
+                self.assertEqual(st_t, 200)
+                a01_slot = json.loads(raw_t.decode("utf-8"))["anchor_takes"]["A01"]
+                takes_list = a01_slot["takes"]
+                self.assertEqual(len(takes_list), 3)
+                self.assertEqual([t["seed"] for t in takes_list], [101, 102, 103])
+                self.assertEqual(a01_slot["active_take_id"], takes_list[2]["take_id"])
+
+                # 2. Activate Take #1 (seed 101)
+                st_use, _, raw_use = _call_handler(
+                    "POST", "/api/anchors/take-use",
+                    body={"slug": "takes_proj", "aid": "A01", "take_id": takes_list[0]["take_id"]},
+                )
+                self.assertEqual(st_use, 200)
+                self.assertEqual(json.loads(raw_use.decode("utf-8"))["active_take_id"], takes_list[0]["take_id"])
+                self.assertEqual(json.loads(cfg_path.read_text(encoding="utf-8"))["anchors"][0]["seed"], 101)
+
+                # 3. Promote Take #2 (seed 102) into a separate new Anchor (A02)
+                st_prom, _, raw_prom = _call_handler(
+                    "POST", "/api/anchors/take-to-anchor",
+                    body={"slug": "takes_proj", "aid": "A01", "take_id": takes_list[1]["take_id"]},
+                )
+                self.assertEqual(st_prom, 200)
+                prom_data = json.loads(raw_prom.decode("utf-8"))
+                self.assertEqual(prom_data["new_aid"], "A02")
+                self.assertTrue((ctx.anchors_dir / prom_data["new_anchor"]["filename"]).is_file())
+
+                # 4. Delete Take #3 (seed 103)
+                st_del, _, raw_del = _call_handler(
+                    "POST", "/api/anchors/take-delete",
+                    body={"slug": "takes_proj", "aid": "A01", "take_id": takes_list[2]["take_id"]},
+                )
+                self.assertEqual(st_del, 200)
+                rem_takes = json.loads(raw_del.decode("utf-8"))["anchor_takes"]["A01"]["takes"]
+                self.assertEqual(len(rem_takes), 2)
+
+                # 4b. Subsequent generation on A01 skips already-used seeds (101, 102) instead of producing duplicates
+                run_stage1_anchors(ctx, lazy, state, force_anchors=["A01:x2"], dummy_render=True)
+                st_t2, _, raw_t2 = _call_handler("POST", "/api/anchors/takes", body={"slug": "takes_proj"})
+                self.assertEqual(st_t2, 200)
+                takes_after_second_run = json.loads(raw_t2.decode("utf-8"))["anchor_takes"]["A01"]["takes"]
+                self.assertEqual([t["seed"] for t in takes_after_second_run], [101, 102, 103, 104])
+
+                # 5. Generate 2 character look reference image takes via run_character_ref_generation
+                ctx2 = ProjectContext(cfg_path)
+                created_refs = run_character_ref_generation(ctx2, lazy, "char_elena:emerald:x2", dummy_render=True)
+                self.assertEqual(len(created_refs), 2)
+                for rp in created_refs:
+                    self.assertTrue((proj_dir / rp).is_file())
+                saved_chars = json.loads(cfg_path.read_text(encoding="utf-8"))["characters"]
+                gen_takes = saved_chars["char_elena"]["looks"]["emerald"]["generated_takes"]
+                self.assertEqual(len(gen_takes), 2)
+                self.assertEqual([t["seed"] for t in gen_takes], [500, 501])
+
+                # 6. Turn character look take #1 into a separate Stage 1 Anchor (A03) & delete take #2
+                st_ca, _, raw_ca = _call_handler(
+                    "POST", "/api/anchors/char-take-action",
+                    body={
+                        "slug": "takes_proj",
+                        "sub_action": "to_anchor",
+                        "entity_id": "char_elena",
+                        "look_id": "emerald",
+                        "rel_path": created_refs[0],
+                        "take_id": gen_takes[0]["take_id"],
+                    },
+                )
+                self.assertEqual(st_ca, 200)
+                ca_data = json.loads(raw_ca.decode("utf-8"))
+                self.assertEqual(ca_data["new_aid"], "A03")
+                self.assertTrue((ctx.anchors_dir / ca_data["new_anchor"]["filename"]).is_file())
+
+                st_cd, _, raw_cd = _call_handler(
+                    "POST", "/api/anchors/char-take-action",
+                    body={
+                        "slug": "takes_proj",
+                        "sub_action": "delete",
+                        "entity_id": "char_elena",
+                        "look_id": "emerald",
+                        "rel_path": created_refs[1],
+                        "take_id": gen_takes[1]["take_id"],
+                    },
+                )
+                self.assertEqual(st_cd, 200)
+                self.assertFalse((proj_dir / created_refs[1]).exists())
+
+                # 7. Verify prepare_targeted_anchor_queue_items queues one entry per image (including while a scene is rendering)
+                from pipeline.anchor_takes import prepare_targeted_anchor_queue_items
+                q_entries = prepare_targeted_anchor_queue_items(server, "takes_proj", ["--anchors-only", "A01:x3"], is_worker_running=False)
+                self.assertEqual(len(q_entries), 3)
+                self.assertTrue(all(e.get("stage") == "anchor" and e.get("status") == "queued" for e in q_entries))
+                # Seeds 101..104 were already used on A01 above, so new queued entries get [105, 106, 107]
+                self.assertEqual([e["seed"] for e in q_entries], [105, 106, 107])
+                self.assertEqual([e["target_arg"] for e in q_entries], ["A01:s105", "A01:s106", "A01:s107"])
+
+                # Individual anchor queue entries can be reordered and removed via standard queue operations
+                q_after_move = server.move_in_project_queue("takes_proj", q_entries[1]["filename"], "up")
+                anc_in_q = [x for x in q_after_move if x.get("stage") == "anchor" and x.get("status") == "queued"]
+                self.assertEqual([x["seed"] for x in anc_in_q], [106, 105, 107])
+
+                q_after_rm = server.remove_from_project_queue("takes_proj", q_entries[2]["filename"])
+                anc_queued_after_rm = [x for x in q_after_rm if x.get("stage") == "anchor" and x.get("status") == "queued"]
+                self.assertEqual([x["seed"] for x in anc_queued_after_rm], [106, 105])
+
+                # Queuing more anchor takes while a task is actively rendering appends without blocking or duplicating queued seeds
+                more_entries = prepare_targeted_anchor_queue_items(server, "takes_proj", ["--anchors-only", "A01:x2"], is_worker_running=True)
+                self.assertEqual([e["seed"] for e in more_entries], [107, 108])
+
+                # 8. Batch delete active + historical takes via take_ids in one API call promotes newest survivor
+                batch_del_ids = [takes_after_second_run[0]["take_id"], takes_after_second_run[2]["take_id"]]
+                st_bdel, _, raw_bdel = _call_handler(
+                    "POST", "/api/anchors/take-delete",
+                    body={"slug": "takes_proj", "aid": "A01", "take_ids": batch_del_ids},
+                )
+                self.assertEqual(st_bdel, 200)
+                bdel_data = json.loads(raw_bdel.decode("utf-8"))
+                self.assertEqual(bdel_data["deleted_count"], 2)
+                rem_after_batch = bdel_data["anchor_takes"]["A01"]["takes"]
+                self.assertEqual([t["seed"] for t in rem_after_batch], [102, 104])
+                self.assertEqual(bdel_data["anchor_takes"]["A01"]["active_take_id"], takes_after_second_run[3]["take_id"])
+
+    def test_21_completed_anchor_seeds_never_requeue_or_duplicate(self):
+        from pipeline.anchor_takes import archive_anchor_take_file, prepare_targeted_anchor_queue_items
+        from ui import server_engine_io
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp) / "projects"
+            tmp_p.mkdir()
+            proj_dir, cfg_path = _create_fixture_project(tmp_p, slug="anc_noseed_dup", with_anchors=True)
+            a01_img = proj_dir / "work" / "anchors" / "A01_Lead.jpg"
+            a01_img.write_bytes(b"IMG_SEED_1001")
+            archive_anchor_take_file(
+                proj_dir / "work" / "anchors",
+                proj_dir,
+                "A01",
+                a01_img,
+                {"filename": "A01_Lead.jpg", "seed": 1001, "prompt": "P"},
+                seed=1001,
+                make_active=True,
+            )
+
+            # 1. collect_active_rendering_map must ignore stale slot['filename'] once per_tasks marks it completed
+            act_map = server_engine_io.collect_active_rendering_map(
+                running_stems=set(),
+                local_slots=["A01_Lead_s1001"],
+                q_active=True,
+                per_tasks={
+                    ("local", "A01_Lead_s1001"): {
+                        "state": "completed",
+                        "backend": "local",
+                        "filename": "A01_Lead_s1001.jpg",
+                        "output_filename": "A01_Lead_s1001",
+                        "started_at": 1000.0,
+                        "updated_at": 1029.5,
+                    }
+                },
+                per_eng={},
+                legacy_eng=None,
+                slots_items=[("local", {"filename": "A01_Lead_s1001.jpg", "started_at": 1000.0})],
+            )
+            self.assertNotIn("A01_Lead_s1001", act_map)
+            self.assertNotIn("A01_Lead_s1001.jpg", act_map)
+
+            # 2. Corrupted completed rows & leftover duplicate queued rows for already-rendered seeds heal and never re-run
+            q_file = proj_dir / "work" / "jobs" / "v3_queue.json"
+            q_file.parent.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(server, "PROJECTS_DIR", tmp_p):
+                q_file.write_text(
+                    json.dumps([
+                        {
+                            "idx": 1, "id": "A01_Lead_s1001", "stage": "anchor", "anchor_id": "A01", "scene_id": "A01",
+                            "target_arg": "A01:s1001", "seed": 1001, "filename": "A01_Lead_s1001.jpg",
+                            "output_filename": "A01_Lead_s1001", "status": "queued", "reason": "COMPLETED",
+                            "needs_render": True, "completed_at": 1030.0, "backend": "local",
+                        },
+                        {
+                            "idx": 2, "id": "A01_Lead_s1002", "stage": "anchor", "anchor_id": "A01", "scene_id": "A01",
+                            "target_arg": "A01:s1002", "seed": 1002, "filename": "A01_Lead_s1002.jpg",
+                            "output_filename": "A01_Lead_s1002", "status": "queued", "reason": "ANCHOR A01 TAKE 2/2 (s1002)",
+                            "needs_render": True, "backend": "local",
+                        },
+                    ]),
+                    encoding="utf-8",
+                )
+                reconciled = server.compute_fast_project_queue("anc_noseed_dup", force_recheck=False)
+                by_id = {x["id"]: x for x in reconciled}
+                self.assertEqual(by_id["A01_Lead_s1001"]["status"], "completed")
+                self.assertFalse(by_id["A01_Lead_s1001"]["needs_render"])
+                self.assertEqual(by_id["A01_Lead_s1002"]["status"], "queued")
+                _, picked = server_engine_io.pick_next_eligible_item(reconciled, "local", server)
+                self.assertEqual((picked or {}).get("id"), "A01_Lead_s1002")
+
+                # 3. Re-queuing A01 drops stale queued rows for seeds already saved in anchor_takes.json
+                q_file.write_text(
+                    json.dumps([
+                        {
+                            "idx": 1, "id": "A01_Lead_s1001", "stage": "anchor", "anchor_id": "A01", "scene_id": "A01",
+                            "target_arg": "A01:s1001", "seed": 1001, "filename": "A01_Lead_s1001.jpg",
+                            "output_filename": "A01_Lead_s1001", "status": "queued", "reason": "STOPPED BY USER",
+                            "needs_render": True, "backend": "local",
+                        },
+                    ]),
+                    encoding="utf-8",
+                )
+                new_entries = prepare_targeted_anchor_queue_items(server, "anc_noseed_dup", ["--anchors-only", "A01:x2"], is_worker_running=False)
+                self.assertEqual([e["seed"] for e in new_entries], [1002, 1003])
+                after_q = json.loads(q_file.read_text(encoding="utf-8"))
+                self.assertFalse(any(x.get("id") == "A01_Lead_s1001" and x.get("status") == "queued" for x in after_q))
+
+    def test_22_stale_pinokio_wgp_path_redetection_and_repair(self):
+        import os as _os
+        from pipeline.media_utils import auto_detect_wgp_root, is_valid_wgp_root, repair_stale_local_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            ws_dir = tmp_p / "ws"
+            ws_dir.mkdir()
+            old_pin = tmp_p / "old_pinokio"
+            old_wgp = old_pin / "api" / "wan.git" / "app"
+            old_py = old_wgp / "venv" / "Scripts" / "python.exe"
+            new_pin = tmp_p / "new_pinokio"
+            new_wgp = new_pin / "api" / "wan.git" / "app"
+            new_py = new_wgp / "venv" / "Scripts" / "python.exe"
+            (new_wgp / "models").mkdir(parents=True)
+            (new_wgp / "wgp_config.json").write_text("{}", encoding="utf-8")
+            new_py.parent.mkdir(parents=True)
+            if _os.name == "nt":
+                shutil.copy2(sys.executable, new_py)
+                for dll in Path(sys.executable).parent.glob("*.dll"):
+                    shutil.copy2(dll, new_py.parent / dll.name)
+            else:
+                new_py.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            # Empty leftover folder is rejected; valid install is accepted
+            old_wgp.mkdir(parents=True)
+            self.assertFalse(is_valid_wgp_root(old_wgp))
+            self.assertTrue(is_valid_wgp_root(new_wgp))
+
+            # Stale local_config.json + config.local.bat pointing to removed/empty old_pinokio
+            (ws_dir / "local_config.json").write_text(
+                json.dumps({
+                    "wgp_root": str(old_wgp),
+                    "pinokio_root": str(old_pin),
+                    "python_path": str(old_py),
+                    "fal_key_dpapi": "keep_me_secret",
+                }),
+                encoding="utf-8",
+            )
+            (ws_dir / "config.local.bat").write_text(
+                f'@echo off\nset "PINOKIO_PY={old_py}"\nset "WGP_ROOT={old_wgp}"\n',
+                encoding="utf-8",
+            )
+
+            proj_dir, cfg_path = _create_fixture_project(tmp_p, slug="reloc_proj", with_anchors=False)
+            (proj_dir / "local_config.json").write_text(json.dumps({"wgp_root": str(old_wgp), "python_path": str(old_py)}), encoding="utf-8")
+
+            env_patch = {
+                "WGP_ROOT": str(old_wgp),
+                "PINOKIO_PY": str(old_py),
+                "PINOKIO_HOME": str(new_pin),
+            }
+            with mock.patch.dict(_os.environ, env_patch, clear=False):
+                detected = auto_detect_wgp_root()
+                self.assertEqual(detected, new_wgp.resolve())
+                ctx = ProjectContext(cfg_path)
+                self.assertEqual(ctx.wgp_root, new_wgp.resolve())
+                with mock.patch.object(server, "WORKSPACE_ROOT", ws_dir):
+                    self.assertEqual(Path(server.resolve_engine_python()).resolve(), new_py.resolve())
+                    self.assertTrue(repair_stale_local_config(ws_dir, wgp_root=detected))
+
+            repaired_json = json.loads((ws_dir / "local_config.json").read_text(encoding="utf-8"))
+            self.assertEqual(Path(repaired_json["wgp_root"]).resolve(), new_wgp.resolve())
+            self.assertEqual(Path(repaired_json["python_path"]).resolve(), new_py.resolve())
+            self.assertEqual(repaired_json["fal_key_dpapi"], "keep_me_secret")
+            repaired_bat = (ws_dir / "config.local.bat").read_text(encoding="utf-8")
+            self.assertIn(str(new_wgp.resolve()), repaired_bat)
+
+            # End-to-end launch_ui.bat check on Windows: stale config.local.bat must recover and re-scan
+            if _os.name == "nt":
+                bat_ws = tmp_p / "bat_ws"
+                (bat_ws / "work" / "ui").mkdir(parents=True)
+                shutil.copy2(WORKSPACE_ROOT / "launch_ui.bat", bat_ws / "launch_ui.bat")
+                (bat_ws / "config.local.bat").write_text(
+                    f'@echo off\nset "PINOKIO_PY={old_py}"\nset "WGP_ROOT={old_wgp}"\n',
+                    encoding="utf-8",
+                )
+                (bat_ws / "work" / "ui" / "server.py").write_text("import sys; print('LAUNCHED_OK', sys.executable)\n", encoding="utf-8")
+                bat_env = _os.environ.copy()
+                bat_env["PINOKIO_HOME"] = str(new_pin)
+                bat_env["MVG_NO_BROWSER"] = "1"
+                res_bat = subprocess.run(
+                    ["cmd", "/c", str(bat_ws / "launch_ui.bat")],
+                    cwd=str(bat_ws),
+                    env=bat_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                self.assertEqual(res_bat.returncode, 0, res_bat.stdout + res_bat.stderr)
+                self.assertIn("LAUNCHED_OK", res_bat.stdout)
+                self.assertIn(str(new_wgp.resolve()), (bat_ws / "config.local.bat").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

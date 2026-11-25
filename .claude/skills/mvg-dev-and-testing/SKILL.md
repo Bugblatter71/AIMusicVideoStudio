@@ -45,7 +45,7 @@ python -m unittest tests/test_regression_fixes.py tests/test_backend_queue.py te
 - Scene mutations & persistence: `python -m unittest tests/test_scene_persistence.py tests/test_anchor_end.py tests/test_scene_render_padding.py -v`
 - Cross-engine Duet ROI & lip-sync repair: `python -m unittest tests/test_duet_roi.py -v`
 - General unit coverage: `python -m unittest tests/test_unit_coverage.py -v`
-- Playwright E2E UI tests (`tests/test_ui_e2e_playwright.py` / `tests/ui_render_queue.spec.js`) when testing live browser DOM interactions.
+- **Playwright E2E UI tests (`BypassSandbox: true` required on Windows)**: Never run `tests/test_ui_e2e_playwright.py` or `tests/ui_render_queue.spec.js` inside the Windows sandbox — Chromium subprocesses and localhost HTTP binding hang inside the sandbox until canceled. Always invoke Playwright E2E directly with `BypassSandbox: true` on the first attempt, while running `verify_repo_health.py`, `symbol_index.py`, and non-browser unit suites inside the sandbox.
 
 > [!NOTE]
 > On Windows PowerShell, separate multiple commands in one shell call with `;` (never `&&`). Tests in `test_backend_queue.py` mutate temporary copies or `projects/test_project/work/`; keep tests hermetic by backing up/restoring queue state in `try/finally`.

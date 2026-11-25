@@ -624,6 +624,7 @@ class FalSession:
                 "seed": seed,
                 "num_inference_steps": int(task.get("num_inference_steps", 28)),
                 "guidance_scale": float(task.get("guidance_scale", 4.0)),
+                **({"negative_prompt": str(task["negative_prompt"])} if str(task.get("negative_prompt") or "").strip() else {}),
             }
             if adapter == "qwen_image_edit":
                 args["output_format"] = "jpeg"

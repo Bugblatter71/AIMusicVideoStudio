@@ -1,282 +1,85 @@
-# MVG State & File Contracts Reference
+# MVG State & HTTP API Contracts
 
-This document defines the schema, contracts, and lifecycle of the core JSON data structures used across the Music Video Generation Studio.
+Reference schemas so agents do not need to dump multi-megabyte project state files or read full HTTP handlers.
 
 ---
 
-## 1. Project Configuration JSON (`projects/<slug>/<slug>.json`)
-
-The primary declaration of a music video project.
+## 1. Project Configuration (`projects/<slug>/<slug>[_vN].json`)
+Latest sorted non-`state_hashes*.json` JSON inside `projects/<slug>/` is loaded by `ProjectContext` and `find_latest_project_json`.
 
 ```json
 {
   "project": {
-    "name": "Project Display Name",
-    "slug": "project_slug",
-    "total_duration": 180.5,
+    "name": "Song Title",
+    "project_dir": ".",
+    "master_audio": "audio/master_audio.mp3",
+    "stems": { "lead_vocal": "audio/lead_vocal.mp3", "male": "audio/male.mp3", "female": "audio/female.mp3" },
+    "master_output": "Slug_Master_{resolution}_{fps}fps.mp4",
+    "master_resolution": "",
     "fps": 24,
-    "master_resolution": "1344x768",
-    "audio": "audio/song.mp3",
+    "total_duration": 180.0,
+    "trim_first_frame_seconds": 0.04,
+    "fade_out_last_scene_seconds": 2.0,
     "directories": {
-      "anchors": "work/anchors_v3",
-      "renders": "work/renders_v3",
-      "trimmed": "work/trimmed_v3",
-      "jobs": "work/jobs_v3"
+      "anchors": "work/anchors",
+      "audio_slices": "work/audio",
+      "masks": "work/masks",
+      "jobs": "work/jobs",
+      "renders": "work/renders",
+      "trimmed": "work/trimmed",
+      "review_strips": "work/frames"
     }
   },
+  "profiles_file": "model_profiles.json",
   "models": {
-    "default_model": "minimax_h3_fl2va_pruned_pdd",
-    "default_video_resolution": "4",
-    "video_shared_settings": {
-      "cfg_scale": 5.0,
-      "steps": 25,
-      "seed": 42
-    }
+    "default_anchor_renderer": 3,
+    "default_video_renderer": 1,
+    "default_video_resolution": 4,
+    "default_backend": "local",
+    "anchor_shared_settings": { "image_refs": [] },
+    "video_shared_settings": { "negative_prompt": "..." }
   },
-  "anchors": [
-    {
-      "id": "A01",
-      "name": "Lead Vocalist",
-      "prompt": "Cinematic portrait of...",
-      "reference_image": "references/portrait.jpg",
-      "model": "flux_dev"
-    }
-  ],
+  "variables": { "CHAR_DESC": "..." },
+  "characters": { "<char_id>": { "id": "...", "name": "...", "kind": "character", "default_look": "default", "looks": { "<look_id>": { "tag": "@tag", "description": "...", "image_refs": [] } } } },
+  "markers": [ { "id": "M01", "name": "Chorus Drop", "time": 42.5, "color": "#f59e0b" } ],
+  "anchors": [ { "filename": "A01_Shot.jpg", "renderer": null, "seed": 8101, "prompt": "..." } ],
   "scenes": [
     {
       "id": "S01",
-      "title": "Intro Scene",
       "start": 0.0,
-      "end": 8.5,
-      "mode": "male_solo",
-      "anchor": "A01",
-      "stem": "male.mp3",
-      "prompt": "Vocalist singing intensely, neon backlight",
-      "output_name": "S01_male_solo"
-    },
-    {
-      "id": "S02",
-      "title": "Duet Scene",
-      "start": 8.5,
-      "end": 18.0,
-      "mode": "gva_male_left_silent_right",
-      "anchor": "A01",
-      "anchor_female": "A02",
-      "stem_m": "male.mp3",
-      "stem_f": "female.mp3",
-      "prompt_pass1": "Vocalist on left half, empty room right",
-      "prompt_pass2": "Female vocalist singing on right half",
-      "output_name": "S02_duet"
-    }
-  ],
-  "markers": [
-    {
-      "id": "m1",
-      "name": "Chorus Drop",
-      "time": 45.2,
-      "color": "#f59e0b"
+      "end": 6.0,
+      "mode": "solo",
+      "stem": "lead_vocal",
+      "anchor": "A01_Shot.jpg",
+      "seed": 9101,
+      "renderer": null,
+      "backend": null,
+      "prompt": "..."
     }
   ]
 }
 ```
 
----
-
-## 2. Queue State JSON (`work/jobs_v3/v3_queue.json`)
-
-The live render queue evaluated by `server_queue.py` and displayed in the UI console.
-
-```json
-[
-  {
-    "idx": 1,
-    "id": "S01_male_solo_1344x768",
-    "scene_id": "S01",
-    "target_arg": "S01",
-    "pass": null,
-    "filename": "S01_male_solo_1344x768.mp4",
-    "output_filename": "S01_male_solo_1344x768",
-    "status": "completed",
-    "reason": "UP-TO-DATE",
-    "needs_render": false,
-    "task_hash": "a1b2c3d4e5f67890",
-    "anchor_mtime": 1731000000.0,
-    "model_type": "minimax_h3_fl2va_pruned_pdd",
-    "resolution": "1344x768"
-  },
-  {
-    "idx": 2,
-    "id": "S02_Pass1_Left_1344x768",
-    "scene_id": "S02",
-    "target_arg": "S02:p1",
-    "pass": 1,
-    "filename": "S02_Pass1_Left_1344x768.mp4",
-    "output_filename": "S02_Pass1_Left_1344x768",
-    "status": "queued",
-    "reason": "FORCED",
-    "needs_render": true,
-    "task_hash": "f6e5d4c3b2a10987",
-    "anchor_mtime": 1731000100.0,
-    "model_type": "minimax_h3_fl2va_pruned_pdd",
-    "resolution": "1344x768"
-  }
-]
-```
-
-### Status Codes
-- `completed`: Valid MP4 exists on disk and task hashes match.
-- `queued`: Missing from disk or flagged as modified (`needs_render = True`).
-- `rendering`: Currently in progress by active Wan2GP subprocess.
-- `skipped`: Explicitly skipped by user (`reason = "SKIPPED BY USER"`). Holds `user_skipped_hash` and `user_skipped_anchor_mtime` to remain skipped until user edits that scene.
-- `failed`: Non-zero exit code or engine generation error.
+### Supported Scene Modes
+- Solo / Silent: `solo`, `male_solo`, `female_solo`, `silent`, `silent_locked`, `ambient`, `duet_method_a` (`duet_a`, single-pass stereo duet).
+- Two-Pass Duet: `duet_method_b`, `gva_male_left_silent_right`, `duet`, `two_pass_gva` (generates `_Pass1_Left_<res>.mp4` then `_Pass2_Final_<res>.mp4`; supports `stem_m`, `stem_f`, `seed_m`, `seed_f`, `prompt_m`, `prompt_f`, `split_x`, `backend`, `backend_f`, `pass2_roi_mode` = `full | half_split | tight_performer | custom`).
 
 ---
 
-## 3. State Hashes Cache (`work/jobs_v3/state_hashes.json`)
-
-Persistent record of generated tasks, anchor file hashes, and time bounds.
-
-```json
-{
-  "tasks": {
-    "S01_male_solo_1344x768": "a1b2c3d4e5f67890",
-    "S02_Pass1_Left_1344x768": "f6e5d4c3b2a10987"
-  },
-  "anchor_file_hashes": {
-    "A01": "e3b0c44298fc1c14",
-    "A02": "4b227777d4dd1fc6"
-  },
-  "scene_renders": {
-    "S01_male_solo_1344x768": {
-      "render_start": 0.0,
-      "render_end": 8.5
-    }
-  }
-}
-```
+## 2. Queue & State Files (`work/jobs[_v3]/` and `work/`)
+- **`v3_queue.json`**: Array of pass objects with `idx`, `id`, `scene_id`, `pass` (`null | 1 | 2`), `filename`, `output_filename`, `status` (`queued | rendering | completed | failed | skipped`), `needs_render`, `reason`, `error`, `task_hash`, `anchor_mtime`, `model_type`, `resolution`, `frames`, `backend`, `backend_override`, `resolved_default_backend`, `estimated_seconds`, `estimated_str`, `estimated_cost_usd`, `cost_str`.
+- **`state_hashes.json`**: `{ "anchors": {aid: hash}, "tasks": {out_name: hash}, "scene_renders": {out_name: {render_start, render_end, frames, elapsed, completed_at}}, "backend_history": {...} }`. Written atomically with file locks; never write partial task hashes in parallel without reload-merge.
+- **`takes_manifest.json`**: `{ "version": 1, "scenes": { "<SID>": { "active_take_id": "...", "active_takes": {"p1": "...", "p2": "...", "default": "..."}, "takes": [...] } } }`.
+- **`engine_status_{local,fal,minimax}[__<out_stem>].json`**: Live engine & per-slot progress `{state, backend, filename, output_filename, phase, raw_phase, step, total_steps, pct, window_pct, started_at, updated_at, error}`.
+- **`cancel_request.json`**: Checked cooperatively by `wgp_bridge.py` and cloud polling loops.
 
 ---
 
-## 4. Engine Status JSON (`work/jobs_v3/engine_status.json`)
-
-Written by `wgp_bridge.py` during render jobs and polled by the UI via `/api/render/status` and SSE.
-
-```json
-{
-  "state": "running",
-  "phase": "inference",
-  "raw_phase": "Denoising",
-  "step": 14,
-  "total_steps": 25,
-  "pct": 56.0,
-  "overall_pct": 28.0,
-  "window_index": 1,
-  "window_count": 2,
-  "filename": "S01_male_solo_1344x768",
-  "updated_at": 1731000500.123
-}
-```
-
-### Valid Phases
-- `loading_model`: Model weights loading into GPU VRAM.
-- `encoding_audio`: Extracting audio features / spectrograms.
-- `encoding_anchor`: Processing character anchor portrait.
-- `inference`: Sampling/denoising steps (contains `step` / `total_steps`).
-- `saving`: Writing and encoding MP4 to disk.
-- `completed`: Successfully finished.
-- `cancelled`: Cancelled via `cancel_request.json`.
-- `failed`: Terminated with an error.
-
----
-
-## 5. Render Vault Manifest JSON (`work/takes_manifest.json`)
-
-Maintained by `takes.py` to record every rendered take per scene, active take mappings, and creative parameter snapshots for instant restoration.
-
-```json
-{
-  "version": 1,
-  "scenes": {
-    "S01": {
-      "active_takes": {
-        "default": "take_346baa9b6437"
-      },
-      "active_take_id": "take_346baa9b6437",
-      "takes": [
-        {
-          "take_id": "take_346baa9b6437",
-          "take_number": 1,
-          "out_name": "S01_male_solo_1344x768",
-          "pass_num": null,
-          "task_hash": "346baa9b6437ea5e",
-          "created_at": 1731000500.0,
-          "vault_rel_mp4": "takes/S01/S01_male_solo_1344x768__346baa9b6437.mp4",
-          "vault_rel_strip": "takes/S01/S01_male_solo_1344x768__346baa9b6437_strip.jpg",
-          "render_start": 0.0,
-          "render_end": 8.5,
-          "frames": 204,
-          "elapsed_s": 45.2,
-          "size_bytes": 1048576,
-          "resolution": "1344x768",
-          "scene_snapshot": {
-            "id": "S01",
-            "prompt": "Solo vocalist singing intro",
-            "seed": 1001
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
----
-
-## 6. Project Checkpoints (`checkpoints/`)
-
-Maintained by `takes.py` to support zero-GPU full-project rollbacks.
-- `checkpoints/index.json`: Chronological checkpoint registry.
-- `checkpoints/<ckpt_id>/`:
-  - `project.json`: Snapshot of project config.
-  - `state_hashes.json`: Snapshot of queue state hashes.
-  - `active_takes.json`: Map of scene ID -> active take IDs.
-
-```json
-{
-  "version": 1,
-  "checkpoints": [
-    {
-      "id": "ckpt_20261108_193000_manual",
-      "name": "Act I Rough Cut",
-      "trigger": "manual",
-      "note": "All intro scenes finalized",
-      "timestamp": 1731000600.0,
-      "proj_hash": "a1b2c3d4e5f67890"
-    }
-  ]
-}
-```
-
----
-
-## 7. Character Reference Catalog (`projects/<slug>/characters.json`)
-
-Maintained by `characters.py` for multi-reference identity sheets and prompt tag compilation.
-
-```json
-{
-  "version": 1,
-  "characters": [
-    {
-      "tag": "{MARCUS}",
-      "name": "Marcus Kane",
-      "gender": "male",
-      "appearance_prompt": "tall athletic black man, short fade haircut, stubble beard",
-      "reference_images": [
-        "references/marcus_front.jpg",
-        "references/marcus_side.jpg"
-      ]
-    }
-  ]
-}
-```
+## 3. Core Studio REST Endpoints (`work/ui/server_routes.py` & `server_fal.py`)
+- `GET /api/projects`, `GET /api/project/<slug>`, `GET /api/project/<slug>/queue`, `GET /api/project/<slug>/characters`, `GET /api/models`
+- `GET /api/takes/<slug>`, `GET /api/checkpoints/<slug>`, `GET /api/vault/stats/<slug>`
+- `GET /api/render/status`, `GET /api/render/events` (SSE), `GET /api/fal/status`, `GET /api/minimax/status`
+- `POST /api/projects/new`, `POST /api/project/<slug>` (save config)
+- `POST /api/render/start`, `POST /api/render/stop`, `POST /api/render/engines` (`enabled_engines`, `max_parallel`), `POST /api/render/anchors`, `POST /api/render/stitch`
+- `POST /api/queue/move`, `POST /api/queue/reorder`, `POST /api/queue/remove`, `POST /api/queue/enqueue`, `POST /api/queue/enqueue_all`, `POST /api/queue/clear`, `POST /api/queue/set_engine`
+- `POST /api/takes/activate`, `POST /api/takes/delete`, `POST /api/checkpoints/create`, `POST /api/checkpoints/rollback`, `POST /api/scene/repair_lipsync`, `POST /api/scene/upscale`

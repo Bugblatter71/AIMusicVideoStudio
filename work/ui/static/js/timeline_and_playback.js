@@ -4,8 +4,13 @@ async function loadProjectAudio() {
   let audioFile = pcfg.master_audio || "";
   if (audioFile.startsWith("audio/")) audioFile = audioFile.substring(6);
 
-  if (!audioFile) {
-    audioFile = (state.assets.audio_files || [])[0] || "";
+  const availAudio = state.assets?.audio_files || [];
+  if (!audioFile || (availAudio.length && !availAudio.includes(audioFile))) {
+    const wantedStem = audioFile.replace(/\.[^/.]+$/, "").toLowerCase();
+    audioFile = (wantedStem && availAudio.find((f) => f.replace(/\.[^/.]+$/, "").toLowerCase() === wantedStem))
+      || availAudio.find((f) => /^master/i.test(f))
+      || availAudio[0]
+      || audioFile;
   }
 
   if (!audioFile) {
@@ -130,6 +135,7 @@ function updatePlayheadVisual(timeSec, autoScroll = false) {
 }
 
 function getClipRenderStart(sc) {
+  if (!sc || sc._freshSceneTakes) return sc?.start || 0;
   const clips = state.assets?.clips || {};
   const c = clips[sc.id] || clips[sc.id?.toUpperCase()] || clips[sc.id?.toLowerCase()];
   if (c && typeof c.render_start === "number") return c.render_start;
@@ -248,21 +254,30 @@ function getCanvasImage(url) {
   return img;
 }
 
+function clampTrackHeight(rawH, baseH) {
+  const maxH = window.innerHeight >= 1300 ? 220 : (window.innerHeight < 1050 ? 140 : 210);
+  return Math.max(baseH, Math.min(maxH, rawH));
+}
+function getTimelineTrackHeight(z = state.zoom || 1, includeHeader = false) {
+  const baseTrackHeight = window.innerHeight >= 1300 ? 100 : 60;
+  return (includeHeader ? 18 : 0) + clampTrackHeight(Math.round(baseTrackHeight * z), baseTrackHeight);
+}
 // Waveform Canvas Rendering
 function redrawTimeline() {
   timelineLoopBtns = [];
-  const dur = Math.max(state.audioDuration, 1);
+  const maxSceneEnd = (state.projectData?.scenes || []).reduce((m, s) => Math.max(m, Number(s.end) || 0), 0);
+  const dur = Math.max(state.audioDuration || 0, maxSceneEnd, 1);
   const pps = state.pixelsPerSecond * state.zoom;
-  // Enforce maximum safe canvas width below browser/GPU texture limits to prevent white canvas bug
   const maxSafeWidth = 60000;
   const totalWidth = Math.min(maxSafeWidth, Math.max(dur * pps, scrollContainer.clientWidth));
-
-  // Dynamic vertical scaling: track height and scene thumbnails resize proportionally with zoom
-  const baseTrackHeight = 60;
-  const trackHeight = Math.max(36, Math.round(baseTrackHeight * state.zoom));
+  const baseTrackHeight = window.innerHeight >= 1300 ? 100 : 60;
+  const trackHeight = clampTrackHeight(Math.round(baseTrackHeight * state.zoom), baseTrackHeight);
+  const headerH = 18;
   const trackTop = 84;
+  const thumbTop = trackTop + headerH;
+  const blockHeight = headerH + trackHeight;
   const bottomMargin = 16;
-  const totalHeight = trackTop + trackHeight + bottomMargin;
+  const totalHeight = trackTop + blockHeight + bottomMargin;
 
   if (canvas.width !== totalWidth) {
     canvas.width = totalWidth;
@@ -349,7 +364,7 @@ function redrawTimeline() {
     const isSelected = state.selectedSceneIdx === idx;
 
     // Check if video clip is rendered (matching by ID or strip)
-    const hasClip = !!(clips[sc.id] || strips[sc.id] || Object.keys(clips).some((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`));
+    const hasClip = !sc._freshSceneTakes && !!(clips[sc.id] || strips[sc.id] || Object.keys(clips).some((k) => k.startsWith(`${sc.id}_`) || k === `${sc.id}.mp4`));
 
     // Base block gradient style
     const grad = ctx.createLinearGradient(sx, trackTop, sx + sw, trackTop + trackHeight);
@@ -364,13 +379,9 @@ function redrawTimeline() {
     }
 
     ctx.fillStyle = grad;
-    ctx.fillRect(sx, trackTop, sw, trackHeight);
-    if (sc.render_pad_start > 0 || sc.render_pad_end > 0) {
-      ctx.fillStyle = "#38bdf8";
-      ctx.fillRect(sx, trackTop, sw, 2);
-    }
+    ctx.fillRect(sx, trackTop, sw, blockHeight);
 
-    // 1. If Video rendered: Show multiple thumbnails from video (filmstrip)
+    // 1. If Video rendered: Show multiple thumbnails below header (zero header overlap)
     let stripDrawn = false;
     if (hasClip) {
       const clipInfo =
@@ -390,7 +401,7 @@ function redrawTimeline() {
       if (stripImg && !stripImg.failed && stripImg.complete && stripImg.naturalWidth > 0) {
         ctx.save();
         ctx.beginPath();
-        ctx.rect(sx, trackTop, sw, trackHeight);
+        ctx.rect(sx, thumbTop, sw, trackHeight);
         ctx.clip();
 
         // Maintain original 16:9 aspect ratio for each clip thumbnail
@@ -404,14 +415,10 @@ function redrawTimeline() {
         for (let i = 0; i < numThumbs; i++) {
           const curX = sx + i * thumbW;
           const f = Math.min(numFrames - 1, Math.floor((i / Math.max(1, numThumbs)) * numFrames));
-          ctx.drawImage(stripImg, f * srcFrameW, 0, srcFrameW, stripImg.naturalHeight, curX, trackTop, thumbW, trackHeight);
+          ctx.drawImage(stripImg, f * srcFrameW, 0, srcFrameW, stripImg.naturalHeight, curX, thumbTop, thumbW, trackHeight);
           if (i > 0) {
-            ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(curX, trackTop);
-            ctx.lineTo(curX, trackTop + trackHeight);
-            ctx.stroke();
+            ctx.strokeStyle = "rgba(0, 0, 0, 0.45)"; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(curX, thumbTop); ctx.lineTo(curX, thumbTop + trackHeight); ctx.stroke();
           }
         }
         ctx.restore();
@@ -419,7 +426,7 @@ function redrawTimeline() {
       }
     }
 
-    // 2. If strip not drawn (or video not rendered): Tile Anchor Image to fill the entire strip
+    // 2. If strip not drawn (or video not rendered): Tile Anchor Image below header bar
     if (!stripDrawn) {
       const aid = extractAnchorId(sc.anchor);
       const diskInfo = diskAnchors[sc.anchor] || (aid ? diskAnchors[aid] : null);
@@ -430,21 +437,17 @@ function redrawTimeline() {
         if (anchorImg && !anchorImg.failed && anchorImg.complete && anchorImg.naturalWidth > 0) {
           ctx.save();
           ctx.beginPath();
-          ctx.rect(sx, trackTop, sw, trackHeight);
+          ctx.rect(sx, thumbTop, sw, trackHeight);
           ctx.clip();
 
           const thumbW = Math.max(20, trackHeight * (16 / 9));
           const numThumbs = Math.ceil(sw / thumbW);
           for (let i = 0; i < numThumbs; i++) {
             const curX = sx + i * thumbW;
-            ctx.drawImage(anchorImg, curX, trackTop, thumbW, trackHeight);
+            ctx.drawImage(anchorImg, curX, thumbTop, thumbW, trackHeight);
             if (i > 0) {
-              ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
-              ctx.lineWidth = 1;
-              ctx.beginPath();
-              ctx.moveTo(curX, trackTop);
-              ctx.lineTo(curX, trackTop + trackHeight);
-              ctx.stroke();
+              ctx.strokeStyle = "rgba(0, 0, 0, 0.45)"; ctx.lineWidth = 1;
+              ctx.beginPath(); ctx.moveTo(curX, thumbTop); ctx.lineTo(curX, thumbTop + trackHeight); ctx.stroke();
             }
           }
           ctx.restore();
@@ -452,9 +455,13 @@ function redrawTimeline() {
       }
     }
 
-    // Top header banner across the block for text readability
-    ctx.fillStyle = "rgba(15, 23, 42, 0.78)";
-    ctx.fillRect(sx, trackTop, sw, 18);
+    // Top header banner in dedicated band above thumbnails
+    ctx.fillStyle = "rgba(15, 23, 42, 0.94)";
+    ctx.fillRect(sx, trackTop, sw, headerH);
+    if (sc.render_pad_start > 0 || sc.render_pad_end > 0) {
+      ctx.fillStyle = "#38bdf8";
+      ctx.fillRect(sx, trackTop, sw, 2);
+    }
 
     // Status badge + compact Repeat button calculations (measure badge dynamically to prevent overflow)
     const aid = extractAnchorId(sc.anchor);
@@ -520,7 +527,7 @@ function redrawTimeline() {
     else if (hasClip) borderCol = "rgba(16, 185, 129, 0.55)";
     ctx.strokeStyle = borderCol;
     ctx.lineWidth = isSelected ? 2.5 : 1;
-    ctx.strokeRect(sx, trackTop, sw, trackHeight);
+    ctx.strokeRect(sx, trackTop, sw, blockHeight);
   });
 
   // Draw Draggable Scene Boundaries with interactive resize handles
@@ -535,14 +542,14 @@ function redrawTimeline() {
       ctx.lineWidth = 3;
       ctx.beginPath();
       ctx.moveTo(bx, trackTop);
-      ctx.lineTo(bx, trackTop + trackHeight);
+      ctx.lineTo(bx, trackTop + blockHeight);
       ctx.stroke();
 
       // Center pill handle with resize grip icon
       const handleW = 10;
-      const handleH = Math.min(26, trackHeight * 0.45);
+      const handleH = Math.min(26, blockHeight * 0.45);
       const handleX = bx - handleW / 2;
-      const handleY = trackTop + (trackHeight - handleH) / 2;
+      const handleY = thumbTop + (trackHeight - handleH) / 2;
       ctx.fillStyle = "#38bdf8";
       if (ctx.roundRect) {
         ctx.beginPath();
@@ -566,7 +573,7 @@ function redrawTimeline() {
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(bx, trackTop);
-      ctx.lineTo(bx, trackTop + trackHeight);
+      ctx.lineTo(bx, trackTop + blockHeight);
       ctx.stroke();
     }
     ctx.restore();
@@ -622,9 +629,8 @@ function redrawTimeline() {
 
 function findHoveredBoundary(clickX, clickY) {
   const pps = state.pixelsPerSecond * state.zoom;
-  const trackTop = 84;
-  const trackHeight = Math.max(30, Math.round(60 * (state.zoom || 1)));
-  if (clickY < trackTop || clickY > trackTop + trackHeight) return null;
+  const trackTop = 84, blockHeight = getTimelineTrackHeight(state.zoom || 1, true);
+  if (clickY < trackTop || clickY > trackTop + blockHeight) return null;
 
   const scenes = state.projectData?.scenes || [];
   for (let i = 0; i < scenes.length; i++) {
@@ -721,7 +727,7 @@ function setupCanvasEvents() {
         ctx.font = "bold 9px sans-serif";
         const flagW = ctx.measureText(label).width + 8;
         // Hit test exact marker flag rectangle
-        if (clickX >= mx && clickX <= mx + flagW && clickY >= 2 && clickY <= 20) {
+        if (clickX >= mx && clickX <= mx + flagW && clickY >= 1 && clickY <= 23) {
           openMarkerModal(i);
           return;
         }
@@ -736,7 +742,7 @@ function setupCanvasEvents() {
     // 2. Check if clicked inside a scene block (small Repeat button first)
     const loopHit = timelineLoopBtns.find((b) => clickX >= b.x && clickX <= b.x + b.w && clickY >= b.y && clickY <= b.y + b.h);
     if (loopHit) { window.toggleSceneMasterLoop?.(loopHit.idx); return; }
-    const curTrackBottom = 84 + Math.max(30, Math.round(60 * (state.zoom || 1)));
+    const curTrackBottom = 84 + getTimelineTrackHeight(state.zoom || 1, true);
     if (clickY >= 84 && clickY <= curTrackBottom) {
       const scenes = state.projectData?.scenes || [];
       const foundIdx = scenes.findIndex((sc) => clickTime >= sc.start && clickTime < sc.end);
@@ -813,7 +819,7 @@ function setupCanvasEvents() {
       redrawTimeline();
     }
 
-    const curTrackBottom = 84 + Math.max(30, Math.round(60 * (state.zoom || 1)));
+    const curTrackBottom = 84 + getTimelineTrackHeight(state.zoom || 1, true);
     canvas.style.cursor = (my <= 24 || (my >= 84 && my <= curTrackBottom)) ? "pointer" : "crosshair";
   });
 

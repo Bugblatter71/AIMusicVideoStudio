@@ -21,19 +21,21 @@
     const vrId = String(sc.renderer ?? window.state?.projectData?.models?.default_video_renderer ?? "1");
     if (window.state?.models?.fal_video_renderers?.[vrId]) return "fal";
     if (window.state?.models?.minimax_video_renderers?.[vrId]) return "minimax";
+    if (window.state?.models?.video_renderers?.[vrId]?.local_only) return "local";
     const scB = String(sc.backend || "").trim().toLowerCase();
     if (scB === "fal" || scB === "minimax" || scB === "local") return scB;
     return getEffectiveProjectBackend();
   }
   window.resolveEffectiveSceneBackend = resolveEffectiveSceneBackend;
 
-  function estimateSceneCloudCostFrontend(sc, effBackend) {
+  function estimateSceneCloudCostFrontend(sc, effBackend, passNum = null) {
     if (!sc) return null;
-    const vrId = String(sc.renderer ?? window.state?.projectData?.models?.default_video_renderer ?? "1");
+    const rawR = passNum === 1 ? (sc.renderer_m ?? sc.renderer) : (passNum === 2 ? (sc.renderer_f ?? sc.renderer) : sc.renderer);
+    const vrId = String((rawR !== null && rawR !== undefined && rawR !== "") ? rawR : (window.state?.projectData?.models?.default_video_renderer ?? "1"));
     const vSpec = window.state?.models?.fal_video_renderers?.[vrId] || window.state?.models?.minimax_video_renderers?.[vrId] || window.state?.models?.video_renderers?.[vrId] || {};
     const mtype = String(vSpec.model_type || "").toLowerCase();
     const dur = Math.max(4.0, (Number(sc.end || 0) - Number(sc.start || 0)) || 5.0);
-    const hasEnd = Boolean(sc.anchor_end);
+    const hasEnd = passNum !== 2 && Boolean(sc.anchor_end);
     const mode = String(sc.mode || "solo").toLowerCase();
     const resStr = String(sc.resolution || window.state?.projectData?.models?.default_video_resolution || "4").toLowerCase();
     const tier = (resStr === "7" || resStr.includes("2k") || resStr.includes("1440") || resStr.includes("2048")) ? "2k" : ((resStr === "6" || resStr.includes("1088") || resStr.includes("1080")) ? "1080p" : (resStr === "1" || resStr.includes("480") ? "480p" : "768p"));
@@ -153,7 +155,7 @@
         <span id="falKeyStatusBadge" style="font-size:11px;font-weight:600;color:#94a3b8;">Checking...</span>
       </div>
       <p style="font-size:11px;color:var(--text-muted);margin:0 0 12px 0;">
-        Choose whether this project defaults to Local Wan2GP GPU, MiniMax Direct API (H3 video), or fal.ai Cloud. Keys are encrypted locally via Windows DPAPI and never stored in project JSONs.
+        Top dropdowns control this project's execution defaults (saved in project JSON). <strong>API keys and machine defaults below are shared across all projects</strong>, encrypted locally via Windows DPAPI.
       </p>
       <div class="form-grid">
         <div class="form-group">
@@ -174,7 +176,7 @@
           </select>
         </div>
         <div class="form-group">
-          <label for="falMachineBackend">Machine Fallback Backend</label>
+          <label for="falMachineBackend">Machine Fallback Backend <span style="opacity:0.7;">(All Projects)</span></label>
           <select id="falMachineBackend">
             <option value="local">🖥️ Local GPU (Wan2GP)</option>
             <option value="minimax">🎥 Cloud (MiniMax Direct API — H3)</option>
@@ -182,13 +184,14 @@
           </select>
         </div>
         <div class="form-group">
-          <label for="falCustomAppInput">Custom Wan2GP fal App ID (Optional)</label>
+          <label for="falCustomAppInput">Custom Wan2GP fal App ID <span style="opacity:0.7;">(Shared)</span></label>
           <input type="text" id="falCustomAppInput" placeholder="e.g. username/wan2gp-worker">
         </div>
       </div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:10px;">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:#7dd3fc;margin:10px 0 4px 0;">Shared API Credentials (Used by All Projects)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:4px;">
         <div class="form-group" style="flex:1 1 260px;margin:0;">
-          <label for="falKeyInput">fal.ai API Key (Saved Encrypted via Windows DPAPI)</label>
+          <label for="falKeyInput">fal.ai API Key (Shared Across Projects — Windows DPAPI)</label>
           <input type="password" id="falKeyInput" placeholder="Paste key_id:key_secret to encrypt and store locally" autocomplete="off">
         </div>
         <button type="button" class="btn btn-primary" id="btnSaveFalKey" style="height:34px;">🔐 Save Cloud Config</button>
@@ -199,7 +202,7 @@
       <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:12px;padding-top:10px;border-top:1px solid rgba(148,163,184,0.16);">
         <div class="form-group" style="flex:1 1 260px;margin:0;">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;">
-            <label for="minimaxKeyInput" style="margin:0;">MiniMax API Key (platform.minimax.io — Saved via DPAPI)</label>
+            <label for="minimaxKeyInput" style="margin:0;">MiniMax API Key (Shared Across Projects — Windows DPAPI)</label>
             <span id="minimaxKeyStatusBadge" style="font-size:10px;font-weight:600;color:#94a3b8;">Checking...</span>
           </div>
           <input type="password" id="minimaxKeyInput" placeholder="Paste MiniMax Bearer API key for MiniMax-H3" autocomplete="off">
@@ -373,9 +376,10 @@
     const vrId = String(sc.renderer ?? window.state?.projectData?.models?.default_video_renderer ?? "1");
     const isDedicatedFal = Boolean(window.state?.models?.fal_video_renderers?.[vrId]);
     const isDedicatedMm = Boolean(window.state?.models?.minimax_video_renderers?.[vrId]);
-    const forceDis = isDedicatedFal || isDedicatedMm;
+    const isLocalOnly = Boolean(window.state?.models?.video_renderers?.[vrId]?.local_only) && !isDedicatedFal && !isDedicatedMm;
+    const forceDis = isDedicatedFal || isDedicatedMm || isLocalOnly;
     sel.dataset.forceDisabled = forceDis ? "1" : "";
-    sel.value = isDedicatedFal ? "fal" : (isDedicatedMm ? "minimax" : (sc.backend || ""));
+    sel.value = isDedicatedFal ? "fal" : (isDedicatedMm ? "minimax" : (isLocalOnly ? "local" : (sc.backend || "")));
     sel.disabled = Boolean(sc.locked) || forceDis;
     const upB = document.getElementById("sceneLateUpscaleBackend");
     if (upB && upB.options[0]) {
@@ -385,7 +389,7 @@
 
     const eff = resolveEffectiveSceneBackend(sc);
     if (badge) {
-      if (sc.backend || isDedicatedFal || isDedicatedMm) {
+      if (sc.backend || isDedicatedFal || isDedicatedMm || isLocalOnly) {
         badge.style.display = "inline-block";
         badge.textContent = eff === "fal" ? "☁️ fal.ai" : (eff === "minimax" ? "🎥 MiniMax" : "🖥️ Local");
         badge.style.background = eff === "fal" ? "rgba(56,189,248,0.18)" : (eff === "minimax" ? "rgba(168,85,247,0.18)" : "rgba(148,163,184,0.18)");
@@ -408,6 +412,7 @@
       }
     }
     window.syncDuetPassControlsUI?.(sc);
+    window.renderSceneRefPickerUI?.(sc);
   }
   window.syncSceneBackendUI = syncSceneBackendUI;
 
@@ -417,6 +422,10 @@
   });
   window.addEventListener?.("projectLoaded", () => {
     ensureSettingsSection();
+    ["falTestResultMsg", "minimaxTestResultMsg"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = "none";
+    });
     syncProjectBackendSelectors();
     refreshFalStatus();
   });

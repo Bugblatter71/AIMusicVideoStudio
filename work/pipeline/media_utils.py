@@ -13,6 +13,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .project_paths import (
+    find_wgp_venv_python,
+    is_valid_wgp_root,
+    repair_stale_local_config as _repair_stale_local_config,
+    resolve_wgp_root_with_fallback,
+)
+
 WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
@@ -253,35 +260,41 @@ def find_local_config(root_dir: Path) -> dict:
 
 
 def auto_detect_wgp_root() -> Path | None:
-    """Auto-detects Wan2GP app installation under Pinokio across standard locations."""
+    """Auto-detects Wan2GP app installation under Pinokio across active drives and standard folders."""
     wgp_env = os.environ.get("WGP_ROOT")
-    if wgp_env and Path(wgp_env).is_dir():
+    if wgp_env and is_valid_wgp_root(wgp_env):
         return Path(wgp_env).resolve()
 
-    pinokio_home = os.environ.get("PINOKIO_HOME") or os.environ.get("PINOKIO_ROOT")
-    candidates = []
-    if pinokio_home:
-        candidates.append(Path(pinokio_home) / "api" / "wan.git" / "app")
+    for env_k in ("PINOKIO_PY", "WGP_PYTHON", "ENGINE_PYTHON"):
+        py_val = os.environ.get(env_k)
+        if py_val and Path(py_val).is_file():
+            for anc in Path(py_val).resolve().parents[:4]:
+                if is_valid_wgp_root(anc): return anc
 
-    user_profile = os.environ.get("USERPROFILE")
-    if user_profile:
-        up = Path(user_profile)
-        candidates.extend([
-            up / "pinokio" / "api" / "wan.git" / "app",
-            up / "Downloads" / "pinokio" / "api" / "wan.git" / "app",
-            up / "Documents" / "pinokio" / "api" / "wan.git" / "app",
-        ])
-    for drive in ("C", "D", "E", "F"):
-        candidates.append(Path(f"{drive}:/pinokio/api/wan.git/app"))
-        candidates.append(Path(f"{drive}:/Pinokio/api/wan.git/app"))
+    candidates = [Path(os.environ[k]) / "api" / "wan.git" / "app" for k in ("PINOKIO_HOME", "PINOKIO_ROOT") if os.environ.get(k)]
+    for env_dir, subs in (("USERPROFILE", (("pinokio",), ("Downloads", "pinokio"), ("Documents", "pinokio"))), ("LOCALAPPDATA", (("Programs", "pinokio"), ("pinokio",)))):
+        base = os.environ.get(env_dir)
+        if base: candidates.extend(Path(base).joinpath(*parts, "api", "wan.git", "app") for parts in subs)
+
+    drives = "CDEFGHIJ"
+    if os.name == "nt":
+        try:
+            import ctypes
+            mask = ctypes.windll.kernel32.GetLogicalDrives()
+            drives = "".join(chr(65 + i) for i in range(2, 26) if mask & (1 << i))
+        except Exception: pass
+    for drive in drives:
+        candidates.extend((Path(f"{drive}:/pinokio/api/wan.git/app"), Path(f"{drive}:/Pinokio/api/wan.git/app")))
 
     for c in candidates:
         try:
-            if c.is_dir() and ((c / "wgp_config.json").exists() or (c / "models").exists()):
-                return c.resolve()
-        except Exception:
-            pass
+            if is_valid_wgp_root(c): return c.resolve()
+        except Exception: pass
     return None
+
+
+def repair_stale_local_config(workspace_root: Path | None = None, wgp_root: Path | None = None) -> bool:
+    return _repair_stale_local_config(workspace_root or WORKSPACE_ROOT, wgp_root=wgp_root, auto_detect_fn=auto_detect_wgp_root)
 
 
 def resolve_path(base_dir: Path, p: str | Path) -> Path:
@@ -412,12 +425,7 @@ def estimate_pass_render_time(
     f = max(1, int(frames or 141))
     m_str = str(model_id if model_id is not None else "1").strip()
     mtype_lower = str(model_type or "").lower()
-    is_ref2va = (
-        m_str in ("9", "10", "11", "12", "13")
-        or "ref2va" in mtype_lower
-        or "fasth3" in mtype_lower
-        or "singularity" in mtype_lower
-    )
+    is_ref2va = _is_ref2va_model(m_str, mtype_lower)
 
     delta_f = 0
     if has_end_anchor and pass_num != 2:
@@ -496,6 +504,8 @@ def estimate_pass_render_time(
 def _is_ref2va_model(model_id: Any, model_type: str = "") -> bool:
     m_str = str(model_id if model_id is not None else "1").strip()
     mt = str(model_type or "").lower()
+    if "ltx" in mt:
+        return False
     return m_str in ("9", "10", "11", "12", "13") or "ref2va" in mt or "fasth3" in mt or "singularity" in mt
 
 
@@ -613,7 +623,7 @@ def estimate_scene_render_time(sc: dict, ctx=None, resolution: str = "1344x768",
             raw_r = sc.get("renderer_m" if p_num == 1 else ("renderer_f" if p_num == 2 else "renderer")) or sc.get("renderer") or "1"
             vrid = str(raw_r).strip() if str(raw_r).strip().lower() not in ("", "0", "none", "null", "default") else "1"
             is_ref = _is_ref2va_model(vrid)
-            formula = "ltx2" if vrid in ("14", "15", "16") else ("h3_ref2va" if is_ref else "h3")
+            formula = "ltx2" if vrid in ("14", "15", "16", "19", "20", "21") else ("h3_ref2va" if is_ref else "h3")
             frames, max_sec = quantize_video_frames(eff_dur, frames_formula=formula, fps=24.0)
             res_map = {"1": "832x480", "2": "960x544", "3": "1280x720", "4": "1344x768", "5": "1536x864", "6": "1920x1088"}
             raw_sc_res = str(sc.get("resolution") or "").strip()
@@ -662,6 +672,22 @@ def attach_queue_time_estimates(
     default_alpha = _get_alpha(default_res.strip().lower(), "local", None)
     now_ts, pending_total_sec = time.time(), 0.0
     for itm in queue:
+        if itm.get("stage") == "anchor":
+            itm["frames"] = 1
+            itm_bk = str(itm.get("backend") or "local").strip().lower()
+            steps = max(1, int(itm.get("num_inference_steps") or 8))
+            eff_est_sec = 25.0 if itm_bk == "fal" else round(max(15.0, steps * 2.5), 1)
+            itm["estimated_seconds"], itm["estimated_str"] = eff_est_sec, format_duration_estimate(eff_est_sec)
+            itm["is_split_window"], itm["window_count"] = False, 1
+            if itm.get("status") == "rendering":
+                started = float(itm.get("started_at") or 0.0)
+                rem_sec = max(5.0, round(eff_est_sec - max(0.0, now_ts - started), 1)) if (started > 0 and 0.0 <= (now_ts - started) < 43200.0) else eff_est_sec
+                itm["estimated_remaining_seconds"], itm["estimated_remaining_str"] = rem_sec, format_duration_estimate(rem_sec)
+                pending_total_sec += rem_sec
+            else:
+                itm.pop("estimated_remaining_seconds", None); itm.pop("estimated_remaining_str", None)
+                if itm.get("status") == "queued": pending_total_sec += eff_est_sec
+            continue
         sid, p_num = itm.get("scene_id"), itm.get("pass")
         sc = scene_by_id.get(sid) if sid else None
         res_str = str(itm.get("resolution") or default_res)

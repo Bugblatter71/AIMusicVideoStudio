@@ -275,7 +275,7 @@ class TestAnchorEndSupport(unittest.TestCase):
         """Rolling back to a take recorded without anchor_end removes any later-added anchor_end."""
         from pipeline.takes import promote_take_to_active, save_takes_manifest
 
-        renders_dir = self.project_dir / "work" / "renders_v3"
+        renders_dir = self.project_dir / "work" / "renders"
         vault_dir = renders_dir / "takes" / "S01"
         vault_dir.mkdir(parents=True, exist_ok=True)
         vault_mp4 = vault_dir / "take_001.mp4"

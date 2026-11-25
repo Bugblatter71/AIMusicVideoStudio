@@ -381,6 +381,70 @@ if (document.readyState === "loading") {
   initAnchorDropdownTrigger();
 }
 
+function getProjectStemsCatalog() {
+  const stems = [];
+  const seen = new Set();
+  const addStem = (val, label) => {
+    if (!val || seen.has(val.toLowerCase())) return;
+    seen.add(val.toLowerCase());
+    stems.push({ value: val, label: label || val });
+  };
+
+  const assets = state.assets || {};
+  const cfgStems = state.projectData?.project?.stems || {};
+  const audioFiles = assets.audio_files || [];
+  const stemFilesMap = assets.stem_files && typeof assets.stem_files === "object" ? assets.stem_files : null;
+  const missingSet = new Set((assets.missing_stems || []).map((k) => String(k).toLowerCase()));
+
+  // 1. Configured stems from project JSON (excluding stems confirmed missing on disk)
+  Object.keys(cfgStems).forEach((k) => {
+    if (missingSet.has(k.toLowerCase())) return;
+    const rawFile = stemFilesMap?.[k] || String(cfgStems[k] || "").split(/[\\/]/).pop();
+    addStem(k, rawFile ? `${k} (${rawFile})` : k);
+  });
+
+  // 2. Additional audio files dropped into the project audio/ folder
+  const rawMaster = String(state.projectData?.project?.master_audio || "").split(/[\\/]/).pop().toLowerCase();
+  const resolvedMaster = String(assets.master_audio_file || "").split(/[\\/]/).pop().toLowerCase();
+  const mappedFiles = new Set([
+    ...Object.values(stemFilesMap || {}).map((p) => String(p || "").split(/[\\/]/).pop().toLowerCase()),
+    ...Object.entries(cfgStems)
+      .filter(([k]) => !missingSet.has(k.toLowerCase()))
+      .map(([, p]) => String(p || "").split(/[\\/]/).pop().toLowerCase()),
+  ]);
+
+  audioFiles.forEach((fn) => {
+    const fnLow = String(fn || "").toLowerCase();
+    if (!fnLow || fnLow === rawMaster || (resolvedMaster && fnLow === resolvedMaster)) return;
+    const stemName = fn.replace(/\.[^/.]+$/, "");
+    if (!mappedFiles.has(fnLow)) {
+      addStem(stemName, `${stemName} (${fn})`);
+    }
+  });
+
+  // 3. Built-in special audio choices (master only if present or assets unscanned)
+  if (assets.master_audio_exists !== false) {
+    const masterLbl = assets.master_audio_file ? `full audio (${assets.master_audio_file})` : "full audio (master)";
+    addStem("master", masterLbl);
+  }
+  addStem("silent", "silent (no lip sync)");
+  return stems;
+}
+
+function pickDefaultStem(preferred) {
+  const stems = getProjectStemsCatalog();
+  const match = preferred && stems.find((s) => s.value.toLowerCase() === String(preferred).toLowerCase());
+  if (match) return match.value;
+  const vocal = stems.find((s) => /vocal|lead/i.test(s.value)) || stems.find((s) => s.value !== "master" && s.value !== "silent");
+  if (vocal) return vocal.value;
+  return stems.find((s) => s.value === "master")?.value || "silent";
+}
+
+if (typeof window !== "undefined") {
+  window.getProjectStemsCatalog = getProjectStemsCatalog;
+  window.pickDefaultStem = pickDefaultStem;
+}
+
 function updateInspectorStemsDropdown() {
   const stemSelects = [
     [document.getElementById("sceneStem"), ""],
@@ -390,43 +454,7 @@ function updateInspectorStemsDropdown() {
     [document.getElementById("sceneStemF"), ""],
   ];
 
-  const stems = [];
-  const seen = new Set();
-
-  const addStem = (val, label) => {
-    if (!val || seen.has(val.toLowerCase())) return;
-    seen.add(val.toLowerCase());
-    stems.push({ value: val, label: label || val });
-  };
-
-  // 1. Configured stems from project JSON (e.g. male, female)
-  const cfgStems = state.projectData?.project?.stems || {};
-  Object.keys(cfgStems).forEach((k) => {
-    const rawFile = String(cfgStems[k] || "").split("/").pop();
-    addStem(k, `${k} (${rawFile})`);
-  });
-
-  // Ensure default vocal stems exist as baseline
-  addStem("male", "male (male_vocal.mp3)");
-  addStem("female", "female (female_vocal.mp3)");
-
-  // 2. Any additional audio files dropped into the project audio/ folder
-  const audioFiles = state.assets?.audio_files || [];
-  const masterAudio = String(state.projectData?.project?.master_audio || "").split("/").pop();
-
-  audioFiles.forEach((fn) => {
-    if (fn === masterAudio) return;
-    const stemName = fn.replace(/\.[^/.]+$/, "");
-    // Check if this audio file is already covered by a configured stem key
-    const isMapped = Object.values(cfgStems).some((p) => String(p || "").split(/[\\/]/).pop() === fn);
-    if (!isMapped) {
-      addStem(stemName, `${stemName} (${fn})`);
-    }
-  });
-
-  // 3. Built-in special audio choices
-  addStem("master", "full audio (master)");
-  addStem("silent", "silent (no lip sync)");
+  const stems = getProjectStemsCatalog();
 
   stemSelects.forEach(([sel, prefix]) => {
     if (!sel) return;
@@ -438,36 +466,15 @@ function updateInspectorStemsDropdown() {
       opt.textContent = prefix ? `${prefix}${st.label}` : st.label;
       sel.appendChild(opt);
     });
-    // Restore previous selection if valid
     const prevMatch = prevVal ? stems.find((s) => s.value.toLowerCase() === prevVal.toLowerCase()) : null;
-    if (prevMatch) {
-      sel.value = prevMatch.value;
-    }
+    if (prevMatch) sel.value = prevMatch.value;
   });
 }
 
-window.renderSingleAnchor = function (identifier) {
+window.renderSingleAnchor = window.renderSingleAnchor || function (identifier) {
   const aid = extractAnchorId(identifier) || identifier;
-  switchTab("console");
   triggerRender(["--anchors-only", aid]);
 };
-
-document.getElementById("btnGenAllAnchors").addEventListener("click", () => {
-  switchTab("console");
-  triggerRender(["--anchors-only", "all-anchors"]);
-});
-
-document.getElementById("btnAddAnchor")?.addEventListener("click", async () => {
-  if (typeof refreshProjectAssets === "function") {
-    await refreshProjectAssets(true);
-  }
-  const merged = getMergedAnchorsList();
-  const diskOnly = merged.filter((x) => x.isDiskOnly).map((x) => x.aid);
-  const msg = diskOnly.length > 0
-    ? `Scanned anchors folder — discovered disk anchor(s): ${diskOnly.join(", ")} (ready in Anchor Studio & Scene Inspector).`
-    : `Scanned anchors folder (${merged.length} anchors loaded). Drop an A15_...jpg/.png file into the project's anchors folder and refresh to use it.`;
-  showToast(msg, 4500);
-});
 
 // ============================================================================
 // Project & Models Configuration
@@ -490,6 +497,7 @@ function _appendGroupedOptions(sel, localMap, falMap, mmMap) {
   appendGroup("☁️ Cloud (fal.ai)", falMap);
   appendGroup("🎥 Cloud (MiniMax Direct API)", mmMap);
 }
+window.appendGroupedModelOptions = _appendGroupedOptions;
 
 function populateModelSelectors() {
   const anchorSel = document.getElementById("cfgDefaultAnchorRenderer");
@@ -508,6 +516,12 @@ function updateProjectSettingsUI() {
 
   document.getElementById("cfgProjectName").value = p.name || "";
   document.getElementById("cfgMasterAudio").value = p.master_audio || "";
+  const audioDatalist = document.getElementById("cfgMasterAudioList");
+  if (audioDatalist) {
+    audioDatalist.innerHTML = (state.assets?.audio_files || [])
+      .map((fn) => `<option value="audio/${escapeHtml(fn)}"></option>`)
+      .join("");
+  }
   document.getElementById("cfgFps").value = p.fps || 24;
   document.getElementById("cfgFadeOut").value = p.fade_out_last_scene_seconds ?? 2.0;
   const fadeEndEl = document.getElementById("cfgFadeOutEnd");
@@ -522,6 +536,20 @@ function updateProjectSettingsUI() {
 
   document.getElementById("cfgDefaultAnchorRenderer").value = String(m.default_anchor_renderer || 3);
   document.getElementById("cfgDefaultVideoRenderer").value = String(m.default_video_renderer || 1);
+  const aShared = m.anchor_shared_settings || {};
+  const profDefAnchorRes = state.models?.anchor_shared_settings?.resolution || "1920x1080";
+  const defAnchorRes = aShared.resolution || profDefAnchorRes;
+  const cfgAnchorResEl = document.getElementById("cfgDefaultAnchorResolution");
+  if (cfgAnchorResEl) {
+    if (!Array.from(cfgAnchorResEl.options).some((o) => o.value === defAnchorRes)) {
+      cfgAnchorResEl.add(new Option(`${defAnchorRes} (Custom)`, defAnchorRes));
+    }
+    cfgAnchorResEl.value = defAnchorRes;
+  }
+  const selToolbarAnchorRes = document.getElementById("selDefaultAnchorResolution");
+  if (selToolbarAnchorRes && selToolbarAnchorRes.options.length > 0) {
+    selToolbarAnchorRes.value = defAnchorRes;
+  }
   const vShared = m.video_shared_settings || {};
   const rawDefUp = String(vShared.spatial_upsampling || "");
   const isLegacy1x = ["h3facerefine", "seedvr2*1", "flashvsrplus*1", "flashvsrplus2pass*1", "ltx25_refine*1", "dlss5*1"].includes(rawDefUp.toLowerCase());
@@ -563,7 +591,9 @@ function updateProjectSettingsUI() {
 
 function renderResolutionCards(activeRes) {
   const container = document.getElementById("resolutionCardsContainer");
-  container.innerHTML = "";
+  if (container) container.innerHTML = "";
+  const vResSelect = document.getElementById("cfgDefaultVideoResolutionSelect");
+  if (vResSelect) vResSelect.innerHTML = "";
 
   const resDefs = state.models?.video_resolutions || state.models?.resolutions || {
     "1": { width: 832, height: 480, name: "480p Fast Preview", speed_factor: "~1 min/s", aspect: "16:9", vram_footprint: "Lowest", description: "Ultra-fast draft pass for testing camera motion and lip-sync." },
@@ -574,40 +604,50 @@ function renderResolutionCards(activeRes) {
     "6": { width: 1920, height: 1088, name: "1080p Full HD Block-Aligned", speed_factor: "~6-7 min/s", aspect: "16:9", vram_footprint: "Maximum", description: "Wan2GP official 1080p block-aligned preset (1088 height divisible by 16)." },
   };
 
+  const applyVideoResOption = (k) => {
+    const r = resDefs[k] || {};
+    const resDim = r.resolution || (r.width && r.height ? `${r.width}x${r.height}` : String(k));
+    state.projectData.models.default_video_resolution = /^\d+$/.test(String(k)) ? parseInt(k, 10) : k;
+    markProjectDirty();
+    renderResolutionCards(k);
+    if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
+      const selSc = state.projectData.scenes[state.selectedSceneIdx];
+      window.updateInspectorSceneHeader?.(selSc);
+      window.populateSceneResolutionAndUpsampling?.(selSc);
+      window.syncSceneBackendUI?.(selSc);
+    }
+    window.updateMasterResolutionInfoUI?.();
+    window.recordHistorySnapshot?.(`Select Resolution Option #${k}`);
+    showToast(`Selected Default Video Resolution #${k} (${resDim})`);
+  };
+
   Object.keys(resDefs).forEach((k) => {
-    const r = resDefs[k];
+    const r = resDefs[k] || {};
+    const resDim = r.resolution || (r.width && r.height ? `${r.width}x${r.height}` : String(k));
     const isAct = String(activeRes) === String(k);
+    if (vResSelect) {
+      const opt = new Option(`Option #${k}: ${resDim} — ${r.name || ""}`, String(k));
+      vResSelect.add(opt);
+    }
+    if (!container) return;
     const card = document.createElement("div");
     card.className = `res-card ${isAct ? "active" : ""}`;
     card.innerHTML = `
       <div class="res-title">
-        <span>Option ${escapeHtml(k)}: ${escapeHtml(r.width)}x${escapeHtml(r.height)}</span>
+        <span>Option ${escapeHtml(k)}: ${escapeHtml(resDim)}</span>
         ${isAct ? '<span style="font-size: 11px; color: var(--primary);">ACTIVE</span>' : ""}
       </div>
-      <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${escapeHtml(r.name)}</div>
-      <div class="res-desc">${escapeHtml(r.description)}</div>
-      <div style="font-size: 11px; color: var(--primary); margin-top: 8px;">Speed: ${escapeHtml(r.speed_factor)} | VRAM: ${escapeHtml(r.vram_footprint)}</div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">${escapeHtml(r.name || "")}</div>
+      <div class="res-desc">${escapeHtml(r.description || "")}</div>
+      <div style="font-size: 11px; color: var(--primary); margin-top: 8px;">Speed: ${escapeHtml(r.speed_factor || "-")} | VRAM: ${escapeHtml(r.vram_footprint || "-")}</div>
     `;
-    card.addEventListener("click", () => {
-      state.projectData.models.default_video_resolution = parseInt(k);
-      markProjectDirty();
-      renderResolutionCards(k);
-      if (state.selectedSceneIdx !== null && state.projectData?.scenes?.[state.selectedSceneIdx]) {
-        const selSc = state.projectData.scenes[state.selectedSceneIdx];
-        window.updateInspectorSceneHeader?.(selSc);
-        window.populateSceneResolutionAndUpsampling?.(selSc);
-        window.syncSceneBackendUI?.(selSc);
-      }
-      if (typeof window.updateMasterResolutionInfoUI === "function") {
-        window.updateMasterResolutionInfoUI();
-      }
-      if (typeof window.recordHistorySnapshot === "function") {
-        window.recordHistorySnapshot(`Select Resolution Option #${k}`);
-      }
-      showToast(`Selected Resolution Option #${k} (${r.width}x${r.height})`);
-    });
+    card.addEventListener("click", () => applyVideoResOption(k));
     container.appendChild(card);
   });
+  if (vResSelect) {
+    vResSelect.value = String(activeRes);
+    vResSelect.onchange = () => applyVideoResOption(vResSelect.value);
+  }
 }
 
 function syncSettingsFormToState(id) {
@@ -624,6 +664,14 @@ function syncSettingsFormToState(id) {
   else if (id === "cfgFadeOutEnd") { const n = parseFloat(val); if (val === "" || isNaN(n)) delete p.fade_out_end_seconds; else p.fade_out_end_seconds = Math.max(0, n); }
   else if (id === "cfgRenderOverlap") { const n = parseFloat(val); p.render_overlap_seconds = (val === "" || isNaN(n)) ? 1.0 : Math.max(0, n); }
   else if (id === "cfgDefaultAnchorRenderer") m.default_anchor_renderer = /^\d+$/.test(val) ? parseInt(val, 10) : (val || 3);
+  else if (id === "cfgDefaultAnchorResolution") {
+    const profDef = state.models?.anchor_shared_settings?.resolution || "1920x1080";
+    m.anchor_shared_settings = m.anchor_shared_settings || {};
+    m.anchor_shared_settings.resolution = val || profDef;
+    const tbSel = document.getElementById("selDefaultAnchorResolution");
+    if (tbSel) tbSel.value = m.anchor_shared_settings.resolution;
+    window.updateAnchorStudioUI?.();
+  }
   else if (id === "cfgDefaultVideoRenderer") m.default_video_renderer = /^\d+$/.test(val) ? parseInt(val, 10) : (val || 1);
   else if (id === "cfgMasterResolution") p.master_resolution = val || "match";
   else if (id === "cfgMasterScaleAlgo") p.master_scale_algorithm = val || "lanczos";
@@ -678,7 +726,7 @@ function syncSettingsFormToState(id) {
 // Mark project dirty when any Project Settings field is edited
 const settingsFieldIds = [
   "cfgProjectName", "cfgMasterAudio", "cfgFps", "cfgFadeOut", "cfgFadeOutEnd", "cfgRenderOverlap",
-  "cfgDefaultAnchorRenderer", "cfgDefaultVideoRenderer", "cfgDefaultSpatialUpsampling", "cfgNegativePrompt",
+  "cfgDefaultAnchorRenderer", "cfgDefaultAnchorResolution", "cfgDefaultVideoRenderer", "cfgDefaultSpatialUpsampling", "cfgNegativePrompt",
   "cfgMasterResolution", "cfgMasterScaleAlgo", "cfgMasterSharpen", "cfgProgressiveStitchMode",
   "cfgFilterAiRefiner", "cfgFilterFaceStrength", "cfgFilterFilmGrain", "cfgFilterWindowCC",
   "cfgFilterDeband", "cfgFilterCas", "cfgFilterDenoise",
@@ -726,15 +774,24 @@ async function saveProjectData(showNotice = true) {
     state.projectData.characters = state.charactersData;
   }
 
+  const purgeIds = window.collectPendingPurgeSceneIds
+    ? window.collectPendingPurgeSceneIds()
+    : (state.projectData.scenes || []).filter((s) => s && s._freshSceneTakes && s.id).map((s) => String(s.id).trim());
+  const payloadJson = JSON.stringify(state.projectData, (k, v) => (k === "_freshSceneTakes" || k === "_dupPending" || k === "_lockPending" || k === "_customSourceMode" ? undefined : v));
+  const putUrl = `/api/project/${state.currentSlug}${purgeIds.length ? `?purge_scenes=${encodeURIComponent(purgeIds.join(","))}` : ""}`;
+
   state._savingProject = true;
   try {
-    const res = await fetch(`/api/project/${state.currentSlug}`, {
+    const res = await fetch(putUrl, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(state.projectData),
+      body: payloadJson,
     });
     const json = await res.json();
     if (json.success) {
+      const clearedIds = Array.isArray(json.purged_scene_ids) ? json.purged_scene_ids : purgeIds;
+      window.purgeLocalSceneAssetsAfterSave?.(clearedIds);
+      (state.projectData.scenes || []).forEach((s) => { if (s && s._freshSceneTakes) delete s._freshSceneTakes; });
       if (typeof window.markHistorySaved === "function") {
         window.markHistorySaved();
       }
@@ -745,6 +802,7 @@ async function saveProjectData(showNotice = true) {
         else state.renderQueue = json.queue;
         if (typeof renderQueueUI === "function") renderQueueUI();
       }
+      if (clearedIds.length && typeof window.refreshProjectAssets === "function") await window.refreshProjectAssets(true);
       loadProjectQueue(state.currentSlug);
       if (showNotice) showToast("💾 Project saved! (Backup archived in backup/)");
       return true;

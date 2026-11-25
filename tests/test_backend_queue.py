@@ -36,7 +36,7 @@ class TestRenderQueueBackend(unittest.TestCase):
 
     def setUp(self):
         # Reset queue file for clean testing
-        jobs_dir = self.proj_dir / "work" / "jobs_v3"
+        jobs_dir = self.proj_dir / "work" / "jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
         self.queue_file = jobs_dir / "v3_queue.json"
 
@@ -108,7 +108,7 @@ class TestRenderQueueBackend(unittest.TestCase):
         self.assertIn("[DUMMY]", res.stdout)
         
         # Check generated mp4
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         s01_mp4s = list(renders_dir.glob("S01_male_solo_*.mp4"))
         self.assertTrue(len(s01_mp4s) > 0, "Expected S01 rendered mp4 file")
         self.assertGreater(s01_mp4s[0].stat().st_size, 10000)
@@ -127,7 +127,7 @@ class TestRenderQueueBackend(unittest.TestCase):
 
     def test_06_anchor_change_detection(self):
         """Verify modifying an anchor image file triggers automatic re-render detection for dependent scenes."""
-        aon_anchors = WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "anchors_v3"
+        aon_anchors = WORKSPACE_ROOT / "projects" / "all_or_nothing" / "work" / "anchors"
         a01_files = list(aon_anchors.glob("A01*"))
         self.assertTrue(len(a01_files) > 0, "A01 anchor must exist")
         a01 = a01_files[0]
@@ -192,14 +192,14 @@ class TestRenderQueueBackend(unittest.TestCase):
         orig_text = self.json_path.read_text(encoding="utf-8")
 
         # Ensure rendered MP4 exists for S01
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         renders_dir.mkdir(parents=True, exist_ok=True)
         s01_mp4 = renders_dir / "S01_male_solo_960x544.mp4"
         if not s01_mp4.exists() or s01_mp4.stat().st_size < 50000:
             s01_mp4.write_bytes(b"x" * 60000)
 
         # Store baseline hash in state_hashes.json
-        hashes_file = self.proj_dir / "work" / "jobs_v3" / "state_hashes.json"
+        hashes_file = self.proj_dir / "work" / "jobs" / "state_hashes.json"
         hashes_file.parent.mkdir(parents=True, exist_ok=True)
         old_hashes = {
             "tasks": {"S01_male_solo_960x544": "baseline_hash_999"},
@@ -264,7 +264,7 @@ class TestRenderQueueBackend(unittest.TestCase):
 
         # 2. Verify server.compute_fast_project_queue flags scenes where timeline exceeds render bounds
         # Simulate S01 whose render on disk only covers [0.0, 3.0] but timeline requires [0.0, 6.0]
-        hashes_file = self.proj_dir / "work" / "jobs_v3" / "state_hashes.json"
+        hashes_file = self.proj_dir / "work" / "jobs" / "state_hashes.json"
         h_data = {}
         if hashes_file.is_file():
             try:
@@ -294,8 +294,8 @@ class TestRenderQueueBackend(unittest.TestCase):
 
     def test_12_clips_collection_and_placeholder_exclusion(self):
         """Verify collect_project_clips excludes placeholders and prioritizes Pass2_Final renders over Pass1 and trimmed."""
-        trimmed_dir = self.proj_dir / "work" / "trimmed_v3"
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        trimmed_dir = self.proj_dir / "work" / "trimmed"
+        renders_dir = self.proj_dir / "work" / "renders"
         trimmed_dir.mkdir(parents=True, exist_ok=True)
         renders_dir.mkdir(parents=True, exist_ok=True)
 
@@ -358,7 +358,7 @@ class TestRenderQueueBackend(unittest.TestCase):
     def test_14_duplicate_numbered_clip_resolution(self):
         """Verify resolve_rendered_clip_path detects and promotes newer duplicate clips like out_name(2).mp4."""
         from work.run_overnight_v3 import resolve_rendered_clip_path
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         renders_dir.mkdir(parents=True, exist_ok=True)
         out_base = "test_clip_dup_960x544"
         canon_file = renders_dir / f"{out_base}.mp4"
@@ -382,11 +382,11 @@ class TestRenderQueueBackend(unittest.TestCase):
 
         server.backup_project_json(self.json_path)
         orig_text = self.json_path.read_text(encoding="utf-8")
-        hashes_file = self.proj_dir / "work" / "jobs_v3" / "state_hashes.json"
+        hashes_file = self.proj_dir / "work" / "jobs" / "state_hashes.json"
         orig_hashes_text = hashes_file.read_text(encoding="utf-8") if hashes_file.exists() else None
         orig_queue_text = self.queue_file.read_text(encoding="utf-8") if self.queue_file.exists() else None
 
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         renders_dir.mkdir(parents=True, exist_ok=True)
         target_fns = ("S01_male_solo_960x544.mp4", "S02_Pass1_Left_960x544.mp4", "S02_Pass2_Final_960x544.mp4")
         saved_mp4s: dict[str, bytes | None] = {}
@@ -478,7 +478,7 @@ class TestRenderQueueBackend(unittest.TestCase):
 
     def test_17_uj_two_pass_p1_only_does_not_render_p2(self):
         """UJ: Targeting S02:p1 must render ONLY Pass 1 (not Pass 2), and Pass 2 must then be flagged as needing render."""
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         renders_dir.mkdir(parents=True, exist_ok=True)
         p1_mp4 = renders_dir / "S02_Pass1_Left_960x544.mp4"
         p2_mp4 = renders_dir / "S02_Pass2_Final_960x544.mp4"
@@ -528,7 +528,7 @@ class TestRenderQueueBackend(unittest.TestCase):
     def test_19_uj_manual_remove_and_clear_persist_across_refresh_until_edited(self):
         """UJ: Removing an item or clearing the queue persists across refreshes until that scene is edited or Queue All is clicked."""
         orig_text = self.json_path.read_text(encoding="utf-8")
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         s01_mp4 = renders_dir / "S01_male_solo_960x544.mp4"
         s01_backup = s01_mp4.read_bytes() if s01_mp4.exists() else None
         try:
@@ -665,7 +665,7 @@ class TestRenderQueueBackend(unittest.TestCase):
 
     def test_24_uj_anchor_only_render_and_cascade(self):
         """UJ: Rendering a single anchor (--anchors-only A01) regenerates A01 and flags dependent scene S01 in the queue."""
-        anchors_dir = self.proj_dir / "work" / "anchors_v3"
+        anchors_dir = self.proj_dir / "work" / "anchors"
         a01_files = list(anchors_dir.glob("A01*"))
         self.assertTrue(len(a01_files) > 0, "A01 anchor must exist in test_project")
         a01_file = a01_files[0]
@@ -884,6 +884,49 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.json_path.write_text(orig_text, encoding="utf-8")
             server.compute_fast_project_queue(self.project_slug, force_recheck=True)
 
+    def _snapshot_project_work(self):
+        import shutil
+        import tempfile
+        snap = Path(tempfile.mkdtemp(prefix="mvg_work_snap_"))
+        work_dir = self.proj_dir / "work"
+        for rel in ("takes_manifest.json", "state_hashes.json", "renders", "frames", "trimmed"):
+            src = work_dir / rel
+            dst = snap / rel
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            elif src.is_file():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        jobs_dir = work_dir / "jobs"
+        if jobs_dir.is_dir():
+            (snap / "jobs").mkdir(parents=True, exist_ok=True)
+            for jf in jobs_dir.glob("*.json"):
+                shutil.copy2(jf, snap / "jobs" / jf.name)
+        return snap
+
+    def _restore_project_work(self, snap):
+        import shutil
+        work_dir = self.proj_dir / "work"
+        for rel in ("takes_manifest.json", "state_hashes.json"):
+            dst, src = work_dir / rel, snap / rel
+            dst.unlink(missing_ok=True)
+            if src.is_file():
+                shutil.copy2(src, dst)
+        for rel in ("renders", "frames", "trimmed"):
+            dst, src = work_dir / rel, snap / rel
+            if dst.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+        jobs_dir, snap_jobs = work_dir / "jobs", snap / "jobs"
+        if jobs_dir.is_dir():
+            for jf in jobs_dir.glob("*.json"):
+                jf.unlink(missing_ok=True)
+            if snap_jobs.is_dir():
+                for jf in snap_jobs.glob("*.json"):
+                    shutil.copy2(jf, jobs_dir / jf.name)
+        shutil.rmtree(snap, ignore_errors=True)
+
     def test_30_split_scene_http_endpoint(self):
         """Verify the POST /api/scene/split REST API endpoint handling."""
         import io
@@ -922,6 +965,7 @@ class TestRenderQueueBackend(unittest.TestCase):
                 return server.StudioRequestHandler.handle_media_stream(self, subpath)
 
         orig_text = self.json_path.read_text(encoding="utf-8")
+        work_snap = self._snapshot_project_work()
         try:
             # 1. Valid split request (S01 is 0.0 to 4.0s, split at 2.0s)
             h1 = DummyHandler("POST", "/api/scene/split", {
@@ -936,6 +980,7 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertEqual(res1["scene1"]["id"], "S01a")
             self.assertEqual(res1["scene2"]["id"], "S01b")
             self.assertEqual(len(res1["scenes"]), 4)
+            self.assertFalse((self.proj_dir / "work" / "renders" / "takes" / "S01").exists())
 
             # 2. Invalid split time returns error 400
             h2 = DummyHandler("POST", "/api/scene/split", {
@@ -956,11 +1001,13 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertEqual(h3.response_status, 400)
         finally:
             self.json_path.write_text(orig_text, encoding="utf-8")
+            self._restore_project_work(work_snap)
             server.compute_fast_project_queue(self.project_slug, force_recheck=True)
 
     def test_31_project_tool_split_scene_cli(self):
         """Verify project_tool.py split-scene CLI command splits scene and creates timestamped backup."""
         orig_text = self.json_path.read_text(encoding="utf-8")
+        work_snap = self._snapshot_project_work()
         tool_script = WORKSPACE_ROOT / ".agents" / "skills" / "mvg-project-ops" / "scripts" / "project_tool.py"
         try:
             cmd = [
@@ -983,8 +1030,10 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertIn("S01a", s_ids)
             self.assertIn("S01b", s_ids)
             self.assertNotIn("S01", s_ids)
+            self.assertFalse((self.proj_dir / "work" / "renders" / "takes" / "S01").exists())
         finally:
             self.json_path.write_text(orig_text, encoding="utf-8")
+            self._restore_project_work(work_snap)
             server.compute_fast_project_queue(self.project_slug, force_recheck=True)
 
     def test_32_delete_first_scene_gap_closing(self):
@@ -1167,6 +1216,7 @@ class TestRenderQueueBackend(unittest.TestCase):
                 return server.StudioRequestHandler.handle_media_stream(self, subpath)
 
         orig_text = self.json_path.read_text(encoding="utf-8")
+        work_snap = self._snapshot_project_work()
         try:
             # 1. Valid delete request for S02
             h1 = DummyHandler("POST", "/api/scene/delete", {
@@ -1182,6 +1232,9 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertEqual(len(res1["scenes"]), 2)
             # Queue in response must only have 2 passes (S01 and S03)
             self.assertEqual(len(res1["queue"]), 2)
+            mf_after_del = json.loads((self.proj_dir / "work" / "takes_manifest.json").read_text(encoding="utf-8"))
+            self.assertNotIn("S02", mf_after_del.get("scenes", {}))
+            self.assertFalse(list((self.proj_dir / "work" / "renders").glob("S02_*.mp4")))
 
             # 2. Delete non-existent scene returns 400
             h2 = DummyHandler("POST", "/api/scene/delete", {
@@ -1209,11 +1262,13 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertEqual(h4.response_status, 404)
         finally:
             self.json_path.write_text(orig_text, encoding="utf-8")
+            self._restore_project_work(work_snap)
             server.compute_fast_project_queue(self.project_slug, force_recheck=True)
 
     def test_39_project_tool_delete_scene_cli(self):
         """Verify project_tool.py delete-scene CLI command removes scene and creates backup."""
         orig_text = self.json_path.read_text(encoding="utf-8")
+        work_snap = self._snapshot_project_work()
         tool_script = WORKSPACE_ROOT / ".agents" / "skills" / "mvg-project-ops" / "scripts" / "project_tool.py"
         try:
             cmd = [
@@ -1236,8 +1291,12 @@ class TestRenderQueueBackend(unittest.TestCase):
             # S01 extended to 8.0s
             s01 = next(s for s in data["scenes"] if s["id"] == "S01")
             self.assertEqual(s01["end"], 8.0)
+            mf_after_cli = json.loads((self.proj_dir / "work" / "takes_manifest.json").read_text(encoding="utf-8"))
+            self.assertNotIn("S02", mf_after_cli.get("scenes", {}))
+            self.assertFalse(list((self.proj_dir / "work" / "renders").glob("S02_*.mp4")))
         finally:
             self.json_path.write_text(orig_text, encoding="utf-8")
+            self._restore_project_work(work_snap)
             server.compute_fast_project_queue(self.project_slug, force_recheck=True)
 
     def test_40_deleted_scene_excluded_from_master_stitch(self):
@@ -1311,7 +1370,7 @@ class TestRenderQueueBackend(unittest.TestCase):
             self.assertEqual(h_range.wfile.getvalue(), b"TEST")
 
             # 2. Test filmstrip serving for an existing strip
-            frames_dir = self.proj_dir / "work" / "frames_v3"
+            frames_dir = self.proj_dir / "work" / "frames"
             frames_dir.mkdir(parents=True, exist_ok=True)
             dummy_strip = frames_dir / "S01_strip.jpg"
             dummy_strip.write_bytes(b"DUMMY_STRIP_JPEG_BYTES")
@@ -1324,8 +1383,8 @@ class TestRenderQueueBackend(unittest.TestCase):
         finally:
             if dummy_master.exists():
                 dummy_master.unlink()
-            if (self.proj_dir / "work" / "frames_v3" / "S01_strip.jpg").exists():
-                (self.proj_dir / "work" / "frames_v3" / "S01_strip.jpg").unlink()
+            if (self.proj_dir / "work" / "frames" / "S01_strip.jpg").exists():
+                (self.proj_dir / "work" / "frames" / "S01_strip.jpg").unlink()
 
     def test_42_filmstrip_clip_disambiguation_and_autoregen(self):
         """Regression test for filmstrip scene matching and auto-generation.
@@ -1358,9 +1417,9 @@ class TestRenderQueueBackend(unittest.TestCase):
         Verifies that an intermediate single-window MP4 covering only part of a long scene
         is detected as requiring render until fully completed and registered with matching bounds."""
         orig_text = self.json_path.read_text(encoding="utf-8")
-        renders_dir = self.proj_dir / "work" / "renders_v3"
+        renders_dir = self.proj_dir / "work" / "renders"
         renders_dir.mkdir(parents=True, exist_ok=True)
-        jobs_dir = self.proj_dir / "work" / "jobs_v3"
+        jobs_dir = self.proj_dir / "work" / "jobs"
         jobs_dir.mkdir(parents=True, exist_ok=True)
         state_hashes_file = jobs_dir / "state_hashes.json"
 
@@ -1712,8 +1771,8 @@ class TestRenderQueueBackend(unittest.TestCase):
 
         # 2. Pipeline cli.py stitch_only synchronization checks
         cli_py = (self.proj_dir.parent.parent / "work" / "pipeline" / "cli.py").read_text(encoding="utf-8")
-        self.assertIn('project_scenes_by_id = {s["id"]: s for s in ctx.scenes', cli_py)
-        self.assertIn('if r_info and "render_start" in r_info:', cli_py)
+        self.assertIn("for sc in ctx.scenes:", cli_py)
+        self.assertIn('r_info and "render_start" in r_info', cli_py)
 
         # 3. Functional behavior check with ProjectContext and mock state
         ctx = ProjectContext(self.json_path)
@@ -1788,8 +1847,8 @@ class TestRenderQueueBackend(unittest.TestCase):
         # 2. FL2VA task compilation (Model 1)
         ctx = ProjectContext(self.json_path)
         m1_rspec = ctx.video_renderers["1"]
-        anchor_p = self.proj_dir / "work" / "anchors_v3" / "A01.jpg"
-        audio_p = self.proj_dir / "work" / "audio_v3" / "S01_male.wav"
+        anchor_p = self.proj_dir / "work" / "anchors" / "A01.jpg"
+        audio_p = self.proj_dir / "work" / "audio" / "S01_male.wav"
         fl2va_task = ctx.make_video_task(
             output_filename="test_fl2va",
             prompt=sample_prompt,
@@ -1876,8 +1935,8 @@ class TestRenderQueueBackend(unittest.TestCase):
         ctx = ProjectContext(self.json_path)
         m1_rspec = ctx.video_renderers["1"]
         m12_rspec = ctx.video_renderers["12"]
-        anchor_p = self.proj_dir / "work" / "anchors_v3" / "A01.jpg"
-        audio_p = self.proj_dir / "work" / "audio_v3" / "S01_male.wav"
+        anchor_p = self.proj_dir / "work" / "anchors" / "A01.jpg"
+        audio_p = self.proj_dir / "work" / "audio" / "S01_male.wav"
 
         # FL2VA Model 1 (preserves <Picture 1> first-frame token while stripping <imageN> and <Picture 2..10>):
         fl2va_task = ctx.make_video_task(
@@ -2239,7 +2298,7 @@ class TestRenderQueueBackend(unittest.TestCase):
         self.assertIn("window.state.charactersData = window.state.projectData.characters", history_js)
 
         # 5. Stale engine_status.json cleanup when current_project is None (e.g. after reboot)
-        eng_file = self.proj_dir / "work" / "jobs_v3" / "engine_status.json"
+        eng_file = self.proj_dir / "work" / "jobs" / "engine_status.json"
         eng_file.parent.mkdir(parents=True, exist_ok=True)
         eng_file.write_text(json.dumps({"state": "running", "filename": "S01_solo_832x480.mp4"}), encoding="utf-8")
         server.render_status["current_project"] = None
@@ -2609,8 +2668,8 @@ class TestRenderQueueBackend(unittest.TestCase):
             prompt="Test prompt",
             video_length=81,
             seed=1234,
-            image_start=self.proj_dir / "work" / "anchors_v3" / "A01.jpg",
-            audio_path=self.proj_dir / "work" / "audio_v3" / "S01_male.wav",
+            image_start=self.proj_dir / "work" / "anchors" / "A01.jpg",
+            audio_path=self.proj_dir / "work" / "audio" / "S01_male.wav",
             rspec=vrspec,
             sc=sc_inh,
         )
@@ -2839,11 +2898,11 @@ class TestRenderQueueBackend(unittest.TestCase):
         with _tf.TemporaryDirectory() as q_tmp:
             q_root = Path(q_tmp)
             p_dir = q_root / "compat_proj"
-            (p_dir / "work" / "anchors_v3").mkdir(parents=True)
-            (p_dir / "work" / "jobs_v3").mkdir(parents=True)
+            (p_dir / "work" / "anchors").mkdir(parents=True)
+            (p_dir / "work" / "jobs").mkdir(parents=True)
             (p_dir / "audio").mkdir(parents=True)
-            (p_dir / "work" / "renders_v3").mkdir(parents=True)
-            a_file = p_dir / "work" / "anchors_v3" / "A01.jpg"
+            (p_dir / "work" / "renders").mkdir(parents=True)
+            a_file = p_dir / "work" / "anchors" / "A01.jpg"
             a_file.write_bytes(b"img")
             (p_dir / "audio" / "song.wav").write_bytes(b"RIFF" + b"\x00" * 40)
             cfg = {
@@ -2852,7 +2911,7 @@ class TestRenderQueueBackend(unittest.TestCase):
                     "master_audio": "audio/song.wav",
                     "stems": {"male": "audio/song.wav", "female": "audio/song.wav"},
                     "fps": 25,
-                    "directories": {"anchors": "work/anchors_v3", "renders": "work/renders_v3", "jobs": "work/jobs_v3"},
+                    "directories": {"anchors": "work/anchors", "renders": "work/renders", "jobs": "work/jobs"},
                 },
                 "models": {
                     "default_anchor_renderer": 3,
@@ -2876,7 +2935,7 @@ class TestRenderQueueBackend(unittest.TestCase):
             (ctx_c.renders_dir / f"{s01_stem}.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 60000)
             import hashlib as _hl
             a_sha = _hl.sha256(a_file.read_bytes()).hexdigest()[:16]
-            (p_dir / "work" / "jobs_v3" / "state_hashes.json").write_text(json.dumps({
+            (p_dir / "work" / "jobs" / "state_hashes.json").write_text(json.dumps({
                 "tasks": {s01_stem: hashes[s01_stem][0]},
                 "anchor_file_hashes": {"A01.jpg": a_sha},
             }), encoding="utf-8")
@@ -3003,7 +3062,7 @@ class TestRenderQueueBackend(unittest.TestCase):
             def send_error_json(self, msg, status=HTTPStatus.BAD_REQUEST):
                 server.StudioRequestHandler.send_error_json(self, msg, status)
 
-        anchors_dir = self.proj_dir / "work" / "anchors_v3"
+        anchors_dir = self.proj_dir / "work" / "anchors"
         refs_dir = self.proj_dir / "references"
         anchors_dir.mkdir(parents=True, exist_ok=True)
         refs_dir.mkdir(parents=True, exist_ok=True)
@@ -3166,6 +3225,77 @@ vm.runInContext(src, ctx);
         res = subprocess.run(["node", "-e", node_script, str(qc_js_path)], capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, msg=f"STDOUT: {res.stdout}\nSTDERR: {res.stderr}")
         self.assertIn("TIMER_OK:", res.stdout)
+
+    def test_75_duplicate_scene_http_endpoint(self):
+        """Verify POST /api/scene/duplicate inserts duplicate right after original, copies takes, and creates backup."""
+        import io
+        from http import HTTPStatus
+
+        class DummyHandler:
+            def __init__(self, method, path, body_dict):
+                self.command = method
+                self.path = path
+                body_bytes = json.dumps(body_dict).encode("utf-8")
+                self.headers = {"Content-Length": str(len(body_bytes)), "Content-Type": "application/json"}
+                self.rfile = io.BytesIO(body_bytes)
+                self.wfile = io.BytesIO()
+                self.response_status = None
+                self.response_headers = {}
+
+            def send_response(self, status):
+                self.response_status = status
+
+            def send_header(self, k, v):
+                self.response_headers[k] = v
+
+            def end_headers(self):
+                pass
+
+            def send_json(self, data, status=HTTPStatus.OK):
+                server.StudioRequestHandler.send_json(self, data, status)
+
+            def send_error_json(self, msg, status=HTTPStatus.BAD_REQUEST):
+                server.StudioRequestHandler.send_error_json(self, msg, status)
+
+            def read_json_body(self):
+                return server.StudioRequestHandler.read_json_body(self)
+
+            def handle_media_stream(self, subpath):
+                return server.StudioRequestHandler.handle_media_stream(self, subpath)
+
+        orig_text = self.json_path.read_text(encoding="utf-8")
+        renders_dir = self.proj_dir / "work" / "renders"
+        takes_dir = renders_dir / "takes"
+        manifest_path = self.proj_dir / "work" / "takes_manifest.json"
+        orig_manifest = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else None
+        try:
+            h1 = DummyHandler("POST", "/api/scene/duplicate", {"slug": self.project_slug, "scene_id": "S01"})
+            server.StudioRequestHandler.do_POST(h1)
+            self.assertEqual(h1.response_status, 200)
+            res1 = json.loads(h1.wfile.getvalue().decode("utf-8"))
+            self.assertTrue(res1.get("success"))
+            self.assertEqual([s["id"] for s in res1["scenes"]][:2], ["S01", "S01a"])
+            self.assertEqual(res1["orig_scene"]["end"], 2.0)
+            self.assertEqual(res1["duplicated_scene"]["start"], 2.0)
+            self.assertEqual(res1["duplicated_scene"]["end"], 4.0)
+
+            h_bad = DummyHandler("POST", "/api/scene/duplicate", {"slug": self.project_slug})
+            server.StudioRequestHandler.do_POST(h_bad)
+            self.assertEqual(h_bad.response_status, 400)
+
+            h_miss = DummyHandler("POST", "/api/scene/duplicate", {"slug": "no_such_proj_999", "scene_id": "S01"})
+            server.StudioRequestHandler.do_POST(h_miss)
+            self.assertEqual(h_miss.response_status, 404)
+        finally:
+            self.json_path.write_text(orig_text, encoding="utf-8")
+            if orig_manifest is not None:
+                manifest_path.write_text(orig_manifest, encoding="utf-8")
+            else:
+                manifest_path.unlink(missing_ok=True)
+            shutil.rmtree(takes_dir / "S01a", ignore_errors=True)
+            for p in renders_dir.glob("S01a_*.mp4"):
+                p.unlink(missing_ok=True)
+            server.compute_fast_project_queue(self.project_slug, force_recheck=True)
 
     @classmethod
     def tearDownClass(cls):

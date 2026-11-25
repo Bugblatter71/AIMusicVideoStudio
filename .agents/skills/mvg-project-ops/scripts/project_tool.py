@@ -104,7 +104,7 @@ def cmd_summary(args):
     print(f"    - Duet Scenes: {duet_count}")
 
     pdir = PROJECTS_DIR / args.slug
-    manifest_file = next((mf for mf in (pdir / "work" / "takes_manifest.json", pdir / "work" / "renders_v3" / "takes_manifest.json", pdir / "work" / "renders" / "takes_manifest.json") if mf.is_file()), None)
+    manifest_file = next((mf for mf in (pdir / "work" / "takes_manifest.json", pdir / "work" / "renders" / "takes_manifest.json") if mf.is_file()), None)
     if manifest_file is not None:
         try:
             m_data = json.loads(manifest_file.read_text(encoding="utf-8"))
@@ -219,7 +219,7 @@ def cmd_audit(args):
 
     # 3. Anchor references & disk existence
     cfg_anchors_rel = data.get("project", {}).get("directories", {}).get("anchors", "work/anchors")
-    anchor_dirs = [d for d in (pdir / cfg_anchors_rel, pdir / "work" / "anchors_v3", pdir / "work" / "anchors", pdir / "anchors") if d.is_dir()]
+    anchor_dirs = [d for d in (pdir / cfg_anchors_rel, pdir / "work" / "anchors", pdir / "anchors") if d.is_dir()]
     for s in scenes:
         sid = s.get("id", "?")
         for aid_key in ("anchor", "anchor_end", "anchor_female"):
@@ -242,8 +242,6 @@ def cmd_audit(args):
     cand_render_dirs = [
         pdir / proj_dirs.get("renders", "work/renders"),
         pdir / proj_dirs.get("trimmed", "work/trimmed"),
-        pdir / "work" / "renders_v3",
-        pdir / "work" / "trimmed_v3",
         pdir / "work" / "renders",
         pdir / "work" / "trimmed",
     ]
@@ -529,6 +527,11 @@ def cmd_split_scene(args):
 
     bak = backup_file(pjson)
     pjson.write_text(json.dumps(updated_data, indent=2), encoding="utf-8")
+    try:
+        from pipeline.scene_purge import handle_scene_split_post_purge
+        handle_scene_split_post_purge(pjson.parent, pjson, args.scene_id, sc1, sc2, updated_data)
+    except Exception:
+        pass
 
     print(f"✅ Successfully split scene {args.scene_id} in {pjson.name}:")
     print(f"   - {sc1.get('id')}: {sc1.get('start', 0):.2f}s -> {sc1.get('end', 0):.2f}s ({sc1.get('end', 0) - sc1.get('start', 0):.2f}s duration)")
@@ -561,6 +564,11 @@ def cmd_delete_scene(args):
 
     bak = backup_file(pjson)
     pjson.write_text(json.dumps(updated_data, indent=2), encoding="utf-8")
+    try:
+        from pipeline.scene_purge import purge_deleted_scene_artifacts
+        purge_deleted_scene_artifacts(pjson.parent, [deleted_sc.get("id") or args.scene_id], config_data=updated_data, config_file=pjson)
+    except Exception:
+        pass
 
     print(f"✅ Successfully deleted scene {args.scene_id} in {pjson.name}:")
     print(f"   - Removed {deleted_sc.get('id')} ({deleted_sc.get('start', 0):.2f}s -> {deleted_sc.get('end', 0):.2f}s, close_gap={close_gap})")

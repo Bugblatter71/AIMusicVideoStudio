@@ -35,7 +35,6 @@ temp_audio.*
 temp_stem.*
 
 # --- User Source Audio & Copyrighted Stems (Do NOT distribute or commit) ---
-projects/all_or_nothing/audio/
 **/projects/*/audio/*.mp3
 **/projects/*/audio/*.wav
 **/projects/*/audio/*.flac
@@ -51,19 +50,29 @@ work/s01_mouth_check/
 work/test_review/
 work/test_trimmed_exact/
 
-# --- State Hashes & Runtime Job Manifests ---
+# --- State Hashes, Take Vaults & Runtime Job Manifests ---
 state_hashes.json
 takes_manifest.json
 takes_manifest.lock
+anchor_takes.json
 **/work/jobs/
 **/work/jobs_*/
+**/work/takes/
+**/work/anchors/takes/
+**/work/anchor_sources/
 *.log
 
-# --- Project Backups & Machine-Local Configs ---
+# --- Project Backups, Archives & Machine-Local Configs ---
 backup/
+**/backup/
 **/Backup/
 checkpoints/
 **/checkpoints/
+*.7z
+*.zip
+*.tar
+*.tar.gz
+*.rar
 local_config.json
 config.local.json
 config.local.bat
@@ -112,15 +121,19 @@ local_config.bat
 !work/ui/**
 **/__pycache__/**
 
-# Keep character reference sheets & primary anchor images
-!projects/*/references/
-!projects/*/work/ref_sheets/
-!projects/*/work/anchors*/A*.jpg
+# ==============================================================================
+# Projects Policy: Exclude ALL projects & backups by default (test_project only)
+# ==============================================================================
+projects/*
+!projects/test_project/
 
-# Keep project configs & READMEs
-!projects/*/*.json
-!projects/*/audio/*.mp3
-!projects/*/audio/*.txt
-!projects/*/*.txt
-!projects/*/*.md
+# Keep test_project reference sheets, primary anchors, config & test stems
+!projects/test_project/references/
+!projects/test_project/work/ref_sheets/
+!projects/test_project/work/anchors*/A*.jpg
+!projects/test_project/*.json
+!projects/test_project/audio/*.mp3
+!projects/test_project/audio/*.txt
+!projects/test_project/*.txt
+!projects/test_project/*.md
 

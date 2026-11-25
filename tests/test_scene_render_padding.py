@@ -43,9 +43,9 @@ class TestSceneRenderPadding(unittest.TestCase):
         self.anchors_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir = self.project_dir / "audio"
         self.audio_dir.mkdir(parents=True, exist_ok=True)
-        self.renders_dir = self.project_dir / "work" / "renders_v3"
+        self.renders_dir = self.project_dir / "work" / "renders"
         self.renders_dir.mkdir(parents=True, exist_ok=True)
-        self.jobs_dir = self.project_dir / "work" / "jobs_v3"
+        self.jobs_dir = self.project_dir / "work" / "jobs"
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
         # Anchors
@@ -67,7 +67,7 @@ class TestSceneRenderPadding(unittest.TestCase):
                 "directories": {
                     "anchors": "anchors",
                     "audio_slices": "audio",
-                    "renders": "work/renders_v3",
+                    "renders": "work/renders",
                 },
             },
             "models": {"default_video_renderer": 1, "default_anchor_renderer": 1},

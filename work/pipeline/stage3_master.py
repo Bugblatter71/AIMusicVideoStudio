@@ -7,17 +7,34 @@ from pathlib import Path
 
 from .context import ProjectContext
 from .media_utils import (
+    probe_has_audio_stream,
     probe_video_dimensions,
+    probe_video_duration,
     probe_video_fps,
     probe_video_frames,
     resolve_rendered_clip_path,
 )
 from .prompts import resolve_master_resolution
+from .project_paths import resolve_manifest_active_take_clip
 
 
 def _emit_stitch_progress(pct: int, phase: str, detail: str = "", current: int = 0, total: int = 0) -> None:
     payload = {"pct": max(0, min(100, int(pct))), "phase": phase, "detail": detail, "current": current, "total": total}
     print(f"[MASTER_STITCH_PROGRESS] {json.dumps(payload)}", flush=True)
+
+
+def _run_ffmpeg_checked(cmd: list[str], step_desc: str, log_prefix: str = "") -> bool:
+    proc = subprocess.run(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+    )
+    rc = 0 if proc is None else getattr(proc, "returncode", 0)
+    if rc == 0:
+        return True
+    out_txt = getattr(proc, "stdout", "") or ""
+    lines = [ln.strip() for ln in out_txt.splitlines() if ln.strip()]
+    tail = " | ".join(lines[-8:])[:500] if lines else f"exit code {rc}"
+    print(f"{log_prefix}[Error] [MASTER_STITCH_FAILED] FFmpeg {step_desc} failed (exit {rc}): {tail}", flush=True)
+    return False
 
 
 def build_stage3_ffmpeg_extra_filters(ffmpeg_filters: dict | None) -> tuple[list[str], list[str]]:
@@ -128,6 +145,36 @@ def resolve_scene_fade_filters(
     )
 
 
+def _ensure_master_gap_clip(
+    ctx: ProjectContext,
+    gap_clip: Path,
+    trim_cache: dict,
+    gap_frames: int,
+    gap_sig: str,
+    res_str: str,
+    log_prefix: str = "",
+) -> bool:
+    """Create or reuse a tv-range black filler clip so timeline gaps preserve downstream audio sync."""
+    if gap_clip.exists() and trim_cache.get(gap_clip.name) == gap_sig:
+        return True
+    res_tag = res_str.replace(":", "x")
+    ok = _run_ffmpeg_checked(
+        [
+            str(ctx.ffmpeg), "-y", "-f", "lavfi",
+            "-i", f"color=c=black:s={res_tag}:r={ctx.fps}",
+            "-vf", "scale=out_range=tv,format=yuv420p,setsar=1:1",
+            "-frames:v", str(gap_frames),
+            "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-color_range", "tv", "-pix_fmt", "yuv420p",
+            str(gap_clip),
+        ],
+        f"gap filler {gap_clip.name}",
+        log_prefix=log_prefix,
+    )
+    if ok:
+        trim_cache[gap_clip.name] = gap_sig
+    return ok
+
+
 def assemble_progressive_master(
     ctx: ProjectContext,
     scene_meta: list[dict],
@@ -140,6 +187,10 @@ def assemble_progressive_master(
     Supports head-offset trimming for clips generated with render overlap padding.
     Safely handles Windows media player file locks.
     """
+    if not scene_meta:
+        print(f"{log_prefix}[Error] [MASTER_STITCH_FAILED] No scenes configured for master video assembly.", flush=True)
+        return False
+
     state = ctx.load_state_hashes()
     scene_renders = state.setdefault("scene_renders", {})
     trim_cache = state.setdefault("trim_cache", {})
@@ -177,38 +228,75 @@ def assemble_progressive_master(
         (float(project_scenes_by_id.get(s["id"], {}).get("end", s.get("end", 0.0))) for s in scene_meta),
         default=0.0,
     )
-    timeline_end_s = (
-        min(last_sc_end, float(ctx.total_duration))
-        if (last_sc_end > 0 and ctx.total_duration)
-        else (last_sc_end or float(ctx.total_duration or 0.0))
-    )
+    timeline_end_s = last_sc_end if last_sc_end > 0 else float(ctx.total_duration or 0.0)
     raw_fade_end = getattr(
         ctx,
         "fade_out_end_s",
         ctx.project_cfg.get("fade_out_end_seconds") if isinstance(getattr(ctx, "project_cfg", None), dict) else None,
     )
     _emit_stitch_progress(2, "Preparing scenes", f"Checking {len(scene_meta)} scenes for {res_tag} master...", 0, total_scenes)
+    prev_end_frame: int | None = None
+    prev_end_s: float = 0.0
+    first_sc_start_s: float | None = None
 
     for i, sc in enumerate(scene_meta):
         sid = sc["id"]
         curr_sc = project_scenes_by_id.get(sid)
         sc_start = float(curr_sc["start"]) if (curr_sc and "start" in curr_sc) else float(sc["start"])
         sc_end = float(curr_sc["end"]) if (curr_sc and "end" in curr_sc) else float(sc["end"])
-        sc_dur = max(0.001, round(sc_end - sc_start, 3))
-        dur = sc_dur
         canonical_stem = re.sub(r"\(\d+\)$", "", Path(sc["clip"]).stem)
-        src_clip = resolve_rendered_clip_path(ctx.renders_dir, canonical_stem, promote=True)
+        act_clip, act_tk = resolve_manifest_active_take_clip(ctx.project_dir, sid, ctx.renders_dir)
+        if act_clip is not None and act_clip.is_file() and act_clip.stat().st_size > 50000:
+            src_clip = act_clip
+        else:
+            src_clip = resolve_rendered_clip_path(ctx.renders_dir, canonical_stem, promote=True)
         dst_clip = ctx.trimmed_dir / f"{i:02d}_{sid}_{res_tag}.mp4"
         dst_placeholder = ctx.trimmed_dir / f"{i:02d}_{sid}_placeholder_{res_tag}.mp4"
 
         # Lock exact frame bounds on the master fps grid (eliminates cumulative timing drift)
-        start_frame = int(round(sc_start * ctx.fps))
+        raw_start_frame = int(round(sc_start * ctx.fps))
         end_frame = int(round(sc_end * ctx.fps))
+        if first_sc_start_s is None:
+            first_sc_start_s = sc_start
+        if prev_end_frame is not None and raw_start_frame < prev_end_frame:
+            overlap_s = prev_end_s - sc_start
+            print(
+                f"{log_prefix}[Warning] Scene {sid} ({sc_start:.2f}s–{sc_end:.2f}s) overlaps previous scene end "
+                f"({prev_end_s:.2f}s) by {overlap_s:.2f}s; clamping stitched start to {prev_end_s:.2f}s to preserve audio sync.",
+                flush=True,
+            )
+            if end_frame <= prev_end_frame:
+                print(f"{log_prefix}[Warning] Skipping scene {sid} covered completely by previous scene end ({prev_end_s:.2f}s).", flush=True)
+                continue
+            sc_start = prev_end_frame / ctx.fps
+            start_frame = prev_end_frame
+        elif prev_end_frame is not None and raw_start_frame > prev_end_frame:
+            gap_frames = raw_start_frame - prev_end_frame
+            gap_s = gap_frames / ctx.fps
+            print(
+                f"{log_prefix}[Warning] Timeline gap of {gap_s:.2f}s before scene {sid} ({prev_end_s:.2f}s–{sc_start:.2f}s); "
+                f"inserting {gap_frames} filler frame(s) to preserve downstream audio sync.",
+                flush=True,
+            )
+            gap_clip = ctx.trimmed_dir / f"{i:02d}_{sid}_gap_{res_tag}.mp4"
+            gap_sig = f"gap_{prev_end_frame}_{raw_start_frame}_{res_str}_{ctx.fps}"
+            if not _ensure_master_gap_clip(ctx, gap_clip, trim_cache, gap_frames, gap_sig, res_str, log_prefix=log_prefix):
+                return False
+            concat_lines.append(f"file '{gap_clip.as_posix()}'")
+            start_frame = raw_start_frame
+        else:
+            start_frame = raw_start_frame
+        prev_end_frame = end_frame
+        prev_end_s = sc_end
+        sc_dur = max(0.001, round(sc_end - sc_start, 3))
+        dur = sc_dur
         target_frames = max(1, end_frame - start_frame)
 
-        # Retrieve render_start for offset trimming (prioritizing physical render info for existing clips)
-        r_info = scene_renders.get(canonical_stem) or scene_renders.get(src_clip.stem)
-        if src_clip.exists() and r_info and "render_start" in r_info:
+        # Retrieve render_start for offset trimming (prioritizing active take / physical render info)
+        r_info = scene_renders.get((act_tk or {}).get("out_name") or canonical_stem) or scene_renders.get(canonical_stem) or scene_renders.get(src_clip.stem)
+        if src_clip.exists() and act_tk and act_tk.get("render_start") is not None:
+            render_start = float(act_tk["render_start"])
+        elif src_clip.exists() and r_info and "render_start" in r_info:
             render_start = float(r_info["render_start"])
         elif sc.get("render_start") is not None:
             render_start = float(sc["render_start"])
@@ -230,6 +318,8 @@ def assemble_progressive_master(
             ctx.fade_out_last_s, raw_fade_end, sc_start, sc_end, timeline_end_s
         )
         trim_sig = f"{sc_start:.3f}_{sc_end:.3f}_{head_offset_s:.3f}_{target_frames}_{res_str}_{scale_algo}_{sharpen:.2f}_{ctx.fps}_{dims_tag}_tv2_center_{fade_sig}"
+        if act_tk and act_tk.get("take_id"):
+            trim_sig = f"{trim_sig}_{act_tk['take_id']}"
         if ff_sig:
             trim_sig = f"{trim_sig}_{ff_sig}"
 
@@ -259,10 +349,16 @@ def assemble_progressive_master(
                             needs_encode = True
             if needs_encode:
                 _emit_stitch_progress(5 + int((i / total_scenes) * 70), f"Trimming & scaling scene {i + 1}/{total_scenes} ({sid})", f"Encoding {dst_clip.name}", i + 1, total_scenes)
+                trim_offset_s = head_offset_s
+                if trim_offset_s > 0.0005:
+                    clip_dur = probe_video_duration(ctx.ffmpeg, src_clip)
+                    if clip_dur is not None and clip_dur > 0:
+                        max_trim = max(0.0, float(clip_dur) - (1.0 / max(1, ctx.fps)))
+                        trim_offset_s = min(trim_offset_s, max_trim)
                 vf_filters = []
-                if head_offset_s > 0.0005:
+                if trim_offset_s > 0.0005:
                     vf_filters.extend([
-                        f"trim=start={head_offset_s:.3f}",
+                        f"trim=start={trim_offset_s:.3f}",
                         "setpts=PTS-STARTPTS",
                     ])
                 vf_filters.extend([
@@ -273,7 +369,7 @@ def assemble_progressive_master(
                     "format=yuv420p",
                     *fade_filters,
                 ])
-                subprocess.run(
+                if not _run_ffmpeg_checked(
                     [
                         str(ctx.ffmpeg), "-y", "-i", str(src_clip),
                         "-vf", ",".join(vf_filters),
@@ -281,8 +377,10 @@ def assemble_progressive_master(
                         "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "16", "-color_range", "tv", "-pix_fmt", "yuv420p",
                         str(dst_clip),
                     ],
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                )
+                    f"scene {sid} trim/scale",
+                    log_prefix=log_prefix,
+                ):
+                    return False
                 trim_cache[dst_clip.name] = trim_sig
             elif i == 0 or i == last_idx or (i + 1) % 4 == 0:
                 _emit_stitch_progress(5 + int(((i + 1) / total_scenes) * 70), f"Verifying cached scenes ({i + 1}/{total_scenes})", f"Scene {sid} up-to-date", i + 1, total_scenes)
@@ -343,7 +441,8 @@ def assemble_progressive_master(
                         "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-color_range", "tv", "-pix_fmt", "yuv420p",
                         str(dst_placeholder),
                     ]
-                subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if not _run_ffmpeg_checked(cmd, f"placeholder {sid}", log_prefix=log_prefix):
+                    return False
                 trim_cache[dst_placeholder.name] = ph_sig
 
         concat_lines.append(f"file '{active_clip.as_posix()}'")
@@ -353,13 +452,14 @@ def assemble_progressive_master(
             n_thumbs = max(2, min(30, round(dur / 1.0)))
             r = n_thumbs / max(0.5, dur)
             if not strip_jpg.exists() or (src_clip.exists() and strip_jpg.stat().st_mtime < src_clip.stat().st_mtime) or needs_encode:
-                subprocess.run(
+                _run_ffmpeg_checked(
                     [
                         str(ctx.ffmpeg), "-y", "-i", str(active_clip),
                         "-vf", f"fps={r:.4f},scale=-1:144,tile={n_thumbs}x1",
                         "-frames:v", "1", "-q:v", "2", str(strip_jpg),
                     ],
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    f"review strip {sid}",
+                    log_prefix=log_prefix,
                 )
 
     ctx.save_state_hashes(state, updated_sections={"trim_cache"})
@@ -367,24 +467,37 @@ def assemble_progressive_master(
     concat_txt = ctx.trimmed_dir / "concat_list.txt"
     concat_txt.write_text("\n".join(concat_lines), encoding="utf-8")
 
-    total_dur = (
-        float(ctx.total_duration)
-        if ctx.total_duration
+    scene_span = (
+        round(prev_end_s - first_sc_start_s, 3)
+        if (first_sc_start_s is not None and prev_end_s > first_sc_start_s)
         else sum(
             float(project_scenes_by_id.get(s["id"], {}).get("end", s.get("end", 0.0)))
             - float(project_scenes_by_id.get(s["id"], {}).get("start", s.get("start", 0.0)))
             for s in scene_meta
         )
     )
+    total_dur = scene_span if scene_span > 0 else float(ctx.total_duration or 0.0)
     tmp_output = ctx.master_output.with_suffix(".tmp.mp4")
 
     _emit_stitch_progress(82, "Muxing master video & audio", f"Concatenating {len(scene_meta)} scenes ({rendered_count} clips, {placeholder_count} placeholders) at {res_tag}...", total_scenes, total_scenes)
 
-    subprocess.run(
+    has_master_audio = (
+        bool(ctx.master_audio)
+        and ctx.master_audio.is_file()
+        and ctx.master_audio.stat().st_size > 100
+        and probe_has_audio_stream(ctx.ffmpeg, ctx.master_audio)
+    )
+    if has_master_audio:
+        audio_inputs = ["-i", str(ctx.master_audio)]
+    else:
+        print(f"{log_prefix}[Warning] Master audio '{ctx.master_audio.name if ctx.master_audio else 'missing'}' not found or has no audio stream; muxing silent stereo audio track.", flush=True)
+        audio_inputs = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
+
+    if not _run_ffmpeg_checked(
         [
             str(ctx.ffmpeg), "-y",
             "-f", "concat", "-safe", "0", "-i", str(concat_txt),
-            "-i", str(ctx.master_audio),
+            *audio_inputs,
             "-map", "0:v:0", "-map", "1:a:0",
             "-r", str(ctx.fps),
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-color_range", "tv", "-pix_fmt", "yuv420p",
@@ -392,8 +505,11 @@ def assemble_progressive_master(
             "-t", f"{total_dur:.3f}",
             str(tmp_output),
         ],
-        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+        "master concat/mux",
+        log_prefix=log_prefix,
+    ):
+        tmp_output.unlink(missing_ok=True)
+        return False
 
     _emit_stitch_progress(96, "Finalizing master MP4", f"Writing {ctx.master_output.name}...", total_scenes, total_scenes)
 

@@ -14,7 +14,7 @@ Use this skill whenever you need to inspect, audit, or safely modify a Studio pr
 
 ## 1. Fast CLI Commands (`project_tool.py`)
 
-All commands automatically resolve the latest versioned JSON file in `projects/<slug>/` and support both new (`work/renders`, `work/jobs`) and legacy (`work/renders_v3`, `work/jobs_v3`) layouts:
+All commands automatically resolve the latest versioned JSON file in `projects/<slug>/` and inspect the standardized `work/` layout (`work/renders`, `work/jobs`, `work/anchors`, `work/trimmed`, `work/frames`):
 
 ```bash
 python .agents/skills/mvg-project-ops/scripts/project_tool.py list

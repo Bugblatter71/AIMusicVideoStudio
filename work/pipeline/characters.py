@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from .media_utils import _file_sha256, resolve_ffmpeg_path, resolve_path
+from .project_paths import resolve_project_dirs
 from .prompts import build_ref2va_prompt, resolve_scene_refs, strip_dangling_ref_tags
 
 DEFAULT_MARCUS_TRAITS = "the exact 30-year-old Black male singer"
@@ -583,11 +584,12 @@ def get_project_characters_payload(proj_dir: Path, data: dict, slug: str) -> dic
             atag = f"@{aid}"
             if atag not in seen_tags:
                 seen_tags.add(atag)
+                anc_rel = resolve_project_dirs(proj_dir, config_data=data).get("anchors_rel", "work/anchors")
                 autocomplete.append({
                     "tag": atag,
                     "name": anc.get("filename", aid),
                     "kind": "anchor",
-                    "avatar": f"work/anchors_v3/{anc.get('filename', '')}",
+                    "avatar": f"{anc_rel}/{anc.get('filename', '')}",
                     "description": anc.get("prompt", ""),
                 })
 
@@ -665,10 +667,8 @@ def crop_reference_from_clip(
 ) -> str:
     """Extracts a frame from rendered clip using ffmpeg and writes to output_rel_path."""
     clean_clip = Path(clip_name).name
-    candidate_paths = [
-        proj_dir / "work" / "renders_v3" / clean_clip,
-        proj_dir / clean_clip,
-    ]
+    rdir = resolve_project_dirs(proj_dir)["renders"]
+    candidate_paths = [rdir / clean_clip, proj_dir / clean_clip]
     clip_path = next((p for p in candidate_paths if p.exists()), None)
     if not clip_path:
         raise FileNotFoundError(f"Clip not found on disk: {clip_name}")
@@ -747,6 +747,11 @@ def handle_characters_api(handler, action: str, slug: str | None = None, body: d
     proj_dir = srv.PROJECTS_DIR / s
     if not proj_dir.is_dir():
         handler.send_error_json("Project not found", status=HTTPStatus.NOT_FOUND)
+        return
+
+    if action in ("mask-info", "mask-detect", "mask-extract", "mask-save", "mask-toggle", "isolate-ai"):
+        from .char_masking import handle_char_masking_api
+        handle_char_masking_api(handler, action, proj_dir, s, b)
         return
 
     if action == "save":

@@ -41,6 +41,9 @@ try:
         resolve_rendered_clip_path,
         find_local_config,
         auto_detect_wgp_root,
+        is_valid_wgp_root,
+        find_wgp_venv_python,
+        repair_stale_local_config,
     )
 except ImportError as _imp_err:
     print(f"[Studio UI Warning] Failed importing pipeline helpers in server.py: {_imp_err}", file=sys.stderr)
@@ -49,16 +52,19 @@ except ImportError as _imp_err:
     resolve_rendered_clip_path = None
     find_local_config = None
     auto_detect_wgp_root = None
+    is_valid_wgp_root = None
+    find_wgp_venv_python = None
+    repair_stale_local_config = None
 
 
 def resolve_engine_python() -> str:
     """Finds the best Python interpreter for GPU rendering jobs.
-    Checks environment variables, local machine config, Pinokio auto-detection,
-    and falls back to current running Python.
+    Checks each candidate path individually and re-scans Pinokio if any prior path stopped working.
     """
-    env_py = os.environ.get("PINOKIO_PY") or os.environ.get("WGP_PYTHON") or os.environ.get("ENGINE_PYTHON")
-    if env_py and Path(env_py).is_file():
-        return str(Path(env_py).resolve())
+    for env_k in ("PINOKIO_PY", "WGP_PYTHON", "ENGINE_PYTHON"):
+        env_py = os.environ.get(env_k)
+        if env_py and Path(env_py).is_file():
+            return str(Path(env_py).resolve())
 
     if find_local_config:
         try:
@@ -67,11 +73,12 @@ def resolve_engine_python() -> str:
             if cfg_py and Path(cfg_py).is_file():
                 return str(Path(cfg_py).resolve())
             cfg_wgp = cfg.get("wgp_root") or cfg.get("environment", {}).get("wgp_root")
-            if cfg_wgp:
-                for rel in ("venv/Scripts/python.exe", "venv/bin/python"):
-                    cand = Path(cfg_wgp) / rel
-                    if cand.is_file():
-                        return str(cand.resolve())
+            if cfg_wgp and (not is_valid_wgp_root or is_valid_wgp_root(cfg_wgp)):
+                cand = find_wgp_venv_python(cfg_wgp) if find_wgp_venv_python else next(
+                    (Path(cfg_wgp) / r for r in ("venv/Scripts/python.exe", "venv/bin/python") if (Path(cfg_wgp) / r).is_file()), None
+                )
+                if cand:
+                    return str(cand.resolve())
         except Exception:
             pass
 
@@ -79,10 +86,11 @@ def resolve_engine_python() -> str:
         try:
             detected = auto_detect_wgp_root()
             if detected:
-                for rel in ("venv/Scripts/python.exe", "venv/bin/python"):
-                    cand = detected / rel
-                    if cand.is_file():
-                        return str(cand.resolve())
+                cand = find_wgp_venv_python(detected) if find_wgp_venv_python else next(
+                    (detected / r for r in ("venv/Scripts/python.exe", "venv/bin/python") if (detected / r).is_file()), None
+                )
+                if cand:
+                    return str(cand.resolve())
         except Exception:
             pass
 
@@ -95,6 +103,7 @@ active_process: subprocess.Popen | None = None
 log_subscribers: list[threading.Event] = []
 log_seq_counter = 0
 log_history: list[tuple[int, str]] = []
+log_seq_slugs: dict[int, str | None] = {}
 render_status = {
     "running": False,
     "exit_code": None,
@@ -121,13 +130,35 @@ queue_file_lock = threading.RLock()
 local_adhoc_busy = False
 
 
-def broadcast_log(line: str):
+def broadcast_log(line: str, project_slug: str | None = None):
     global log_seq_counter
     with render_lock:
         log_seq_counter += 1
+        eff_slug = project_slug
+        if not eff_slug:
+            for prefix in ("[MASTER_STITCH_START]", "[QUEUE_ACTIVE]", "[QUEUE_DONE]", "[QUEUE_FAIL]", "[QUEUE_CANCEL]", "[QUEUE_SKIP]", "[QUEUE_PROGRESS]"):
+                if line.startswith(prefix):
+                    try:
+                        eff_slug = json.loads(line[len(prefix):].strip()).get("slug") or eff_slug
+                    except Exception:
+                        pass
+                    break
+            if not eff_slug and (render_status.get("running") or queue_worker_active or any(w.get("running") for w in engine_workers.values())):
+                eff_slug = render_status.get("current_project")
         log_history.append((log_seq_counter, line))
+        log_seq_slugs[log_seq_counter] = eff_slug
         if len(log_history) > 3000:
-            log_history.pop(0)
+            old_seq, _ = log_history.pop(0)
+            log_seq_slugs.pop(old_seq, None)
+
+
+try:
+    from pipeline.project_paths import resolve_project_dirs
+except ImportError:
+    try:
+        from work.pipeline.project_paths import resolve_project_dirs
+    except ImportError:
+        resolve_project_dirs = None
 
 
 def read_project_engine_status(slug: str | None) -> dict | None:
@@ -135,15 +166,15 @@ def read_project_engine_status(slug: str | None) -> dict | None:
     if not slug:
         return None
     proj_dir = PROJECTS_DIR / slug
-    for jobs_sub in ("work/jobs_v3", "work/jobs"):
-        st_file = proj_dir / jobs_sub / "engine_status.json"
-        if st_file.is_file():
-            try:
-                data = json.loads(st_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-            except Exception:
-                pass
+    jdir = resolve_project_dirs(proj_dir)["jobs"] if resolve_project_dirs else (proj_dir / "work" / "jobs")
+    st_file = jdir / "engine_status.json"
+    if st_file.is_file():
+        try:
+            data = json.loads(st_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
     return None
 
 
@@ -167,7 +198,10 @@ try:
         collect_project_clips,
         compute_fast_project_queue,
         delete_scene_in_project_data,
+        derive_duplicate_scene_id,
         derive_split_scene_ids,
+        duplicate_scene_in_project_data,
+        duplicate_scene_with_takes,
         enqueue_in_project_queue,
         extract_anchor_id,
         is_scene_match,
@@ -211,7 +245,10 @@ except ImportError:
         collect_project_clips,
         compute_fast_project_queue,
         delete_scene_in_project_data,
+        derive_duplicate_scene_id,
         derive_split_scene_ids,
+        duplicate_scene_in_project_data,
+        duplicate_scene_with_takes,
         enqueue_in_project_queue,
         extract_anchor_id,
         is_scene_match,
@@ -282,8 +319,11 @@ __all__ = [
     "collect_project_clips",
     "compute_fast_project_queue",
     "derive_split_scene_ids",
+    "derive_duplicate_scene_id",
     "split_scene_in_project_data",
     "delete_scene_in_project_data",
+    "duplicate_scene_in_project_data",
+    "duplicate_scene_with_takes",
     "is_scene_match",
     "move_in_project_queue",
     "reorder_in_project_queue",
@@ -300,6 +340,11 @@ __all__ = [
 
 
 if __name__ == "__main__":
+    if repair_stale_local_config:
+        try:
+            repair_stale_local_config(WORKSPACE_ROOT)
+        except Exception:
+            pass
     port = 7860
     for i, a in enumerate(sys.argv[1:]):
         if a in ("--port", "-p") and i + 1 < len(sys.argv[1:]):

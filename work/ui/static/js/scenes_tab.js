@@ -91,6 +91,7 @@
   }
 
   function getSceneQueueMeta(sc) {
+    if (sc?._freshSceneTakes) return { qItems: [], item: null, isRendering: false, isQueued: false, clipKey: "", statusText: "New (Unsaved)", statusBg: "rgba(245,158,11,0.2)", statusColor: "#fcd34d", needsRevert: false };
     const sid = String(sc.id || "").toUpperCase();
     const qItems = (state.renderQueue || []).filter((t) => String(t.scene_id || "").toUpperCase() === sid);
     const ren = qItems.find((t) => t.status === "rendering");
@@ -203,7 +204,7 @@
     window.refreshTakeDiffUI?.();
   }
 
-  function populateOptions(sel, opts, curVal) {
+  function populateOptions(sel, opts, curVal, customSuffix = "custom") {
     sel.innerHTML = "";
     opts.forEach(([val, lbl, dataset]) => {
       const o = new Option(lbl, val);
@@ -211,7 +212,7 @@
       sel.add(o);
     });
     const strVal = curVal !== undefined && curVal !== null ? String(curVal) : "";
-    if (strVal && !Array.from(sel.options).some((o) => o.value === strVal)) sel.add(new Option(`${strVal} (custom)`, strVal));
+    if (strVal && !Array.from(sel.options).some((o) => o.value === strVal)) sel.add(new Option(`${strVal} (${customSuffix})`, strVal));
     sel.value = strVal;
   }
 
@@ -238,12 +239,16 @@
       }));
     }
     const cur = isEndAnchor ? (sc.anchor_end || "") : (sc.anchor || ""), curAid = extractAnchorId(cur);
+    const actBar = el("div", { style: "grid-column:1/-1;display:flex;gap:6px;padding-bottom:4px;border-bottom:1px solid #334155;" });
+    if (!isEndAnchor) actBar.appendChild(mkBtn(`✨ New Anchor from ${sc.id}`, "Create new anchor prefilled from this scene", () => { closeAnchorPopover(); window.createAnchorFromScene?.(idx); }, "flex:1;padding:4px 8px;color:#38bdf8;border-color:rgba(56,189,248,0.45);"));
+    if (curAid) actBar.appendChild(mkBtn(`🎨 Edit/Gen [${curAid}]`, "Open this anchor in Anchor Studio", () => { closeAnchorPopover(); window.focusAnchorInStudio?.(curAid); }, "flex:1;padding:4px 8px;"));
+    if (actBar.childNodes.length) pop.appendChild(actBar);
     list.forEach(({ aid, diskInfo, resolvedName, valueName }) => {
       const active = valueName === cur || (aid && aid === curAid);
       const thumbUrl = `/media/${state.currentSlug}/anchor/${encodeURIComponent(resolvedName)}${diskInfo?.mtime ? `?t=${diskInfo.mtime}` : ""}`;
       const item = el("div", {
         className: `scenes-anchor-pop-item${active ? " active" : ""}`,
-        innerHTML: `<img src="${thumbUrl}" alt="${escapeHtml(aid)}"><div style="font-weight:700;color:#fbbf24;">[${escapeHtml(aid)}]</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(resolvedName)}</div>`,
+        innerHTML: `<img src="${thumbUrl}" alt="${escapeHtml(aid)}" onerror="this.style.display='none'"><div style="font-weight:700;color:#fbbf24;">[${escapeHtml(aid)}]${diskInfo ? "" : " <span style='font-size:9px;color:#fcd34d;'>(Pending)</span>"}</div><div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(resolvedName)}</div>`,
         onclick: () => {
           closeAnchorPopover();
           const apply = () => {
@@ -432,9 +437,10 @@
     revBtn.style.display = qMeta.needsRevert ? "inline-flex" : "none";
     revBtn.disabled = Boolean(sc.locked);
 
+    const dupBtn = mkBtn("📋", "Duplicate scene (with takes) immediately after it", () => window.duplicateScene?.(idx), "padding:2px 7px;font-size:10px;color:#38bdf8;border-color:rgba(56,189,248,0.35);");
     const delBtn = mkBtn("🗑️", "Delete scene", () => window.deleteScene?.(idx), "padding:2px 7px;font-size:10px;color:#f87171;border-color:rgba(239,68,68,0.35);");
     delBtn.disabled = Boolean(sc.locked);
-    const actions = el("div", { className: "scene-card-actions" }, repBtn, lockBtn, revBtn, delBtn);
+    const actions = el("div", { className: "scene-card-actions" }, repBtn, lockBtn, revBtn, dupBtn, delBtn);
     return el("div", { className: "scene-card-header" }, titleRow, actions);
   }
 
@@ -452,6 +458,7 @@
     anchorSel.onchange = () => { sc.anchor = anchorSel.value; applyFieldSideEffects(idx, sc, { structural: true }); window.recordHistorySnapshot?.(`Change ${sc.id} Anchor`); };
     vis.appendChild(thumbBox);
     vis.appendChild(anchorSel);
+    const srcMiniHost = el("div"); window.renderSceneAnchorSourcesMini?.(srcMiniHost, sc.anchor); if ((srcMiniHost.children || srcMiniHost.childNodes || []).length) vis.appendChild(srcMiniHost);
 
     if (!sc.anchor_end && !expandedEndAnchorIds.has(sc.id)) {
       vis.appendChild(el("button", {
@@ -514,13 +521,13 @@
     const stemOpts = (cat.stems || []).map((st) => [st.value, st.label]);
     const mkStemSel = (cur, defFallback, onCh) => {
       const s = el("select");
-      populateOptions(s, stemOpts, cur || defFallback);
+      populateOptions(s, stemOpts, cur || (window.pickDefaultStem?.(defFallback) || defFallback), "missing audio file");
       s.onchange = () => { onCh(s.value); applyFieldSideEffects(idx, sc); window.recordHistorySnapshot?.(`Change ${sc.id} Stem`); };
       return s;
     };
 
     const modOpts = [["", `Default ([#${cat.defaultModelId}] ${cat.defaultModelName})`]];
-    Object.keys(cat.vModels || {}).forEach((k) => { const m = cat.vModels[k]; modOpts.push([k, `🖥️ [#${k}] ${m.name || m.model_type}${m?.supports_image_refs || String(m?.frames_formula || "").includes("ref2va") ? " [Ref2VA]" : ""}`]); });
+    Object.keys(cat.vModels || {}).forEach((k) => { const m = cat.vModels[k], t = window.formatVideoModelBadge ? window.formatVideoModelBadge(m, false) : (m?.supports_image_refs ? " [Ref2VA]" : ""); modOpts.push([k, `🖥️ [#${k}] ${m.name || m.model_type}${t}`]); });
     Object.keys(cat.fModels || {}).forEach((k) => { const m = cat.fModels[k]; modOpts.push([k, `☁️ ${m.name || m.model_type || k}`]); });
     Object.keys(cat.mmModels || {}).forEach((k) => { const m = cat.mmModels[k]; modOpts.push([k, `🎥 ${m.name || m.model_type || k}`]); });
     const modSel = el("select");
@@ -530,12 +537,12 @@
     const effDefB = window.getEffectiveProjectBackend?.();
     const projDefB = effDefB === "fal" ? "☁️ fal.ai" : (effDefB === "minimax" ? "🎥 MiniMax" : "🖥️ Local");
     const vrId = String(sc.renderer ?? state.projectData?.models?.default_video_renderer ?? "1");
-    const isDedFal = Boolean(cat.fModels?.[vrId]), isDedMm = Boolean(cat.mmModels?.[vrId]);
-    const effCardB = isDedFal ? "fal" : (isDedMm ? "minimax" : (sc.backend || effDefB || "local"));
+    const isDedFal = Boolean(cat.fModels?.[vrId]), isDedMm = Boolean(cat.mmModels?.[vrId]), isLocOnly = Boolean(cat.vModels?.[vrId]?.local_only) && !isDedFal && !isDedMm;
+    const effCardB = isDedFal ? "fal" : (isDedMm ? "minimax" : (isLocOnly ? "local" : (sc.backend || effDefB || "local")));
     const backSel = el("select");
     backSel.dataset.role = "scene-backend";
-    populateOptions(backSel, [["", `Inherit (${projDefB})`], ["local", "🖥️ Local GPU"], ["fal", "☁️ fal.ai Cloud"], ["minimax", "🎥 MiniMax API"]], isDedFal ? "fal" : (isDedMm ? "minimax" : (sc.backend || "")));
-    backSel.disabled = Boolean(sc.locked) || isDedFal || isDedMm;
+    populateOptions(backSel, [["", `Inherit (${projDefB})`], ["local", "🖥️ Local GPU"], ["fal", "☁️ fal.ai Cloud"], ["minimax", "🎥 MiniMax API"]], isDedFal ? "fal" : (isDedMm ? "minimax" : (isLocOnly ? "local" : (sc.backend || ""))));
+    backSel.disabled = Boolean(sc.locked) || isDedFal || isDedMm || isLocOnly;
     backSel.onchange = () => { const bVal = backSel.value; guardCard({ backend: bVal || undefined }, () => { if (bVal) sc.backend = bVal; else delete sc.backend; applyFieldSideEffects(idx, sc); window.recordHistorySnapshot?.(`Change ${sc.id} Backend`); }); };
 
     const resOpts = [["", `Default (${cat.defResLabel})`]];
@@ -553,10 +560,7 @@
 
     const row1 = el("div", { className: "scene-settings-row" }, makeCtrl("Mode", "min-width:140px;flex:1 1 140px;", modeSel));
     if (isTwo) {
-      row1.appendChild(makeCtrl("P1 Stem (L)", "min-width:115px;flex:0.9 1 115px;", mkStemSel(sc.stem_m, "male", (v) => { sc.stem_m = v; })));
-      row1.appendChild(makeCtrl("P2 Stem (R)", "min-width:115px;flex:0.9 1 115px;", mkStemSel(sc.stem_f, sc.mode === "gva_male_left_silent_right" ? "silent" : "female", (v) => { sc.stem_f = v; })));
       row1.appendChild(makeCtrl("Split X", "flex:0 0 68px;", mkNum(sc, idx, sc.split_x !== undefined ? sc.split_x : 0.48, "0.01", "0.1", "0.9", "0.50", "100%", "split_x", (v) => { const n = parseFloat(v); sc.split_x = isNaN(n) ? 0.5 : n; applyFieldSideEffects(idx, sc); })));
-      window.appendTwoPassEngineControls?.(row1, sc, idx, applyFieldSideEffects);
     } else if (isStereo) {
       row1.appendChild(makeCtrl("L Channel", "min-width:120px;flex:0.95 1 120px;", mkStemSel(sc.stem_m || sc.stem_left, "male", (v) => { sc.stem_m = v; })));
       row1.appendChild(makeCtrl("R Channel", "min-width:120px;flex:0.95 1 120px;", mkStemSel(sc.stem_f || sc.stem_right, "female", (v) => { sc.stem_f = v; })));
@@ -564,11 +568,13 @@
       const defS = sc.mode === "silent_locked" ? "silent" : (sc.mode === "female_solo" ? "female" : "male");
       row1.appendChild(makeCtrl("Audio Stem", "min-width:145px;flex:1 1 145px;", mkStemSel(sc.stem, defS, (v) => { sc.stem = v; })));
     }
-    row1.appendChild(makeCtrl(`Backend <span data-badge="backend" style="display:${(sc.backend || isDedFal || isDedMm) ? "inline" : "none"};color:${effCardB === "fal" ? "#38bdf8" : (effCardB === "minimax" ? "#c084fc" : "#cbd5e1")};">${effCardB === "fal" ? "☁️ fal.ai" : (effCardB === "minimax" ? "🎥 MiniMax" : "🖥️ Local")}</span>`, "min-width:118px;flex:0.85 1 118px;", backSel));
-    row1.appendChild(makeCtrl(`Video Model <span data-badge="model" style="display:${sc.renderer ? "inline" : "none"};color:#60a5fa;">Custom</span>`, "min-width:165px;flex:1.25 1 165px;", modSel));
+    row1.appendChild(makeCtrl(`${isTwo ? "Default Engine" : "Backend"} <span data-badge="backend" style="display:${(sc.backend || isDedFal || isDedMm || isLocOnly) ? "inline" : "none"};color:${effCardB === "fal" ? "#38bdf8" : (effCardB === "minimax" ? "#c084fc" : "#cbd5e1")};">${effCardB === "fal" ? "☁️ fal.ai" : (effCardB === "minimax" ? "🎥 MiniMax" : "🖥️ Local")}</span>`, "min-width:118px;flex:0.85 1 118px;", backSel));
+    row1.appendChild(makeCtrl(`${isTwo ? "Default Model" : "Video Model"} <span data-badge="model" style="display:${sc.renderer ? "inline" : "none"};color:#60a5fa;">Custom</span>`, "min-width:165px;flex:1.25 1 165px;", modSel));
     row1.appendChild(makeCtrl(`Resolution <span data-badge="res" style="display:${sc.resolution ? "inline" : "none"};color:#34d399;">Custom</span>`, "min-width:145px;flex:1.1 1 145px;", resSel));
     row1.appendChild(makeCtrl(`Upsampling <span data-badge="up" style="display:${(cat.skipOom || cat.skipTarget || cat.curUp) ? "inline" : "none"};color:#c084fc;">${upNote}</span>`, "min-width:145px;flex:1.1 1 145px;", upSel));
     ctrls.appendChild(row1);
+    if (isTwo) window.appendTwoPassEngineControls?.(ctrls, sc, idx, applyFieldSideEffects, { mkStemSel, mkNum, makeCtrl });
+    window.appendSceneCardRefPicker?.(ctrls, sc, idx, applyFieldSideEffects);
 
     // Collapsible Bar 1: Padding, 1x Refiner & Look Filters
     ctrls.appendChild(el("div", {
@@ -634,7 +640,7 @@
     if (pOpen) ctrls.appendChild(buildPromptDrawer(sc, idx));
 
     // Collapsible Bar 3: Takes Vault (All Takes, Preview, Restore, Delete)
-    const tOpen = expandedTakesIds.has(sc.id), cachedTakes = sceneTakesCache.get(sc.id);
+    const tOpen = expandedTakesIds.has(sc.id), cachedTakes = sc._freshSceneTakes ? { success: true, takes: [] } : sceneTakesCache.get(sc.id);
     const tBadgeHtml = cachedTakes?.takes ? `<span class="scene-badge-pill" data-role="takes-count" style="background:rgba(167,139,250,0.2);color:#ddd6fe;">${cachedTakes.takes.length} take${cachedTakes.takes.length === 1 ? "" : "s"}</span>` : `<span class="scene-badge-pill" data-role="takes-count" style="display:none;"></span>`;
     const takesBar = el("div", {
       className: "scene-collapsible-bar",
@@ -670,7 +676,7 @@
       };
       if (cachedTakes) setTimeout(() => paintTakes(cachedTakes), 0);
       else tList.innerHTML = `<div style="font-size:11px;color:#94a3b8;padding:4px 2px;">Loading takes...</div>`;
-      if (state.currentSlug) {
+      if (!sc._freshSceneTakes && state.currentSlug) {
         fetch(`/api/takes/${encodeURIComponent(state.currentSlug)}/${encodeURIComponent(sc.id)}`)
           .then((r) => (r.ok ? r.json() : null))
           .then((d) => { if (d?.success) { sceneTakesCache.set(sc.id, d); paintTakes(d); } })

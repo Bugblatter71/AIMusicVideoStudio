@@ -14,8 +14,8 @@ Use this skill whenever you need to inspect rendered MP4 clips, anchor/character
 ### 1.1 Inspect Video, Image, or Audio File
 Outputs resolution, exact duration, frame count, FPS, codec, pixel format, and audio sample rate/channels:
 ```bash
-python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/renders_v3/S01_male_solo_1344x768.mp4
-python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/anchors_v3/A01.jpg --json
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/renders/S01_male_solo_1344x768.mp4
+python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/all_or_nothing/work/anchors/A01.jpg --json
 ```
 
 ### 1.2 Generate Evenly-Spaced 5-Frame Review Filmstrip
@@ -31,3 +31,6 @@ Lists every audio track/stem in `projects/<slug>/audio/` with duration, sample r
 python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/<slug>/audio --scan-audio
 python .agents/skills/mvg-media-inspector/scripts/inspect_clip.py projects/<slug>/audio --scan-audio --json
 ```
+
+### 1.4 Embedded Wan2GP Generation Metadata
+Wan2GP embeds exact render settings JSON in each rendered MP4's `format_tags.comment` (extractable via `read_embedded_render_settings` in `work/pipeline/media_utils.py` or `ffprobe -show_entries format_tags=comment`). Use this to verify the exact `model_type`, `video_prompt_type`, `masking_strength`, and `denoising_strength` of any take before troubleshooting visual artifacts.

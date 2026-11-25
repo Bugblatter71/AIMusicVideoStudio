@@ -368,7 +368,7 @@ test.describe('Music Video Studio - Render Queue & Stem UI Suite', () => {
   test('12. Anchor image edits dynamically queue dependent scenes with ANCHOR reason', async ({ page }) => {
     const fs = require('fs');
     const path = require('path');
-    const anchorsDir = path.resolve(__dirname, '../projects/all_or_nothing/work/anchors_v3');
+    const anchorsDir = path.resolve(__dirname, '../projects/all_or_nothing/work/anchors');
     const a01Files = fs.readdirSync(anchorsDir).filter((f) => f.startsWith('A01'));
     expect(a01Files.length).toBeGreaterThan(0);
     const a01Path = path.join(anchorsDir, a01Files[0]);

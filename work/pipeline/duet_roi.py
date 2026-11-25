@@ -20,6 +20,7 @@ from .media_utils import (
     read_embedded_render_settings,
     resolve_rendered_clip_path,
 )
+from .project_paths import path_rel_str
 from .takes import _find_strip, _pass_key, load_takes_manifest, safe_link_or_copy, save_takes_manifest
 
 VALID_ROI_MODES = ("full", "half_split", "tight_performer", "custom")
@@ -351,6 +352,18 @@ def composite_roi_cloud_pass2(ctx, task: dict, out_path: Path, render_crop_fn) -
             tmp.unlink(missing_ok=True)
 
 
+def resolve_roi_border_px(cw: int, ch: int, task_cfg: dict | None = None, base_border_px: int = 64) -> int:
+    """Expands ROI 0-locked border for LTX-2 MVGA so low-res Laplacian dilation stays inside the locked ring."""
+    cfg = task_cfg if isinstance(task_cfg, dict) else {}
+    mtype = str(cfg.get("model_type") or "").lower()
+    vpt = str(cfg.get("video_prompt_type") or cfg.get("pass2_video_prompt_type") or "").upper()
+    need = int(base_border_px)
+    if "ltx2" in mtype or vpt.startswith("M"):
+        dilate_px = (6 * max(int(cw), int(ch)) + 63) // 64
+        need = max(need, ((dilate_px + 31) // 32) * 32)
+    return _resolve_border_px(int(cw), int(ch), need)
+
+
 def prepare_local_roi_pass2_task(ctx, mp4_p1: Path, exec_task: dict, sc: dict, res_str: str, frames: int, fps: float) -> tuple[dict, dict | None]:
     """Aligns Pass 1 guide dimensions/FPS and optionally crops to target ROI for fast Local GVA Pass 2."""
     if not mp4_p1.is_file():
@@ -372,12 +385,13 @@ def prepare_local_roi_pass2_task(ctx, mp4_p1: Path, exec_task: dict, sc: dict, r
     custom_box = normalize_roi_box(sc.get("pass2_roi_box"))
     box = compute_roi_box(w, h, split_x=split_x, side=side, roi_mode=roi_mode, custom_box=custom_box)
     cx, cy, cw, ch = box
+    border_px = resolve_roi_border_px(cw, ch, exec_task)
     out_stem = str(updated.get("output_filename") or sc.get("id") or "roi")
     tmp_dir = ctx.jobs_dir / "roi_work"
     crop_in = tmp_dir / f"{out_stem}_guide_{cw}x{ch}.mp4"
     crop_mask = tmp_dir / f"{out_stem}_mask_{cw}x{ch}.mp4"
     first_jpg = tmp_dir / f"{out_stem}_first_{cw}x{ch}.jpg"
-    prepare_roi_crop_and_mask(ffmpeg, aligned, box, w, h, frames, fps, crop_in, out_mask_mp4=crop_mask, out_first_jpg=first_jpg)
+    prepare_roi_crop_and_mask(ffmpeg, aligned, box, w, h, frames, fps, crop_in, out_mask_mp4=crop_mask, out_first_jpg=first_jpg, border_px=border_px)
     updated["video_guide"] = str(crop_in)
     updated["video_mask"] = str(crop_mask)
     updated["image_start"] = str(first_jpg)
@@ -389,6 +403,7 @@ def prepare_local_roi_pass2_task(ctx, mp4_p1: Path, exec_task: dict, sc: dict, r
     meta = {
         "base_mp4": aligned,
         "box": box,
+        "border_px": border_px,
         "audio_path": Path(raw_audio) if has_live_audio else None,
         "tmp_files": [crop_in, crop_mask, first_jpg],
     }
@@ -413,7 +428,7 @@ def finalize_local_roi_pass2_output(ctx, gen_path: Path, out_mp4: Path, roi_meta
             audio_path=roi_meta.get("audio_path"),
             feather_px=20,
             preserve_base_audio=not bool(roi_meta.get("audio_path")),
-            border_px=64,
+            border_px=int(roi_meta.get("border_px") or 64),
         )
         shutil.move(str(tmp_comp), str(out_mp4))
         return out_mp4
@@ -530,6 +545,7 @@ def repair_scene_lipsync_clip(
     sw, sh = probe_video_dimensions(ctx.ffmpeg, src_mp4) or [int(x) for x in res_str.lower().split("x")]
     box = compute_roi_box(sw, sh, split_x=sx, side=side_norm, roi_mode=mode_norm, custom_box=box_norm)
     cx, cy, cw, ch = box
+    roi_border_px = resolve_roi_border_px(cw, ch, vrspec if (eff_backend == "local" and not dummy_render) else None)
 
     t0 = time.time()
     op_label = f"repair:{side_norm}/{mode_norm}@{eff_backend}"
@@ -546,7 +562,7 @@ def repair_scene_lipsync_clip(
     aud_mux = tmp_comp.with_name(f".rep_mux_{sid}.mp4")
 
     try:
-        prepare_roi_crop_and_mask(ctx.ffmpeg, src_mp4, box, sw, sh, n_frames, fps, crop_in, out_mask_mp4=crop_mask, out_first_jpg=crop_first)
+        prepare_roi_crop_and_mask(ctx.ffmpeg, src_mp4, box, sw, sh, n_frames, fps, crop_in, out_mask_mp4=crop_mask, out_first_jpg=crop_first, border_px=roi_border_px)
         if dummy_render:
             subprocess.run(
                 [str(ctx.ffmpeg), "-y", "-i", str(crop_in), "-vf", "eq=brightness=0.01", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-an", str(crop_out)],
@@ -617,7 +633,7 @@ def repair_scene_lipsync_clip(
             keep_orig = (not stem) or str(sc.get("mode", "")).lower() in ("duet_method_a", "duet_a")
             composite_roi_onto_guide(
                 ctx.ffmpeg, src_mp4, crop_out, box, tmp_comp,
-                audio_path=wav_audio, feather_px=20, preserve_base_audio=keep_orig, border_px=64,
+                audio_path=wav_audio, feather_px=20, preserve_base_audio=keep_orig, border_px=roi_border_px,
             )
 
         elapsed = round(time.time() - t0, 2)
@@ -649,6 +665,7 @@ def repair_scene_lipsync_clip(
         eff_re = (src_take.get("render_end") if (src_take and src_take.get("render_end") is not None) else sr_info.get("render_end", float(sc.get("end", 0)) + tail_pad))
         eff_fr = (src_take.get("frames") if (src_take and src_take.get("frames") is not None) else sr_info.get("frames", n_frames))
         existing_takes = sc_entry.setdefault("takes", [])
+        r_rel = path_rel_str(ctx.project_dir, ctx.renders_dir, "work/renders")
         take_entry = {
             "take_id": new_take_id,
             "take_number": len(existing_takes) + 1,
@@ -667,8 +684,8 @@ def repair_scene_lipsync_clip(
             "created_iso": datetime.datetime.fromtimestamp(created_ts, datetime.timezone.utc).isoformat(),
             "vault_rel_mp4": vault_rel,
             "vault_rel_strip": vault_rel_strip,
-            "file_path": f"work/renders_v3/{vault_rel}",
-            "strip_path": f"work/renders_v3/{vault_rel_strip}" if vault_rel_strip else None,
+            "file_path": f"{r_rel}/{vault_rel}",
+            "strip_path": f"{r_rel}/{vault_rel_strip}" if vault_rel_strip else None,
             "elapsed_s": elapsed,
             "size_bytes": vault_mp4.stat().st_size,
             "resolution": f"{sw}x{sh}",

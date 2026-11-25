@@ -46,20 +46,20 @@ class _ReqDummy:
 
 def _make_mini_project(tmp_root: Path, slug: str = "reg_proj") -> tuple[Path, Path]:
     pdir = tmp_root / slug
-    (pdir / "work" / "jobs_v3").mkdir(parents=True, exist_ok=True)
-    (pdir / "work" / "renders_v3").mkdir(parents=True, exist_ok=True)
-    (pdir / "work" / "anchors_v3").mkdir(parents=True, exist_ok=True)
+    (pdir / "work" / "jobs").mkdir(parents=True, exist_ok=True)
+    (pdir / "work" / "renders").mkdir(parents=True, exist_ok=True)
+    (pdir / "work" / "anchors").mkdir(parents=True, exist_ok=True)
     (pdir / "audio").mkdir(parents=True, exist_ok=True)
     wav = pdir / "audio" / "song.wav"
     wav.write_bytes(b"RIFF\x00\x00\x00\x00WAVEfmt ")
-    a01 = pdir / "work" / "anchors_v3" / "A01_Hero.jpg"
+    a01 = pdir / "work" / "anchors" / "A01_Hero.jpg"
     a01.write_bytes(b"JPG")
     cfg = {
         "project": {
             "name": "Regression Test",
             "fps": 24,
             "master_audio": "audio/song.wav",
-            "directories": {"anchors": "work/anchors_v3", "renders": "work/renders_v3", "jobs": "work/jobs_v3"},
+            "directories": {"anchors": "work/anchors", "renders": "work/renders", "jobs": "work/jobs"},
         },
         "models": {
             "default_video_renderer": 1,
@@ -129,7 +129,7 @@ class SecurityAndRouteValidationTests(unittest.TestCase):
                 server_fal.handle_fal_post(h400, "/api/render/engines", {"slug": "api_proj", "enabled_engines": {"bogus": True}})
                 self.assertEqual(h400.status_code, 400)
 
-                q_file = root / "api_proj" / "work" / "jobs_v3" / "v3_queue.json"
+                q_file = root / "api_proj" / "work" / "jobs" / "v3_queue.json"
                 q_file.write_text(json.dumps([{"id": "S01_solo_832x480", "output_filename": "S01_solo_832x480", "filename": "S01_solo_832x480.mp4", "status": "rendering"}]), encoding="utf-8")
                 h409 = _ReqDummy("/api/queue/set_engine")
                 server_fal.handle_fal_post(h409, "/api/queue/set_engine", {"slug": "api_proj", "id": "S01_solo_832x480", "backend_override": "fal"})
@@ -175,7 +175,7 @@ class PipelineAndSchedulerRegressionTests(unittest.TestCase):
             server.PROJECTS_DIR = root
             try:
                 server.max_parallel.update({"local": 1, "fal": 2, "minimax": 1})
-                q_file = pdir / "work" / "jobs_v3" / "v3_queue.json"
+                q_file = pdir / "work" / "jobs" / "v3_queue.json"
                 q_items = [
                     {"idx": i + 1, "id": f"S0{i+1}_solo_832x480", "scene_id": f"S0{i+1}", "target_arg": f"S0{i+1}", "filename": f"S0{i+1}_solo_832x480.mp4", "output_filename": f"S0{i+1}_solo_832x480", "status": "queued", "needs_render": True, "backend": "fal", "backend_override": "fal"}
                     for i in range(4)
@@ -312,7 +312,7 @@ class PipelineAndSchedulerRegressionTests(unittest.TestCase):
             server.PROJECTS_DIR = root
             try:
                 server.max_parallel.update({"local": 1, "fal": 1, "minimax": 1})
-                q_file = pdir / "work" / "jobs_v3" / "v3_queue.json"
+                q_file = pdir / "work" / "jobs" / "v3_queue.json"
                 q_items = [
                     {"idx": 1, "id": "S01_solo_832x480", "scene_id": "S01", "target_arg": "S01", "filename": "S01_solo_832x480.mp4", "output_filename": "S01_solo_832x480", "status": "queued", "needs_render": True, "backend": "minimax", "backend_override": "minimax", "task_hash": "h1"},
                     {"idx": 2, "id": "S02_solo_832x480", "scene_id": "S02", "target_arg": "S02", "filename": "S02_solo_832x480.mp4", "output_filename": "S02_solo_832x480", "status": "queued", "needs_render": True, "backend": "local", "backend_override": "local", "task_hash": "h2"},
@@ -407,7 +407,7 @@ class PipelineAndSchedulerRegressionTests(unittest.TestCase):
             server.oom_retry_delay_s = 0.02
             try:
                 server.max_parallel.update({"local": 1, "fal": 1, "minimax": 1})
-                jdir = pdir / "work" / "jobs_v3"
+                jdir = pdir / "work" / "jobs"
                 q_file = jdir / "v3_queue.json"
                 q_items = [
                     {"idx": 1, "id": "S01_solo_832x480", "scene_id": "S01", "target_arg": "S01", "filename": "S01_solo_832x480.mp4", "output_filename": "S01_solo_832x480", "status": "queued", "needs_render": True, "backend": "local", "backend_override": "local"},
@@ -491,7 +491,7 @@ class PipelineAndSchedulerRegressionTests(unittest.TestCase):
             orig_running = server.render_status.get("running")
             server.PROJECTS_DIR = root
             try:
-                jdir = pdir / "work" / "jobs_v3"
+                jdir = pdir / "work" / "jobs"
                 old_ts = time.time() - 83000.0
                 old_payload = {
                     "state": "completed", "backend": "local", "filename": "S01_solo_832x480.mp4",
@@ -673,10 +673,16 @@ vm.runInContext(fs.readFileSync("work/ui/static/js/fal_settings.js", "utf8"), ct
 vm.runInContext(fs.readFileSync("work/ui/static/js/duet_repair.js", "utf8"), ctx);
 vm.runInContext(fs.readFileSync("work/ui/static/js/queue_engines.js", "utf8"), ctx);
 
-// 1. fal pricing & window export
+// 1. fal pricing & window export (including per-pass renderer override)
 assert.strictEqual(typeof ctx.window.estimateSceneCloudCostFrontend, "function");
 const est1080 = ctx.window.estimateSceneCloudCostFrontend(scDuet, "fal");
 assert.strictEqual(est1080.costStr, "~$1.20");
+ctx.state.models.fal_video_renderers.fal_ltx25 = { fal_endpoint: "fal-ai/ltx-2.5/audio-to-video", price_per_sec_usd: { "1080p": 0.10 } };
+scDuet.renderer_m = "fal_ltx25";
+const estPass1 = ctx.window.estimateSceneCloudCostFrontend(scDuet, "fal", 1);
+assert.strictEqual(estPass1.endpoint, "fal-ai/ltx-2.5/audio-to-video");
+assert.strictEqual(estPass1.costStr, "~$1.00");
+delete scDuet.renderer_m;
 
 // 2. duet_repair: isTwoPassScene prompt_m/f fallback preserved & dirty-before-snapshot & strict ROI validation
 assert.strictEqual(ctx.window.isTwoPassScene(scFallback), true);
@@ -703,7 +709,27 @@ ctx.window.handleMultiEngineSSEEvent("[QUEUE_DONE]", { filename: "S01.mp4", back
 const promoted = ctx.window.promoteActiveRenderTaskFromState("S01.mp4");
 assert.strictEqual(promoted, true);
 assert.strictEqual(ctx.state.activeRenderTask.filename, "S02.mp4");
-console.log("FRONTEND_REG_OK");
+
+// 4. queue_engines: queued list sorting by video scene order, engine, and length (preserving Pass 1 before Pass 2 & pinned rendering)
+(async () => {
+  ctx.state.projectData.scenes = [{ id: "S01", start: 0, end: 12 }, { id: "S02", start: 12, end: 16 }, { id: "S03", start: 16, end: 24 }];
+  ctx.state.renderQueue = [
+    { idx: 1, id: "S03_solo", output_filename: "S03_solo", filename: "S03_solo.mp4", scene_id: "S03", backend: "fal", duration: 8, status: "queued" },
+    { idx: 2, id: "S02_Pass1", output_filename: "S02_Pass1", filename: "S02_Pass1.mp4", scene_id: "S02", pass: 1, backend: "minimax", duration: 4, status: "queued" },
+    { idx: 3, id: "S02_Pass2", output_filename: "S02_Pass2", filename: "S02_Pass2.mp4", scene_id: "S02", pass: 2, backend: "local", duration: 4, status: "queued" },
+    { idx: 4, id: "S01_solo", output_filename: "S01_solo", filename: "S01_solo.mp4", scene_id: "S01", backend: "local", duration: 12, status: "rendering" },
+  ];
+  const orderNames = () => JSON.stringify(ctx.state.renderQueue.map((x) => x.output_filename));
+  await ctx.window.sortRenderQueue("length");
+  assert.strictEqual(orderNames(), JSON.stringify(["S01_solo", "S02_Pass1", "S02_Pass2", "S03_solo"]));
+  await ctx.window.sortRenderQueue("length");
+  assert.strictEqual(orderNames(), JSON.stringify(["S01_solo", "S03_solo", "S02_Pass1", "S02_Pass2"]));
+  await ctx.window.sortRenderQueue("engine");
+  assert.strictEqual(orderNames(), JSON.stringify(["S01_solo", "S03_solo", "S02_Pass1", "S02_Pass2"]));
+  await ctx.window.sortRenderQueue("scene");
+  assert.strictEqual(orderNames(), JSON.stringify(["S01_solo", "S02_Pass1", "S02_Pass2", "S03_solo"]));
+  console.log("FRONTEND_REG_OK");
+})().catch((err) => { console.error(err); process.exit(1); });
 """
         res = subprocess.run(["node", "-e", script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Node VM failed:\nSTDOUT:{res.stdout}\nSTDERR:{res.stderr}")
@@ -1442,9 +1468,9 @@ class RenderTimeEstimationRegressionTests(unittest.TestCase):
                 {"id": "S02", "start": 4.0, "end": 8.0, "mode": "duet_method_b", "anchor": "A02", "prompt_m": "M", "prompt_f": "F", "seed_m": 1, "seed_f": 2, "stem_m": "male", "stem_f": "female"},
             ]
             cfg.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            for old_a in (pdir / "work" / "anchors_v3").glob("*"): old_a.unlink(missing_ok=True)
-            a1 = pdir / "work" / "anchors_v3" / "A01.jpg"
-            a2 = pdir / "work" / "anchors_v3" / "A02.jpg"
+            for old_a in (pdir / "work" / "anchors").glob("*"): old_a.unlink(missing_ok=True)
+            a1 = pdir / "work" / "anchors" / "A01.jpg"
+            a2 = pdir / "work" / "anchors" / "A02.jpg"
             a1.write_bytes(b"new_a1_bytes")
             a2.write_bytes(b"a2_bytes")
             now = time.time()
@@ -1470,7 +1496,7 @@ class RenderTimeEstimationRegressionTests(unittest.TestCase):
             after_sh["task_hashes"] = dict(after_sh["tasks"])
             ctx.save_state_hashes(after_sh)
 
-            rdir = pdir / "work" / "renders_v3"
+            rdir = pdir / "work" / "renders"
             rdir.mkdir(parents=True, exist_ok=True)
             for fn in ("S01_silent_832x480.mp4", "S02_Pass1_Left_832x480.mp4", "S02_Pass2_Final_832x480.mp4"):
                 p = rdir / fn
@@ -1661,11 +1687,68 @@ const fBody = ctx.document.getElementById("queueTableBody").innerHTML;
 assert.ok(fBody.includes("S15_Pass2.mp4") && fBody.includes("❌ Failed") && fBody.includes("CUDA OOM") && fBody.includes("btn-queue-add") && fBody.includes("btn-queue-del"));
 assert.ok(!ctx.document.getElementById("activeTaskTitle").textContent.includes("All files up-to-date"));
 assert.strictEqual(ctx.document.getElementById("countQueued").textContent, 1);
+
+// Only one local task can stay 'rendering' across SSE transition and /api/render/status poll
+ctx.state.queueFilter = "queued";
+ctx.state.renderQueue = [
+  { idx: 1, scene_id: "S15", pass: 1, filename: "S15_Pass1.mp4", output_filename: "S15_Pass1", status: "rendering", backend: "local", estimated_remaining_str: "1.8m" },
+  { idx: 2, scene_id: "S15", pass: 2, filename: "S15_Pass2.mp4", output_filename: "S15_Pass2", status: "rendering", backend: "local", estimated_remaining_str: "24m" },
+];
+ctx.reconcileSseActiveTask(ctx.state.renderQueue[1], "local");
+assert.strictEqual(ctx.state.renderQueue[0].status, "completed");
+assert.strictEqual(ctx.state.renderQueue[0].estimated_remaining_str, undefined);
+assert.strictEqual(ctx.state.renderQueue[1].status, "rendering");
+
+ctx.state.renderQueue[0].status = "rendering";
+ctx.state.renderQueue[0].estimated_remaining_str = "1.8m";
+ctx.syncRenderStatusWithQueue({
+  running: true,
+  queue_worker_active: true,
+  engines: {
+    local: { running: true, active_tasks: [{ filename: "S15_Pass2.mp4", engine_status: { state: "rendering", filename: "S15_Pass2.mp4" } }] },
+    fal: { running: false, active_tasks: [] },
+    minimax: { running: false, active_tasks: [] },
+  },
+});
+assert.notStrictEqual(ctx.state.renderQueue[0].status, "rendering");
+assert.strictEqual(ctx.state.renderQueue[0].estimated_remaining_str, undefined);
+assert.strictEqual(ctx.state.renderQueue[1].status, "rendering");
 console.log("QUEUE_UI_RULES_OK");
 """
         res2 = subprocess.run(["node", "-e", node_script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
         self.assertEqual(res2.returncode, 0, f"Node VM failed:\nSTDOUT:{res2.stdout}\nSTDERR:{res2.stderr}")
         self.assertIn("QUEUE_UI_RULES_OK", res2.stdout)
+
+        # Backend dedupe keeps <= 1 local rendering task while preserving parallel cloud tasks
+        from ui import server_engine_io
+        b_items = [
+            {"idx": 1, "scene_id": "S15", "pass": 1, "output_filename": "S15_Pass1_Left_1920x1088", "backend": "local", "status": "rendering", "needs_render": True, "started_at": 100.0, "estimated_remaining_str": "1.8m"},
+            {"idx": 2, "scene_id": "S15", "pass": 2, "output_filename": "S15_Pass2_Final_1920x1088", "backend": "local", "status": "rendering", "needs_render": True, "started_at": 200.0, "estimated_remaining_str": "24m"},
+            {"idx": 3, "scene_id": "S18b", "pass": 1, "output_filename": "S18b_Pass1_Left_1920x1088", "backend": "minimax", "status": "rendering", "needs_render": True, "started_at": 205.0, "estimated_remaining_str": "5.1m"},
+        ]
+        server_engine_io.dedupe_rendering_queue_items(b_items, keep_stem="S15_Pass2_Final_1920x1088")
+        self.assertEqual(b_items[0]["status"], "completed")
+        self.assertNotIn("estimated_remaining_str", b_items[0])
+        self.assertEqual(b_items[1]["status"], "rendering")
+        self.assertEqual(b_items[1]["estimated_remaining_str"], "24m")
+        self.assertEqual(b_items[2]["status"], "rendering")
+
+        act_map = server_engine_io.collect_active_rendering_map(
+            running_stems=set(),
+            local_slots=["S15_Pass2_Final_1920x1088"],
+            q_active=False,
+            per_tasks={
+                ("local", "S15_Pass1_Left_1920x1088"): {"state": "rendering", "backend": "local", "filename": "S15_Pass1_Left_1920x1088.mp4", "updated_at": 9999999999.0},
+                ("local", "S15_Pass2_Final_1920x1088"): {"state": "rendering", "backend": "local", "filename": "S15_Pass2_Final_1920x1088.mp4", "updated_at": 9999999999.0},
+                ("minimax", "S18b_Pass1_Left_1920x1088"): {"state": "rendering", "backend": "minimax", "filename": "S18b_Pass1_Left_1920x1088.mp4", "updated_at": 9999999999.0},
+            },
+            per_eng={"local": {"state": "rendering", "backend": "local", "filename": "S15_Pass1_Left_1920x1088.mp4", "updated_at": 9999999999.0}},
+            legacy_eng=None,
+            slots_items=[],
+        )
+        self.assertNotIn("S15_Pass1_Left_1920x1088", act_map)
+        self.assertIn("S15_Pass2_Final_1920x1088", act_map)
+        self.assertIn("S18b_Pass1_Left_1920x1088", act_map)
 
 
 class WorkerPipeEncodingRegressionTests(unittest.TestCase):
@@ -1687,7 +1770,7 @@ class WorkerPipeEncodingRegressionTests(unittest.TestCase):
                 "print('DONE_OK', flush=True)\n",
                 encoding="utf-8",
             )
-            proj_dir = tmp_root / "projects" / "demo" / "work" / "jobs_v3"
+            proj_dir = tmp_root / "projects" / "demo" / "work" / "jobs"
             proj_dir.mkdir(parents=True, exist_ok=True)
             logs: list[str] = []
             with mock.patch.object(server, "RUNNER_SCRIPT", dummy_runner), \
@@ -1714,9 +1797,9 @@ class DoneQueueHistoryPersistenceTests(unittest.TestCase):
             ctx = ProjectContext(cfg_path)
             hashes = compute_project_task_hashes(ctx)
             s01_stem = next(k for k in hashes if k.startswith("S01_"))
-            mp4 = pdir / "work" / "renders_v3" / f"{s01_stem}.mp4"
+            mp4 = pdir / "work" / "renders" / f"{s01_stem}.mp4"
             mp4.write_bytes(b"\x00" * 60000)
-            sh_file = pdir / "work" / "jobs_v3" / "state_hashes.json"
+            sh_file = pdir / "work" / "jobs" / "state_hashes.json"
             sh_file.write_text(
                 json.dumps({
                     "tasks": {s01_stem: hashes[s01_stem][0]},
@@ -1803,16 +1886,611 @@ ctx.renderQueueUI();
 assert.strictEqual(ctx.document.getElementById("countDone").textContent, 1);
 assert.ok(ctx.document.getElementById("queueTableBody").innerHTML.includes("S01_solo.mp4"));
 
-// Switching projects isolates doneQueue
+// Switching projects isolates doneQueue even before new project's queue response arrives, and discards late old responses & foreign SSE
 ctx.state.currentSlug = "projB";
-ctx.applyQueueApiResponse({ queue: [], done_queue: [] });
+ctx.applyQueueApiResponse({
+  slug: "projA",
+  queue: [{ idx: 1, filename: "S99_old_projA.mp4", output_filename: "S99_old_projA", scene_id: "S99", status: "completed", completed_at: 1700000900 }],
+  done_queue: [{ idx: 1, filename: "S99_old_projA.mp4", output_filename: "S99_old_projA", scene_id: "S99", status: "completed", completed_at: 1700000900 }],
+});
+ctx.applyQueueApiResponse({ slug: "projB", queue: [], done_queue: [] });
 ctx.renderQueueUI();
 assert.strictEqual(ctx.document.getElementById("countDone").textContent, 0);
+assert.ok(!ctx.document.getElementById("queueTableBody").innerHTML.includes("S99_old_projA"));
+
+// Foreign [QUEUE_DONE] SSE event from projA must not leak into projB's Done list
+ctx.state.renderStatus = { running: true, queue_worker_active: true, current_project: "projA" };
+ctx.handleQueueSSEEvent('[QUEUE_DONE] {"idx": 1, "filename": "S88_projA_live.mp4", "elapsed": 12}', "projA");
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 0);
+assert.ok(!ctx.document.getElementById("queueTableBody").innerHTML.includes("S88_projA_live"));
+
+// Global active engine conflict banner appears when projA holds the GPU while viewing projB
+ctx.syncMultiEngineStatusUI({
+  running: true, queue_worker_active: true, current_project: "projA",
+  engines: { local: { running: true, filename: "S88_projA_live.mp4", active_tasks: [{ filename: "S88_projA_live.mp4", engine_status: { state: "rendering", pct: 42 } }] }, fal: { running: false }, minimax: { running: false } },
+});
+assert.ok(ctx.document.getElementById("multiEngineActiveLanes").innerHTML.includes("projA"));
+assert.strictEqual(ctx.promoteActiveRenderTaskFromState(), false);
+assert.strictEqual(ctx.state.isEngineRunning, false);
 console.log("DONE_HISTORY_VM_OK");
 """
         res = subprocess.run(["node", "-e", node_script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"Node VM failed:\nSTDOUT:{res.stdout}\nSTDERR:{res.stderr}")
         self.assertIn("DONE_HISTORY_VM_OK", res.stdout)
+
+    def test_02_done_list_deduplicates_take_and_post_exit_shadow_across_backend_and_ui(self):
+        from pipeline.takes import after_scene_render
+        from ui import server_queue_history
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "dup_done_proj")
+            ctx = ProjectContext(cfg_path)
+            s01_stem = "S01_solo_832x480"
+            mp4 = pdir / "work" / "renders" / f"{s01_stem}.mp4"
+            mp4.write_bytes(b"\x00" * 60000)
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            sc_obj = cfg["scenes"][0]
+            state = {"tasks": {}, "scene_renders": {}, "anchor_file_hashes": {}}
+
+            # Simulate take written at t=1000.0 while subprocess teardown + stitch finishes 7.2s later (t=1007.2)
+            t0 = 960.0
+            t_take = 1000.0
+            tk = after_scene_render(
+                ctx, sc_obj, None, s01_stem, mp4, "hash_take1_aaaa1111",
+                {"seed": 1001, "prompt": "Singing 1", "resolution": "832x480", "model_type": "minimax_h3_fl2va_pruned_pdd"},
+                elapsed=38.5, state=state, created_at=t_take,
+            )
+            self.assertEqual(tk["created_at"], 1000.0)
+
+            meta = server_queue_history.resolve_completion_meta(pdir, s01_stem, started_at=t0, fallback_ts=t_take + 7.2, fallback_elapsed=45.7)
+            self.assertEqual(meta["completed_at"], 1000.0)
+            self.assertEqual(meta["take_id"], tk["take_id"])
+            self.assertEqual(meta["elapsed"], 38.5)
+
+            # Even if an old worker or stitch delay wrote an untaken COMPLETED record 7.2s (or 25s) later, Done history keeps 1 entry
+            with mock.patch.object(server, "PROJECTS_DIR", root):
+                dh_path = server_queue_history.done_history_path(pdir, for_write=True)
+                dh_path.parent.mkdir(parents=True, exist_ok=True)
+                dh_path.write_text(json.dumps({
+                    "version": 1,
+                    "items": [
+                        {"history_id": f"{s01_stem}@{t_take + 7.2}", "id": s01_stem, "output_filename": s01_stem, "filename": f"{s01_stem}.mp4", "scene_id": "S01", "status": "completed", "completed_at": t_take + 7.2, "elapsed": 45.7, "reason": "COMPLETED"},
+                        {"history_id": f"take:{tk['take_id']}", "id": s01_stem, "output_filename": s01_stem, "filename": f"{s01_stem}.mp4", "scene_id": "S01", "status": "completed", "completed_at": t_take, "elapsed": 38.5, "reason": f"Take {tk['take_number']}", "take_id": tk["take_id"], "take_number": tk["take_number"]},
+                    ],
+                }), encoding="utf-8")
+
+                reconciled = server.get_done_queue_history(server, "dup_done_proj", [
+                    {"output_filename": s01_stem, "filename": f"{s01_stem}.mp4", "scene_id": "S01", "status": "completed", "completed_at": t_take + 25.0, "elapsed": 55.0, "reason": "UP-TO-DATE"}
+                ])
+                self.assertEqual(len(reconciled), 1)
+                self.assertEqual(reconciled[0]["take_id"], tk["take_id"])
+                self.assertEqual(reconciled[0]["completed_at"], t_take)
+
+                # A genuinely distinct second take 40s later + its untaken shadow 7s later keeps 2 entries total (1 per render)
+                tk2 = after_scene_render(
+                    ctx, sc_obj, None, s01_stem, mp4, "hash_take2_bbbb2222",
+                    {"seed": 1002, "prompt": "Singing 1 v2", "resolution": "832x480", "model_type": "minimax_h3_fl2va_pruned_pdd"},
+                    elapsed=30.0, state=state, created_at=t_take + 40.0,
+                )
+                d2 = server.get_done_queue_history(server, "dup_done_proj", [
+                    {"output_filename": s01_stem, "filename": f"{s01_stem}.mp4", "scene_id": "S01", "status": "completed", "completed_at": t_take + 47.0, "elapsed": 37.0, "reason": "COMPLETED"}
+                ])
+                self.assertEqual(len(d2), 2)
+                self.assertEqual({x.get("take_id") for x in d2}, {tk["take_id"], tk2["take_id"]})
+
+        # Frontend Node VM: optimistic SSE [QUEUE_DONE] + server COMPLETED/take response 7-15s later stays 1 Done row
+        node_script = """
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+const noopEl = () => ({ style: {}, dataset: {}, children: [], classList: { toggle() {}, add() {}, remove() {} }, addEventListener() {}, appendChild() {}, innerHTML: "", textContent: "" });
+const ctx = vm.createContext({
+  console, Date, Math, JSON, Map, Set, Array, Number, String, Boolean,
+  location: { search: "" },
+  URLSearchParams: class { get() { return null; } },
+  EventSource: class { close() {} },
+  fetch: async () => ({ ok: true, json: async () => ({}) }),
+  document: { _els: {}, getElementById(id) { return this._els[id] || (this._els[id] = noopEl()); }, querySelectorAll: () => [], createElement: noopEl },
+  state: { currentSlug: "projDup", queueFilter: "completed", renderQueue: [{ idx: 1, id: "S01_solo", filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "rendering" }], sseTaskStatuses: new Map(), engineLive: {} },
+  showToast() {}, refreshProjectAssets() {}, formatDurationEstimate: (s) => `${Math.round(s)}s`,
+  formatCompletedAt: () => "2026-11-22 12:00", formatElapsed: (s) => `${s}s`,
+  escapeHtml: (s) => String(s || ""),
+});
+ctx.window = ctx; ctx.window.state = ctx.state;
+vm.runInContext(fs.readFileSync("work/ui/static/js/queue_engines.js", "utf8"), ctx);
+vm.runInContext(fs.readFileSync("work/ui/static/js/queue_and_console.js", "utf8"), ctx);
+
+const sseNowSec = Math.floor(Date.now() / 1000);
+ctx.handleQueueSSEEvent('[QUEUE_DONE] {"idx": 1, "filename": "S01_solo.mp4", "elapsed": 38.5}', "projDup");
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 1);
+
+// 8 seconds later server finishes subprocess + stitch and returns authoritative take + COMPLETED queue item
+ctx.applyQueueApiResponse({
+  slug: "projDup",
+  queue: [{ idx: 1, filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "completed", completed_at: sseNowSec + 8.0, elapsed: 45.7 }],
+  done_queue: [{ history_id: "take:take_aaa1", filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "completed", completed_at: sseNowSec + 0.4, elapsed: 38.5, take_id: "take_aaa1", take_number: 1, reason: "Take 1" }],
+});
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 1);
+
+// Second distinct take 20s later produces 2 rows (both distinct renders shown once each)
+ctx.applyQueueApiResponse({
+  slug: "projDup",
+  done_queue: [{ history_id: "take:take_bbb2", filename: "S01_solo.mp4", output_filename: "S01_solo", scene_id: "S01", status: "completed", completed_at: sseNowSec + 25.0, elapsed: 31.0, take_id: "take_bbb2", take_number: 2, reason: "Take 2" }],
+});
+ctx.renderQueueUI();
+assert.strictEqual(ctx.document.getElementById("countDone").textContent, 2);
+console.log("DONE_DEDUP_VM_OK");
+"""
+        res = subprocess.run(["node", "-e", node_script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Node VM failed:\nSTDOUT:{res.stdout}\nSTDERR:{res.stderr}")
+        self.assertIn("DONE_DEDUP_VM_OK", res.stdout)
+
+
+class StandardDirsAndStitchRegressionTests(unittest.TestCase):
+    def test_07_standard_non_v3_dirs_queue_transitions_to_completed(self):
+        from pipeline.media_utils import resolve_ffmpeg_path
+        from pipeline.project_paths import resolve_done_history_file, resolve_project_dirs, resolve_queue_file
+        from pipeline.takes import after_scene_render
+
+        ffmpeg_bin = resolve_ffmpeg_path(WORKSPACE_ROOT, "", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "std_dirs_proj")
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg["project"]["directories"] = {
+                "anchors": "work/anchors",
+                "audio_slices": "work/audio",
+                "masks": "work/masks",
+                "jobs": "work/jobs",
+                "renders": "work/renders",
+                "trimmed": "work/trimmed",
+                "review_strips": "work/frames",
+            }
+            cfg["scenes"] = [cfg["scenes"][0]]
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            pdirs = resolve_project_dirs(pdir)
+            self.assertEqual(pdirs["renders"], (pdir / "work" / "renders").resolve())
+            self.assertEqual(pdirs["jobs"], (pdir / "work" / "jobs").resolve())
+            self.assertEqual(resolve_queue_file(pdir), (pdir / "work" / "jobs" / "v3_queue.json").resolve())
+            self.assertEqual(resolve_done_history_file(pdir), (pdir / "work" / "jobs" / "done_history.json").resolve())
+
+            with mock.patch.object(server, "PROJECTS_DIR", root):
+                q1 = server.compute_fast_project_queue("std_dirs_proj", force_recheck=True)
+                self.assertEqual(len(q1), 1)
+                self.assertEqual(q1[0]["status"], "queued")
+                self.assertEqual(q1[0]["reason"], "MISSING FILE")
+
+                ctx = ProjectContext(cfg_path)
+                out_name = q1[0]["output_filename"]
+                out_mp4 = ctx.renders_dir / f"{out_name}.mp4"
+                out_mp4.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    [
+                        str(ffmpeg_bin), "-y", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:d=3.0",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out_mp4),
+                    ],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                # Bump mtime cleanly after dummy anchor to simulate freshly completed render
+                now_ts = time.time() + 2.0
+                subprocess.run([sys.executable, "-c", f"import os; os.utime(r'{out_mp4}', ({now_ts}, {now_ts}))"], check=True)
+
+                hashes = compute_project_task_hashes(ctx)
+                cur_h = hashes[out_name][0]
+                state = {"tasks": {out_name: cur_h}, "task_hashes": {out_name: cur_h}, "scene_renders": {out_name: {"render_start": 0.0, "render_end": 4.0, "frames": 96, "elapsed": 1.2, "completed_at": now_ts}}}
+                ctx.save_state_hashes(state)
+                take = after_scene_render(
+                    ctx, ctx.scenes[0], None, out_name, out_mp4, cur_h,
+                    {"resolution": "832x480", "render_start": 0.0, "render_end": 4.0, "video_length": 96}, 1.2, state,
+                )
+                self.assertTrue(str(take.get("file_path", "")).startswith("work/renders/takes/"))
+                self.assertFalse((pdir / "work" / "renders_v3").exists())
+                self.assertFalse((pdir / "work" / "jobs_v3").exists())
+
+                q2 = server.compute_fast_project_queue("std_dirs_proj", force_recheck=False)
+                self.assertEqual(q2[0]["status"], "completed")
+                self.assertFalse(q2[0]["needs_render"])
+                done_list = server.get_done_queue_history(server, "std_dirs_proj", q2)
+                self.assertEqual(len(done_list), 1)
+                self.assertEqual(done_list[0]["output_filename"], out_name)
+
+    def test_08_stitch_missing_master_audio_fallback_and_worker_bool_status(self):
+        from pipeline.media_utils import probe_has_audio_stream, resolve_ffmpeg_path
+        from pipeline.stage3_master import assemble_progressive_master
+
+        ffmpeg_bin = resolve_ffmpeg_path(WORKSPACE_ROOT, "", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "stitch_noaudio")
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cfg["project"]["master_audio"] = "audio/does_not_exist.mp3"
+            cfg["project"]["total_duration"] = 2.0
+            cfg["scenes"] = [cfg["scenes"][0]]
+            cfg["scenes"][0]["end"] = 2.0
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            ctx = ProjectContext(cfg_path)
+            s01_mp4 = ctx.renders_dir / "S01_solo_832x480.mp4"
+            subprocess.run(
+                [
+                    str(ffmpeg_bin), "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:d=2.0",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(s01_mp4),
+                ],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            buf = io.StringIO()
+            with mock.patch("sys.stdout", buf):
+                ok = assemble_progressive_master(ctx, [{"id": "S01", "start": 0.0, "end": 2.0, "clip": s01_mp4.name, "mode": "solo"}])
+            self.assertTrue(ok, f"Expected silent audio fallback stitch to succeed; log:\n{buf.getvalue()}")
+            self.assertTrue(ctx.master_output.is_file())
+            self.assertGreater(ctx.master_output.stat().st_size, 10000)
+            self.assertTrue(probe_has_audio_stream(ffmpeg_bin, ctx.master_output))
+
+            # Failure diagnostics check: FFmpeg error details must surface via [MASTER_STITCH_FAILED] & run_stitch_worker -> False
+            ctx.master_output.unlink(missing_ok=True)
+            fake_proc = mock.MagicMock(returncode=1, stdout="Invalid filter graph syntax")
+            err_buf = io.StringIO()
+            with mock.patch("pipeline.stage3_master.subprocess.run", return_value=fake_proc):
+                with mock.patch("sys.stdout", err_buf):
+                    bad_ok = assemble_progressive_master(ctx, [{"id": "S01", "start": 0.0, "end": 2.0, "clip": s01_mp4.name, "mode": "solo"}])
+            self.assertFalse(bad_ok)
+            self.assertIn("[MASTER_STITCH_FAILED]", err_buf.getvalue())
+            self.assertIn("Invalid filter graph syntax", err_buf.getvalue())
+
+            # run_stitch_worker bool return + stitch_error propagation
+            class _FakePopen:
+                def __init__(self, *a, **kw):
+                    self.stdout = io.StringIO("[Error] [MASTER_STITCH_FAILED] FFmpeg master concat/mux failed\n")
+                    self.returncode = 1
+                def wait(self, timeout=None): return 1
+
+            with mock.patch.object(server, "PROJECTS_DIR", root):
+                with mock.patch.object(server_workers.subprocess, "Popen", _FakePopen):
+                    res_ok = server_workers.run_stitch_worker(str(cfg_path), "stitch_noaudio")
+            self.assertFalse(res_ok)
+            self.assertIn("MASTER_STITCH_FAILED", str(getattr(server, "stitch_error", "")))
+            st = server.get_multi_engine_render_status(server)
+            self.assertIn("MASTER_STITCH_FAILED", str(st.get("stitch_error", "")))
+
+    def test_09_flac_master_audio_resolution_and_stitch_and_mime(self):
+        from pipeline.media_utils import probe_has_audio_stream, resolve_ffmpeg_path
+        from pipeline.stage3_master import assemble_progressive_master
+        from ui import server_media
+
+        ffmpeg_bin = resolve_ffmpeg_path(WORKSPACE_ROOT, "", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "flac_proj")
+            flac_path = pdir / "audio" / "master_audio.flac"
+            flac_path.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [str(ffmpeg_bin), "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "2.0", "-c:a", "flac", str(flac_path)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            # Even if project JSON defaults to audio/master_audio.mp3, master_audio.flac resolves automatically
+            cfg["project"]["master_audio"] = "audio/master_audio.mp3"
+            cfg["project"]["total_duration"] = 2.0
+            cfg["scenes"] = [cfg["scenes"][0]]
+            cfg["scenes"][0]["end"] = 2.0
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            ctx = ProjectContext(cfg_path)
+            self.assertEqual(ctx.master_audio, flac_path.resolve())
+            s01_mp4 = ctx.renders_dir / "S01_solo_832x480.mp4"
+            subprocess.run(
+                [str(ffmpeg_bin), "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:d=2.0", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(s01_mp4)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            ok = assemble_progressive_master(ctx, [{"id": "S01", "start": 0.0, "end": 2.0, "clip": s01_mp4.name, "mode": "solo"}])
+            self.assertTrue(ok)
+            self.assertTrue(probe_has_audio_stream(ffmpeg_bin, ctx.master_output))
+
+            # HTTP streaming serves audio/flac cleanly
+            sent = {"headers": {}}
+            class _RangeDummy:
+                headers = {}
+                wfile = io.BytesIO()
+                def send_response(self, code): sent["code"] = code
+                def send_header(self, k, v): sent["headers"][k.lower()] = v
+                def end_headers(self): pass
+            server_media.stream_file_with_range(_RangeDummy(), flac_path)
+            self.assertEqual(sent.get("code"), 200)
+            self.assertEqual(sent["headers"].get("content-type"), "audio/flac")
+
+    def test_10_timeline_header_band_does_not_overlap_thumbnails(self):
+        tl_js = (WORKSPACE_ROOT / "work" / "ui" / "static" / "js" / "timeline_and_playback.js").read_text(encoding="utf-8")
+        self.assertIn("const headerH = 18;", tl_js)
+        self.assertIn("const thumbTop = trackTop + headerH;", tl_js)
+        self.assertIn("ctx.drawImage(stripImg, f * srcFrameW, 0, srcFrameW, stripImg.naturalHeight, curX, thumbTop, thumbW, trackHeight);", tl_js)
+        self.assertIn("ctx.drawImage(anchorImg, curX, thumbTop, thumbW, trackHeight);", tl_js)
+        self.assertIn("ctx.fillRect(sx, trackTop, sw, headerH);", tl_js)
+
+
+    def test_11_last_opened_project_persists_and_refresh_updates_takes_ui(self):
+        from pipeline import takes as _takes
+
+        # 1. Backend: _ensure_baseline_takes_seeded ignores Wan2GP internal tmp*_continue*.mp4 scratch renders
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "tmp_skip_proj")
+            (pdir / "work" / "renders" / "tmp9ac3a4bc_continue1.mp4").write_bytes(b"\x00" * 60000)
+            mf = _takes.ensure_baseline_takes_seeded(pdir, cfg_path)
+            self.assertNotIn("tmp9ac3a4bc", mf.get("scenes", {}))
+
+        # 2. Frontend Node VM: switching project persists last opened project across bare-URL reloads + refreshProjectAssets updates Takes UI
+        node_script = """
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+const noopEl = (id = "") => ({
+  id, value: "", options: [], children: [], style: {}, dataset: {},
+  getContext: () => ({}),
+  classList: { _s: new Set(), toggle(c, on) { if (on) this._s.add(c); else this._s.delete(c); }, add(c) { this._s.add(c); }, remove(c) { this._s.delete(c); }, contains(c) { return this._s.has(c); } },
+  addEventListener() {}, appendChild(c) { this.children.push(c); this.options.push(c); },
+  innerHTML: "", textContent: "",
+});
+const storage = new Map();
+let curHref = "http://127.0.0.1:7860/";
+let curSearch = "";
+const els = {};
+const calls = { takesInvalidated: 0, takesUpdatedFor: [] };
+const ctx = vm.createContext({
+  console, Date, Math, JSON, Map, Set, Array, Number, String, Boolean, URL, URLSearchParams,
+  CustomEvent: class { constructor(t, d) { this.type = t; this.detail = d?.detail; } },
+  Event: class { constructor(t) { this.type = t; } },
+  localStorage: { getItem: (k) => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => storage.set(k, String(v)) },
+  location: { get href() { return curHref; }, get search() { return curSearch; } },
+  history: { replaceState(_s, _t, u) { curHref = String(u); curSearch = new URL(curHref).search; } },
+  document: {
+    getElementById(id) { return els[id] || (els[id] = noopEl(id)); },
+    querySelectorAll: () => [],
+    createElement: (tag) => ({ ...noopEl(), tagName: tag }),
+  },
+  fetch: async (url) => {
+    if (url === "/api/projects") {
+      return { ok: true, json: async () => ({ projects: [
+        { slug: "all_or_nothing", name: "All or Nothing", config_file: "all_or_nothing_v4.json" },
+        { slug: "not_there_yet", name: "Not There Yet", config_file: "not_there_yet.json" },
+      ] }) };
+    }
+    const slug = url.includes("not_there_yet") ? "not_there_yet" : "all_or_nothing";
+    const cfg = slug === "not_there_yet" ? "not_there_yet.json" : "all_or_nothing_v4.json";
+    return { ok: true, json: async () => ({
+      config_file: cfg,
+      data: { project: { name: slug, total_duration: 10 }, scenes: [{ id: "S01", start: 0, end: 5 }, { id: "S02", start: 5, end: 10 }], anchors: [] },
+      assets: { anchors: [], clips: {} },
+    }) };
+  },
+  AudioContext: null, webkitAudioContext: null,
+  showToast() {}, redrawTimeline() {}, updatePlayheadVisual() {}, loadProjectAudio: async () => {},
+  updateProjectSettingsUI() {}, updateAnchorStudioUI() {}, updateInspectorAnchorsDropdown() {}, updateInspectorStemsDropdown() {},
+  updateMasterVideoUI() {}, updateSceneClipPreview() {}, loadProjectQueue() {}, dispatchEvent() {}, addEventListener() {},
+  invalidateSceneTakesCache() { calls.takesInvalidated++; },
+  updateSceneTakesUI(sc) { calls.takesUpdatedFor.push(sc.id); },
+  canvasImageCache: {},
+});
+ctx.window = ctx;
+vm.runInContext(fs.readFileSync("work/ui/static/js/state_and_utils.js", "utf8"), ctx);
+
+(async () => {
+  await ctx.loadProjects();
+  assert.strictEqual(ctx.state.currentSlug, "all_or_nothing");
+  await ctx.selectProject("not_there_yet", "not_there_yet.json");
+  assert.strictEqual(curSearch, "?project=not_there_yet");
+
+  // Simulate user opening bare root URL after switching to not_there_yet
+  curHref = "http://127.0.0.1:7860/"; curSearch = "";
+  await ctx.loadProjects();
+  assert.strictEqual(ctx.state.currentSlug, "not_there_yet");
+  assert.strictEqual(ctx.document.getElementById("projectSelect").value, "not_there_yet:::not_there_yet.json");
+
+  // Explicit URL ?project= takes precedence over localStorage
+  curHref = "http://127.0.0.1:7860/?project=all_or_nothing"; curSearch = "?project=all_or_nothing";
+  await ctx.loadProjects();
+  assert.strictEqual(ctx.state.currentSlug, "all_or_nothing");
+
+  // refreshProjectAssets invalidates takes cache and refreshes selected scene's Takes UI
+  ctx.state.selectedSceneIdx = 1;
+  await ctx.refreshProjectAssets(true);
+  assert.ok(calls.takesInvalidated >= 1);
+  assert.deepStrictEqual(calls.takesUpdatedFor, ["S02"]);
+  console.log("PROJECT_PERSIST_AND_TAKES_REFRESH_OK");
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+        res = subprocess.run(["node", "-e", node_script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Node VM failed:\nSTDOUT:{res.stdout}\nSTDERR:{res.stderr}")
+        self.assertIn("PROJECT_PERSIST_AND_TAKES_REFRESH_OK", res.stdout)
+
+    def test_12_stems_dropdown_excludes_missing_stems_and_deduplicates_master(self):
+        """Non-existent template/default stems must not appear in Audio Stem dropdowns, and master extension fallback must deduplicate."""
+        from pipeline.cli import init_new_project
+        from pipeline.project_paths import scan_project_audio_assets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            proj_dir = Path(tmp) / "not_there_yet"
+            init_new_project(str(proj_dir), force=True)
+            init_cfg = json.loads((proj_dir / "not_there_yet.json").read_text(encoding="utf-8"))
+            self.assertEqual(init_cfg["project"]["stems"], {})
+
+            # Simulate user dropping master_audio.flac while template stems still point to missing files
+            (proj_dir / "audio" / "master_audio.flac").write_bytes(b"fLaCmock")
+            cfg_data = {
+                "project": {
+                    "master_audio": "audio/master_audio.mp3",
+                    "stems": {"lead_vocal": "audio/lead_vocal.mp3", "backing_track": "audio/backing_track.mp3"},
+                },
+                "scenes": [
+                    {"id": "S01", "mode": "ambient", "stem": "silent"},
+                    {"id": "S02", "mode": "male_solo", "stem": "male"},
+                ],
+            }
+            assets = scan_project_audio_assets(proj_dir, cfg_data)
+            self.assertEqual(assets["audio_files"], ["master_audio.flac"])
+            self.assertEqual(assets["master_audio_file"], "master_audio.flac")
+            self.assertTrue(assets["master_audio_exists"])
+            self.assertEqual(assets["audio_stems"], [])
+            self.assertEqual(sorted(assets["missing_stems"]), ["backing_track", "lead_vocal"])
+
+            # When a stem file actually exists (even with different casing), scan_project_audio_assets surfaces it
+            (proj_dir / "audio" / "Male_Vocal.mp3").write_bytes(b"ID3mock")
+            cfg_with_male = {
+                "project": {
+                    "master_audio": "audio/master_audio.mp3",
+                    "stems": {"male": "audio/male_vocal.mp3", "female": "audio/female_vocal.mp3"},
+                }
+            }
+            assets_male = scan_project_audio_assets(proj_dir, cfg_with_male)
+            self.assertEqual(assets_male["audio_stems"], ["male"])
+            self.assertEqual(assets_male["stem_files"], {"male": "Male_Vocal.mp3"})
+            self.assertEqual(assets_male["missing_stems"], ["female"])
+
+        node_script = """
+const fs = require("fs"), vm = require("vm"), assert = require("assert");
+const els = new Map();
+const mkEl = (id) => {
+  if (els.has(id)) return els.get(id);
+  const o = {
+    id, value: "", style: {}, options: [], dataset: {}, childNodes: [],
+    classList: { toggle() {}, add() {}, remove() {} },
+    addEventListener() {}, querySelectorAll: () => [],
+    add(opt) { this.appendChild(opt); },
+    appendChild(c) { this.options.push(c); c.remove = () => { this.options = this.options.filter((x) => x !== c); }; return c; },
+    set innerHTML(v) { if (v === "") this.options = []; },
+    get innerHTML() { return ""; },
+  };
+  els.set(id, o);
+  return o;
+};
+const ctx = {
+  Option: function(text, value) { return { textContent: text, text, value, dataset: {} }; },
+  document: {
+    getElementById: mkEl,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    createElement: (tag) => { const o = mkEl("__el_" + tag + "_" + Math.random()); o.tagName = tag.toUpperCase(); return o; },
+    addEventListener: () => {},
+  },
+  window: null,
+  state: {
+    currentSlug: "not_there_yet",
+    assets: """ + json.dumps(assets) + """,
+    projectData: """ + json.dumps(cfg_data) + """,
+    models: { anchor_renderers: {}, video_renderers: {} },
+  },
+  markProjectDirty() {}, showToast() {}, redrawTimeline() {}, refreshProjectAssets() {},
+  resizeAllPromptTextareas() {}, updatePromptResolvedPreviews() {},
+};
+ctx.window = ctx; ctx.global = ctx;
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync("work/ui/static/js/anchors_and_settings.js", "utf8"), ctx);
+vm.runInContext(fs.readFileSync("work/ui/static/js/scene_inspector.js", "utf8"), ctx);
+vm.runInContext(fs.readFileSync("work/ui/static/js/master_and_export.js", "utf8"), ctx);
+vm.runInContext(fs.readFileSync("work/ui/static/js/duet_repair.js", "utf8"), ctx);
+
+ctx.updateInspectorStemsDropdown();
+const stemSel = mkEl("sceneStem");
+const vals = Array.from(stemSel.options, (o) => o.value);
+assert.deepStrictEqual(vals, ["master", "silent"]);
+assert.ok(stemSel.options[0].textContent.includes("master_audio.flac"));
+assert.deepStrictEqual(
+  Array.from(ctx.getSceneOptionCatalog(ctx.state.projectData.scenes[1]).stems, (s) => s.value),
+  ["master", "silent"]
+);
+
+// Scene S02 saved with missing stem "male" displays explicit "(missing audio file)" warning without polluting dropdown permanently
+ctx.updateSceneInspectorInputs(ctx.state.projectData.scenes[1]);
+assert.strictEqual(stemSel.value, "male");
+assert.ok(stemSel.options.some((o) => o.value === "male" && o.textContent.includes("missing audio file")));
+ctx.updateSceneInspectorInputs(ctx.state.projectData.scenes[0]);
+assert.strictEqual(stemSel.value, "silent");
+assert.deepStrictEqual(Array.from(stemSel.options, (o) => o.value), ["master", "silent"]);
+
+// Repair UI stem dropdown excludes missing stems and hardcoded male/female/backing/lead defaults
+const upBtn = mkEl("btnUpscaleTake");
+const tray = mkEl("sceneTakesTray");
+upBtn.parentElement = tray;
+tray.insertBefore = () => {};
+mkEl("btnToggleLipSyncRepair");
+mkEl("lipSyncRepairBar");
+ctx.syncTakeRepairUI(ctx.state.projectData.scenes[1]);
+const repVals = Array.from(mkEl("repStem").options, (o) => o.value);
+assert.deepStrictEqual(repVals, ["", "master"]);
+
+// Mode switch when project lacks separate vocal stems falls back to master instead of inventing male/lead_vocal
+const sNew = { id: "S03", mode: "ambient", stem: "silent" };
+ctx.handleSceneModeChange(sNew, "solo");
+assert.strictEqual(sNew.stem, "master");
+console.log("STEM_DROPDOWN_DISK_VERIFIED_OK");
+"""
+        res = subprocess.run(["node", "-e", node_script], cwd=str(WORKSPACE_ROOT), capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, f"Node VM failed:\nSTDOUT:{res.stdout}\nSTDERR:{res.stderr}")
+        self.assertIn("STEM_DROPDOWN_DISK_VERIFIED_OK", res.stdout)
+
+    def test_15_master_stitch_beyond_stale_total_duration_and_added_scenes(self):
+        """Master stitch uses actual scene span even when project.total_duration is smaller/stale and reconciles stale v3_timeline.json."""
+        from pipeline.media_utils import probe_video_duration, resolve_ffmpeg_path
+        from pipeline.stage3_master import assemble_progressive_master, resolve_scene_fade_filters
+
+        ffmpeg_bin = resolve_ffmpeg_path(WORKSPACE_ROOT, "", None)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pdir, cfg_path = _make_mini_project(root, "beyond_td_proj")
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            audio_p = pdir / "audio" / "master_audio.mp3"
+            audio_p.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                [str(ffmpeg_bin), "-y", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "5.0", "-c:a", "libmp3lame", str(audio_p)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            cfg["project"]["master_audio"] = "audio/master_audio.mp3"
+            cfg["project"]["total_duration"] = 1.0  # Smaller than scenes (e.g. stale template 60s on a 126s timeline)
+            cfg["project"]["fade_out_last_scene_seconds"] = 0.5
+            cfg["scenes"] = [
+                {**cfg["scenes"][0], "id": "S01", "start": 0.0, "end": 1.5, "stem": "silent"},
+                {**cfg["scenes"][0], "id": "S02", "start": 1.5, "end": 3.0, "stem": "silent"},
+            ]
+            cfg_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+            ctx = ProjectContext(cfg_path)
+            s01_mp4 = ctx.renders_dir / "S01_solo_832x480.mp4"
+            s02_mp4 = ctx.renders_dir / "S02_solo_832x480.mp4"
+            for mp4, color in ((s01_mp4, "navy"), (s02_mp4, "teal")):
+                subprocess.run(
+                    [
+                        str(ffmpeg_bin), "-y", "-f", "lavfi", "-i", f"testsrc2=size=640x360:rate=24:d=1.6",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(mp4),
+                    ],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                if mp4.stat().st_size <= 55000:
+                    with open(mp4, "ab") as f:
+                        f.write(b"\x00" * (60000 - mp4.stat().st_size))
+
+            # Fade filter for S02 must not become solid black just because stale total_duration=1.0 < 1.5
+            fsig, ff = resolve_scene_fade_filters(0.5, None, 1.5, 3.0, 3.0)
+            self.assertNotIn("drawbox=c=black:t=fill", ff)
+
+            # Stale v3_timeline.json only containing S01 must be reconciled with ctx.scenes (S01 + S02) on stitch_only
+            (ctx.jobs_dir / "v3_timeline.json").write_text(
+                json.dumps([{"id": "S01", "start": 0.0, "end": 1.5, "clip": s01_mp4.name, "mode": "solo"}]),
+                encoding="utf-8",
+            )
+            with mock.patch.object(sys, "argv", ["run_overnight_v3.py", str(cfg_path), "stitch"]):
+                from pipeline import cli as pipeline_cli
+                pipeline_cli.main()
+
+            self.assertTrue(ctx.master_output.is_file())
+            master_dur = probe_video_duration(ffmpeg_bin, ctx.master_output)
+            self.assertIsNotNone(master_dur)
+            self.assertGreaterEqual(master_dur, 2.9, f"Expected ~3.0s master covering S01+S02, got {master_dur}s")
+            reconciled = json.loads((ctx.jobs_dir / "v3_timeline.json").read_text(encoding="utf-8"))
+            self.assertEqual([e["id"] for e in reconciled], ["S01", "S02"])
 
 
 if __name__ == "__main__":

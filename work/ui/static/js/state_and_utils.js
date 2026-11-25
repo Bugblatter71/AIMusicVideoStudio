@@ -262,12 +262,36 @@ async function loadModelProfiles() {
   }
 }
 
+const LAST_PROJECT_STORAGE_KEY = "mvg_last_project_v1";
+
+function _saveLastOpenedProject(slug, configFile = null) {
+  try { if (slug && typeof localStorage !== "undefined") localStorage.setItem(LAST_PROJECT_STORAGE_KEY, JSON.stringify({ slug, config_file: configFile || "" })); } catch (e) {}
+  try {
+    if (slug && window.location && window.history?.replaceState) {
+      const u = new URL(window.location.href);
+      if (u.searchParams.get("project") !== slug) { u.searchParams.set("project", slug); window.history.replaceState(null, "", u.toString()); }
+    }
+  } catch (e) {}
+}
+
+function _findPreferredProject(projects, requestedSlug) {
+  if (!Array.isArray(projects) || !projects.length) return null;
+  if (requestedSlug) {
+    const low = String(requestedSlug).toLowerCase();
+    return projects.find((p) => p.slug === requestedSlug) || projects.find((p) => p.name?.toLowerCase().includes(low)) || null;
+  }
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(LAST_PROJECT_STORAGE_KEY) : null;
+    const saved = raw ? JSON.parse(raw) : null;
+    if (saved?.slug) return projects.find((p) => p.slug === saved.slug && (!saved.config_file || p.config_file === saved.config_file)) || projects.find((p) => p.slug === saved.slug) || null;
+  } catch (e) {}
+  return projects.find((p) => p.config_file && p.config_file.includes("v4")) || projects[0];
+}
+
 async function loadProjects() {
   try {
-    const res = await fetch("/api/projects");
-    const json = await res.json();
+    const res = await fetch("/api/projects"), json = await res.json();
     state.projects = json.projects || [];
-
     const select = document.getElementById("projectSelect");
     select.innerHTML = "";
     state.projects.forEach((p) => {
@@ -276,138 +300,78 @@ async function loadProjects() {
       opt.textContent = p.label || `${p.name} (${p.config_file})`;
       select.appendChild(opt);
     });
-
     if (state.projects.length > 0) {
-      const urlParams = new URLSearchParams(window.location.search);
-      const requestedSlug = urlParams.get("project");
-      let preferred = null;
-      if (requestedSlug) {
-        preferred = state.projects.find((p) => p.slug === requestedSlug || p.name.toLowerCase().includes(requestedSlug.toLowerCase()));
-      }
-      if (!preferred) {
-        preferred = state.projects.find((p) => p.config_file && p.config_file.includes("v4")) || state.projects[0];
-      }
+      const preferred = _findPreferredProject(state.projects, new URLSearchParams(window.location.search).get("project")) || state.projects[0];
       select.value = `${preferred.slug}:::${preferred.config_file}`;
       await selectProject(preferred.slug, preferred.config_file);
     }
-
-    select.addEventListener("change", (e) => {
-      const [slug, cfg] = e.target.value.split(":::");
-      selectProject(slug, cfg);
-    });
-  } catch (err) {
-    console.error("Failed to load projects:", err);
-  }
+    select.addEventListener("change", (e) => { const [slug, cfg] = e.target.value.split(":::"); selectProject(slug, cfg); });
+  } catch (err) { console.error("Failed to load projects:", err); }
 }
 
 async function selectProject(slug, configFile = null) {
-  state.currentSlug = slug;
-  state.currentConfigFile = configFile;
+  const loadSeq = (state._projectLoadSeq = (state._projectLoadSeq || 0) + 1);
+  Object.assign(state, { currentSlug: slug, currentConfigFile: configFile, renderQueue: [], doneQueue: [], _doneQueueSlug: slug });
+  state.sseTaskStatuses?.clear?.();
+  window.renderQueueUI?.();
+  _saveLastOpenedProject(slug, configFile);
+  const selEl = document.getElementById("projectSelect");
+  if (selEl && configFile) selEl.value = `${slug}:::${configFile}`;
   const q = configFile ? `?config=${encodeURIComponent(configFile)}` : "";
   try {
-    const res = await fetch(`/api/project/${slug}${q}`);
-    const json = await res.json();
-    state.projectData = json.data;
-    state.assets = json.assets;
-    state.currentConfigFile = json.config_file;
-
-    if (typeof window.initProjectHistory === "function") {
-      window.initProjectHistory();
-    }
-
-    updateProjectSettingsUI();
-    updateAnchorStudioUI();
-    updateInspectorAnchorsDropdown();
-    updateInspectorStemsDropdown();
-
-    // Initialize audio duration from metadata immediately so ruler & timecode are populated
+    const res = await fetch(`/api/project/${slug}${q}`), json = await res.json();
+    if (state.currentSlug !== slug || state._projectLoadSeq !== loadSeq) return;
+    state.projectData = json.data; state.assets = json.assets; state.currentConfigFile = json.config_file;
+    _saveLastOpenedProject(slug, json.config_file);
+    if (selEl && json.config_file) selEl.value = `${slug}:::${json.config_file}`;
+    window.initProjectHistory?.();
+    updateProjectSettingsUI(); updateAnchorStudioUI(); updateInspectorAnchorsDropdown(); updateInspectorStemsDropdown();
     if (state.projectData?.project?.total_duration) {
       state.audioDuration = state.projectData.project.total_duration;
-      updatePlayheadVisual(0, false);
-      redrawTimeline();
+      updatePlayheadVisual(0, false); redrawTimeline();
     }
-
     await loadProjectAudio();
-    updateMasterVideoUI();
-    loadProjectQueue(slug);
-    if (typeof window.loadProjectCharacters === "function") {
-      window.loadProjectCharacters(slug);
-    }
+    if (state.currentSlug !== slug || state._projectLoadSeq !== loadSeq) return;
+    updateMasterVideoUI(); loadProjectQueue(slug); window.loadProjectCharacters?.(slug);
     window.dispatchEvent(new CustomEvent("projectLoaded", { detail: { slug } }));
-
+    state._projectLoadedSeq = loadSeq;
     showToast(`Loaded: ${state.projectData.project?.name || slug} (${state.currentConfigFile})`);
-  } catch (err) {
-    console.error(`Failed to load project ${slug}:`, err);
-  }
+  } catch (err) { console.error(`Failed to load project ${slug}:`, err); }
 }
 
 async function refreshProjectAssets(silent = false) {
   if (!state.currentSlug) return;
   const q = state.currentConfigFile ? `?config=${encodeURIComponent(state.currentConfigFile)}` : "";
   try {
-    const res = await fetch(`/api/project/${state.currentSlug}${q}`);
-    const json = await res.json();
-    if (!state.isDirty) {
-      state.projectData = json.data;
-      if (typeof window.initProjectHistory === "function") {
-        window.initProjectHistory();
-      }
-    }
+    const res = await fetch(`/api/project/${state.currentSlug}${q}`), json = await res.json();
+    if (!state.isDirty) { state.projectData = json.data; window.initProjectHistory?.(); }
     state.assets = json.assets;
-
-    // Clear canvas image cache so fresh re-rendered thumbnails load
-    for (const k in canvasImageCache) {
-      delete canvasImageCache[k];
-    }
-
-    updateAnchorStudioUI();
-    updateInspectorAnchorsDropdown();
-    updateInspectorStemsDropdown();
-    redrawTimeline();
-    if (state.selectedSceneIdx !== null && state.projectData?.scenes) {
-      updateSceneClipPreview(state.projectData.scenes[state.selectedSceneIdx]);
-    }
-    updateMasterVideoUI();
-    loadProjectQueue(state.currentSlug);
-    if (!state.isDirty && typeof window.loadProjectCharacters === "function") {
-      window.loadProjectCharacters(state.currentSlug);
-    }
-
-    if (!silent) {
-      showToast("Refreshed project assets and thumbnails from disk");
-    }
-  } catch (err) {
-    console.error("Failed to refresh project assets:", err);
-  }
+    for (const k in canvasImageCache) delete canvasImageCache[k];
+    updateAnchorStudioUI(); updateInspectorAnchorsDropdown(); updateInspectorStemsDropdown(); redrawTimeline();
+    window.invalidateSceneTakesCache?.();
+    const selSc = state.selectedSceneIdx !== null ? state.projectData?.scenes?.[state.selectedSceneIdx] : null;
+    if (selSc) { updateSceneClipPreview(selSc); window.updateSceneTakesUI?.(selSc); }
+    updateMasterVideoUI(); loadProjectQueue(state.currentSlug);
+    if (!state.isDirty) window.loadProjectCharacters?.(state.currentSlug);
+    if (document.getElementById("tab-scenes")?.classList?.contains("active")) window.renderSceneList?.();
+    if (!silent) showToast("Refreshed project assets and thumbnails from disk");
+  } catch (err) { console.error("Failed to refresh project assets:", err); }
 }
 
 function escapeHtml(str) {
   if (str === null || str === undefined) return "";
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+  return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function markProjectDirty(dirty = true) {
   state.isDirty = dirty;
-  const saveBtn = document.getElementById("btnSaveProject");
-  const discardBtn = document.getElementById("btnDiscardChanges");
+  const saveBtn = document.getElementById("btnSaveProject"), discardBtn = document.getElementById("btnDiscardChanges");
   if (saveBtn) {
-    if (dirty) {
-      saveBtn.classList.add("btn-primary");
-      saveBtn.textContent = "💾 Save Changes *";
-      saveBtn.style.boxShadow = "0 0 10px rgba(59, 130, 246, 0.6)";
-    } else {
-      saveBtn.textContent = "💾 Save Changes";
-      saveBtn.style.boxShadow = "none";
-    }
+    if (dirty) saveBtn.classList.add("btn-primary");
+    saveBtn.textContent = dirty ? "💾 Save Changes *" : "💾 Save Changes";
+    saveBtn.style.boxShadow = dirty ? "0 0 10px rgba(59, 130, 246, 0.6)" : "none";
   }
-  if (discardBtn) {
-    discardBtn.style.display = dirty ? "inline-block" : "none";
-  }
+  if (discardBtn) discardBtn.style.display = dirty ? "inline-block" : "none";
 }
 
 window.addEventListener("beforeunload", (e) => {
@@ -581,7 +545,7 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
 
   const mode = sc.mode || "solo";
   const isTwoPass = ["duet", "gva_male_left_silent_right", "duet_method_b", "two_pass_gva"].includes(mode);
-  const vModels = state.models?.video_renderers || {}, projVModels = models.video_renderers || {}, defRid = String(models.default_video_renderer || 1);
+  const vModels = state.models?.video_renderers || {}, fModels = state.models?.fal_video_renderers || {}, mmModels = state.models?.minimax_video_renderers || {}, projVModels = models.video_renderers || {}, defRid = String(models.default_video_renderer || 1);
   const defBk = String(state.falStatus?.default_execution_backend || models.default_backend || "local").toLowerCase();
   const resolvePassRoiRes = (pNum, baseRes, bk) => {
     const r = String(sc.pass2_roi_mode || "full").trim().toLowerCase();
@@ -597,10 +561,10 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
   const buildPassEst = (pNum) => {
     const rawR = (pNum === 1 ? sc.renderer_m : pNum === 2 ? sc.renderer_f : sc.renderer) ?? sc.renderer;
     const rId = rawR !== null && rawR !== undefined && !["", "0", "none", "null", "default"].includes(String(rawR).trim().toLowerCase()) ? String(rawR).trim() : defRid;
-    const rSpec = { ...(vModels[rId] || {}), ...(projVModels[rId] || {}) };
+    const rSpec = { ...(vModels[rId] || fModels[rId] || mmModels[rId] || {}), ...(projVModels[rId] || {}) };
     const rModel = rSpec.model_type || sc.model_type || vs.model_type || "";
-    const isRef2va = ["9", "10", "11", "12", "13"].includes(rId) || String(rModel).toLowerCase().includes("ref2va");
-    const isLtx2 = ["14", "15", "16"].includes(rId) || String(rModel).toLowerCase().includes("ltx");
+    const isLtx2 = ["14", "15", "16", "17", "18", "19", "20", "21"].includes(rId) || String(rModel).toLowerCase().includes("ltx");
+    const isRef2va = !isLtx2 && (["9", "10", "11", "12", "13"].includes(rId) || String(rModel).toLowerCase().includes("ref2va"));
     const formula = rSpec.frames_formula || (isLtx2 ? "ltx2" : isRef2va ? "h3_ref2va" : "h3");
     const qInfo = quantizeVideoFrames(effectiveSec, formula, Number(rSpec.force_fps) || fps);
     const modelType = rModel || (isRef2va ? "minimax_h3_ref2va_pruned_ptd_refasymopd" : "minimax_h3_fl2va_pruned_pdd");
@@ -608,7 +572,10 @@ function estimateSceneRenderInfo(sc, _skipSplitCalc = false) {
     const wSize = Number(sc.sliding_window_size || rSpec.sliding_window_size || (formula === "ltx2" ? 241 : 362));
     const wOvlp = Number(sc.sliding_window_overlap || rSpec.sliding_window_overlap || (formula === "ltx2" ? 9 : 18));
     const baseRes = sceneResOverride || resolveRenderRes(rSpec.resolution) || projDefRes;
-    const passBk = String(sc.backend || rSpec.backend || defBk).toLowerCase();
+    const cleanBk = (b) => (b && !["auto", "default", "null", "none"].includes(String(b).toLowerCase()) ? String(b).toLowerCase() : "");
+    const rawPassBk = pNum === 1 ? sc.backend_m : (pNum === 2 ? sc.backend_f : null);
+    const isDedicatedCloud = Boolean((fModels[rId] || mmModels[rId]) && !vModels[rId] && rSpec.backend);
+    const passBk = isDedicatedCloud ? String(rSpec.backend).toLowerCase() : (cleanBk(rawPassBk) || cleanBk(sc.backend) || cleanBk(rSpec.backend) || defBk);
     const effRes = resolvePassRoiRes(pNum, baseRes, passBk);
     const passAlpha = Math.max(0.4, Math.min(4.0, Number(state.calibrationAlphaByRes?.[effRes] ?? (passBk === "local" ? alpha : 1.0)) || 1.0));
     const est = estimatePassRenderTime(qInfo.frames, { modelType, passNum: pNum, hasEndAnchor: hasEndAnchor && pNum !== 2, resolution: effRes, steps, slidingWindowSize: wSize, slidingWindowOverlap: wOvlp, calibrationAlpha: passAlpha });
@@ -830,8 +797,28 @@ function toggleSceneMasterLoop(idx) {
   } else { showToast?.(`🔁 Loop set to ${sc.id} (${startT.toFixed(2)}s–${Number(sc.end || 0).toFixed(2)}s)`); }
   syncMasterLoopUI();
 }
+function unloadClipVideoPlayer() {
+  const vp = typeof document !== "undefined" ? document.getElementById("clipVideoPlayer") : null;
+  if (!vp) return false;
+  try { vp.pause?.(); } catch (e) {}
+  vp.removeAttribute?.("src");
+  vp.removeAttribute?.("data-loaded-src");
+  try { vp.load?.(); } catch (e) {}
+  return true;
+}
+function resolveSceneModelType(scObj, passNum = null, takeObj = null) {
+  const rm = state.projectData?.models || {};
+  const vrMap = Object.assign({}, state.models?.video_renderers || {}, state.models?.fal_video_renderers || {}, state.models?.minimax_video_renderers || {}, rm.video_renderers || {});
+  const p = passNum ?? takeObj?.pass_num ?? null;
+  const tModel = String(takeObj?.model_type || takeObj?.render_settings?.model_type || "").trim();
+  const raw = (p === 1 ? scObj?.renderer_m : (p === 2 ? scObj?.renderer_f : null)) ?? scObj?.renderer ?? scObj?.video_renderer;
+  const rKey = (raw !== undefined && raw !== null && !["", "0", "none", "null", "default", "inherit"].includes(String(raw).trim().toLowerCase())) ? String(raw).trim() : "";
+  if (tModel && !rKey) return tModel;
+  const effId = rKey || String(rm.default_video_renderer || rm.video_renderer || 1);
+  return String(vrMap[effId]?.model_type || tModel || effId || "").trim();
+}
 document.getElementById("btnClearMasterLoop")?.addEventListener("click", clearMasterSceneLoop);
 window.addEventListener?.("projectLoaded", clearMasterSceneLoop);
-Object.assign(window, { syncMasterLoopUI, clearMasterSceneLoop, enforceMasterSceneLoop, focusSceneInTimeline, toggleSceneMasterLoop });
+Object.assign(window, { syncMasterLoopUI, clearMasterSceneLoop, enforceMasterSceneLoop, focusSceneInTimeline, toggleSceneMasterLoop, unloadClipVideoPlayer, resolveSceneModelType });
 
 

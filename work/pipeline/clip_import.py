@@ -28,6 +28,7 @@ from .media_utils import (
     render_settings_of,
 )
 from .prompts import extract_anchor_id
+from .project_paths import path_rel_str
 from .stage2_hashes import compute_project_task_hashes
 from .takes import (
     _active_strip_path,
@@ -282,6 +283,7 @@ def import_video_clip_as_take(
             num = len(existing) + 1
             tag_label = clean_label or f"Take {num} (Import: {disp_name})"
             iso = datetime.datetime.fromtimestamp(now_ts, datetime.timezone.utc).isoformat()
+            r_rel = path_rel_str(ctx.project_dir, ctx.renders_dir, "work/renders")
             take_entry = {
                 "take_id": take_id,
                 "take_number": num,
@@ -297,8 +299,8 @@ def import_video_clip_as_take(
                 "created_iso": iso,
                 "vault_rel_mp4": vault_rel_mp4,
                 "vault_rel_strip": vault_rel_strip,
-                "file_path": f"work/renders_v3/{vault_rel_mp4}",
-                "strip_path": f"work/renders_v3/{vault_rel_strip}" if vault_rel_strip else None,
+                "file_path": f"{r_rel}/{vault_rel_mp4}",
+                "strip_path": f"{r_rel}/{vault_rel_strip}" if vault_rel_strip else None,
                 "render_start": round(req_start, 3),
                 "render_end": round(req_end, 3),
                 "frames": actual_frames,

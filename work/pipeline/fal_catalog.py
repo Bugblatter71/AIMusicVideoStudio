@@ -285,6 +285,59 @@ def dpapi_decrypt_secret(ciphertext_b64: str) -> str:
         ctypes.windll.kernel32.LocalFree(out_blob.pbData)
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _shared_secret_config_target(root_dir: Path | None = None, shared_dir: Path | None = None) -> Path:
+    """Returns canonical shared config file for cloud keys across projects."""
+    target_dir = Path(shared_dir) if shared_dir is not None else None
+    if target_dir is None:
+        base = Path(root_dir) if root_dir else WORKSPACE_ROOT
+        target_dir = WORKSPACE_ROOT if (root_dir is None or _is_relative_to(base, WORKSPACE_ROOT)) else None
+    if target_dir is not None:
+        return next((target_dir / fn for fn in ("config.local.json", "local_config.json") if (target_dir / fn).is_file()), target_dir / "local_config.json")
+    return _find_local_config_path(root_dir)
+
+
+def _candidate_secret_config_paths(root_dir: Path | None = None) -> list[Path]:
+    """Lists config files to search for shared cloud API keys without leaking workspace keys into temp test dirs."""
+    cands: list[Path] = []
+    seen: set[str] = set()
+
+    def _add_dir(d: Path):
+        for fn in ("config.local.json", "local_config.json"):
+            p = d / fn
+            k = os.path.normcase(os.path.normpath(str(p)))
+            if k not in seen and p.is_file():
+                seen.add(k)
+                cands.append(p)
+
+    base = Path(root_dir) if root_dir else WORKSPACE_ROOT
+    in_workspace = root_dir is None or _is_relative_to(base, WORKSPACE_ROOT)
+    isolated_temp = (not in_workspace) and any((base / fn).is_file() for fn in ("config.local.json", "local_config.json"))
+    if in_workspace:
+        for d in (WORKSPACE_ROOT, base.parent, base, Path.cwd()):
+            _add_dir(d)
+        proj_root = WORKSPACE_ROOT / "projects"
+        if proj_root.is_dir():
+            for child in sorted(proj_root.iterdir()):
+                if child.is_dir():
+                    _add_dir(child)
+    elif isolated_temp:
+        if not _is_relative_to(base.parent, WORKSPACE_ROOT):
+            _add_dir(base.parent)
+        _add_dir(base)
+    else:
+        for d in (base, base.parent, WORKSPACE_ROOT, Path.cwd()):
+            _add_dir(d)
+    return cands
+
+
 def _find_local_config_path(root_dir: Path | None = None) -> Path:
     base = Path(root_dir) if root_dir else WORKSPACE_ROOT
     for d in (base, base.parent, WORKSPACE_ROOT, Path.cwd()):
@@ -295,21 +348,29 @@ def _find_local_config_path(root_dir: Path | None = None) -> Path:
     return WORKSPACE_ROOT / "local_config.json"
 
 
-def read_local_config(root_dir: Path | None = None) -> dict:
-    p = _find_local_config_path(root_dir)
-    if p.is_file():
+def _read_json_dict(path: Path) -> dict:
+    if path.is_file():
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
         except Exception:
             pass
+    return {}
+
+
+def read_local_config(root_dir: Path | None = None) -> dict:
+    p = _find_local_config_path(root_dir)
+    if p.is_file():
+        data = _read_json_dict(p)
+        if data:
+            return data
     return find_local_config(Path(root_dir) if root_dir else WORKSPACE_ROOT)
 
 
-def write_local_config(updates: dict[str, Any], root_dir: Path | None = None, remove_keys: tuple[str, ...] = ()) -> Path:
-    p = _find_local_config_path(root_dir)
-    cur = read_local_config(root_dir)
+def write_local_config(updates: dict[str, Any], root_dir: Path | None = None, remove_keys: tuple[str, ...] = (), *, target_path: Path | None = None) -> Path:
+    p = Path(target_path) if target_path is not None else _find_local_config_path(root_dir)
+    cur = _read_json_dict(p) if target_path is not None else read_local_config(root_dir)
     cur.update(updates)
     for rk in remove_keys:
         cur.pop(rk, None)
@@ -319,24 +380,27 @@ def write_local_config(updates: dict[str, Any], root_dir: Path | None = None, re
 
 
 def _resolve_secret(env_vars: tuple[str, ...], dpapi_field: str, plain_field: str, root_dir: Path | None = None) -> tuple[str, str]:
-    """Shared secret resolver: env var -> Windows DPAPI blob in local_config.json -> plaintext local fallback."""
+    """Shared secret resolver: env var -> Windows DPAPI blob in shared local_config.json -> plaintext fallback."""
     for ev in env_vars:
         val = os.environ.get(ev, "").strip()
         if val:
             return val, "env"
-    cfg = read_local_config(root_dir)
-    dpapi_blob = str(cfg.get(dpapi_field) or "").strip()
-    if dpapi_blob:
-        try:
-            plain = dpapi_decrypt_secret(dpapi_blob).strip()
-            if plain:
-                return plain, "dpapi"
-        except Exception:
-            return "", "dpapi_error"
-    plain_cfg = str(cfg.get(plain_field) or "").strip()
-    if plain_cfg:
-        return plain_cfg, "plaintext_local"
-    return "", "none"
+    had_dpapi_err = False
+    for cfg_path in _candidate_secret_config_paths(root_dir):
+        cfg = _read_json_dict(cfg_path)
+        dpapi_blob = str(cfg.get(dpapi_field) or "").strip()
+        if dpapi_blob:
+            try:
+                plain = dpapi_decrypt_secret(dpapi_blob).strip()
+                if plain:
+                    return plain, "dpapi"
+            except Exception:
+                had_dpapi_err = True
+                continue
+        plain_cfg = str(cfg.get(plain_field) or "").strip()
+        if plain_cfg:
+            return plain_cfg, "plaintext_local"
+    return ("", "dpapi_error") if had_dpapi_err else ("", "none")
 
 
 def resolve_fal_key(root_dir: Path | None = None) -> tuple[str, str]:
@@ -373,6 +437,7 @@ def save_fal_settings(
     custom_fal_app: str | None = None,
     fal_timeout_s: float | None = None,
     max_cloud_concurrency: int | None = None,
+    shared_dir: Path | None = None,
 ) -> Path:
     updates: dict[str, Any] = {}
     removes: list[str] = []
@@ -401,7 +466,14 @@ def save_fal_settings(
         updates["fal_timeout_s"] = max(30.0, float(fal_timeout_s))
     if max_cloud_concurrency is not None:
         updates["max_cloud_concurrency"] = max(1, min(8, int(max_cloud_concurrency)))
-    return write_local_config(updates, root_dir=root_dir, remove_keys=tuple(removes))
+    target_path = _shared_secret_config_target(root_dir=root_dir, shared_dir=shared_dir)
+    if (clear_key or clear_minimax_key) and root_dir and _is_relative_to(Path(root_dir), WORKSPACE_ROOT):
+        rm_sec = tuple(k for k in ("fal_key_dpapi", "fal_key", "minimax_key_dpapi", "minimax_key") if k in removes)
+        if rm_sec:
+            for cand in _candidate_secret_config_paths(root_dir):
+                if cand != target_path and cand.is_file():
+                    write_local_config({}, remove_keys=rm_sec, target_path=cand)
+    return write_local_config(updates, root_dir=root_dir, remove_keys=tuple(removes), target_path=target_path)
 
 
 def _key_hint(key: str) -> str:
@@ -417,6 +489,7 @@ def get_fal_status(root_dir: Path | None = None) -> dict[str, Any]:
         "source": source,
         "hint": _key_hint(key),
         "dpapi_supported": dpapi_is_supported(),
+        "keys_scope": "shared",
         "default_execution_backend": cfg.get("default_execution_backend", "local"),
         "default_upscale_backend": cfg.get("default_upscale_backend", "local"),
         "custom_fal_app": cfg.get("custom_fal_app", ""),
@@ -512,8 +585,11 @@ def resolve_task_backend(
 def is_ref2va_spec(rspec: dict | None, spec_or_sc: dict | None = None) -> bool:
     """Unified check for Ref2VA/Singularity video profiles across context, hashes, queue, and routing."""
     r = rspec or {}
+    rmode = str(r.get("ref_mode") or "").strip().lower()
     mtype = str(r.get("model_type") or "").lower()
-    if str(r.get("frames_formula") or "").lower() == "h3_ref2va" or r.get("supports_image_refs"):
+    if rmode.startswith("ltx2") or "ltx2" in mtype:
+        return False
+    if rmode == "h3_ref2va" or str(r.get("frames_formula") or "").lower() == "h3_ref2va" or r.get("supports_image_refs"):
         return True
     if any(k in mtype for k in ("ref2va", "fasth3", "singularity")):
         return True
@@ -575,7 +651,7 @@ def resolve_fal_route(spec_or_task: dict | None, sc: dict | None = None, pass_nu
 
     has_end = bool((sc or {}).get("anchor_end") or spec.get("image_end"))
     has_audio = bool(spec.get("audio_guide") or ((sc or {}).get("stem", "male") not in ("silent", "none") and mode not in ("silent", "silent_locked", "ambient")))
-    is_ref2va = bool(spec.get("supports_image_refs") or "ref2va" in mtype or "fasth3" in mtype or "singularity" in mtype or spec.get("image_refs"))
+    is_ref2va = is_ref2va_spec(spec, spec) or bool("ref2va" in mtype or "fasth3" in mtype or "singularity" in mtype)
 
     if explicit_ep:
         if explicit_ad == "minimax_h3_fl2va" and has_audio and not has_end and spec.get("fal_lipsync_endpoint"):
@@ -585,6 +661,8 @@ def resolve_fal_route(spec_or_task: dict | None, sc: dict | None = None, pass_nu
     if "ltx2" in mtype:
         key = "fal_ltx25_a2v" if "25" in mtype else "fal_ltx23_a2v"
         p = FAL_VIDEO_PROFILES[key]
+        if str(spec.get("ref_mode") or "").lower().startswith("ltx2") or "msr" in mtype:
+            notes.append("LTX-2.5 MSR/Ingredients LoRAs are local-only; fal.ai runs standard LTX-2 A2V.")
         return {**p, "endpoint": p["fal_endpoint"], "adapter": p["fal_adapter"], "notes": notes}
 
     for prof in FAL_VIDEO_PROFILES.values():

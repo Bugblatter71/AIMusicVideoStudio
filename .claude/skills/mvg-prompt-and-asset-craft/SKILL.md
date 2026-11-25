@@ -50,6 +50,7 @@ Inside any scene prompt covering that timestamp, reference `<Beat Drop>` (automa
 
 - **`duet_method_b` (Pass 1 Left -> Pass 2 Right)**:
   - Ensure the anchor portrait gives clear left (`< split_x`) and right (`> split_x`) spatial separation (default `split_x: 0.48`–`0.52`).
+  - **Crossing-Subject & LTX-2 `MVGA` Buffer**: When rendering Pass 2 locally with LTX-2 (`#14/#15/#16`, `MVGA`), avoid any performer limbs, props, or instruments crossing **`[split_x - 0.10, split_x]`** (`~180px` at `1920px`), because `MVGA` blanks the masked half to `#66FF00` after Frame 0 and Laplacian-blends `~10%` width across `split_x` (even in Full Frame). Studio's `#clipSplitOverlay` visualizes both `Split X` and this blend zone on the scene clip preview. If elements must cross center, prefer `duet_method_a` (Stereo Duet) or MiniMax H3 (`#1`/`#9` `GVA`).
   - Avoid aggressive camera pans/sweeps across `split_x` on `local` Pass 1/Pass 2 unless using `fal-ai/sync-lipsync/v2` for Pass 2, because big subject shifts across the boundary complicate half-split masking.
   - Write focused `prompt_m` (left singer action/lipsync) and `prompt_f` (right singer reaction/counter-vocal).
 - **Silent scenic / instrument scenes (`mode: "silent_locked"`)**: Keep lip/mouth motion minimal or closed on vocalists (`stem: "silent"`).
